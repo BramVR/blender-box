@@ -162,6 +162,7 @@ func TestWindowsCheckPrintsVersionedJSONWithoutRemoteWrites(t *testing.T) {
 		"actions[0].execute",
 		"actions[0].arguments",
 		"actions[0].workingdirectory",
+		"allowdemandstart",
 		"blender_executable",
 		"session_broker_executable",
 		"host_executable",

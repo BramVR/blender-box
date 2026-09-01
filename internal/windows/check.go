@@ -189,6 +189,7 @@ if ($null -ne $task) {
         trigger_count = $triggers.Count
         multiple_instances = [string]$task.Settings.MultipleInstances
         execution_time_limit = [string]$task.Settings.ExecutionTimeLimit
+        allow_demand_start = [bool]$task.Settings.AllowDemandStart
         enabled = [bool]$task.Settings.Enabled
         execute = $(if ($actions.Count -eq 1) {[string]$actions[0].Execute} else {$null})
         arguments = $(if ($actions.Count -eq 1) {[string]$actions[0].Arguments} else {$null})
@@ -210,9 +211,9 @@ if ($null -ne $task) {
     }
     $taskAclOK = Test-TrustedTaskWriters $taskSddl $expectedSid
     $taskActual['task_acl_trusted'] = $taskAclOK
-    $taskOK = $null -ne $expectedSid -and $taskSid -eq $expectedSid -and [string]$task.Principal.LogonType -eq 'Interactive' -and [string]$task.Principal.RunLevel -eq 'Limited' -and $actions.Count -eq 1 -and $triggers.Count -eq 0 -and [string]$task.Settings.MultipleInstances -eq 'IgnoreNew' -and [string]$task.Settings.ExecutionTimeLimit -in @('PT0S', '00:00:00', '0') -and [bool]$task.Settings.Enabled -and $null -ne $actualExecute -and $actualExecute -ieq $expectedExecute -and [string]$actions[0].Arguments -ceq [string]$config.expected_task_arguments -and $null -ne $actualWorkingDirectory -and $actualWorkingDirectory -ieq $expectedWorkingDirectory -and $taskAclOK
+    $taskOK = $null -ne $expectedSid -and $taskSid -eq $expectedSid -and [string]$task.Principal.LogonType -eq 'Interactive' -and [string]$task.Principal.RunLevel -eq 'Limited' -and $actions.Count -eq 1 -and $triggers.Count -eq 0 -and [string]$task.Settings.MultipleInstances -eq 'IgnoreNew' -and [string]$task.Settings.ExecutionTimeLimit -in @('PT0S', '00:00:00', '0') -and [bool]$task.Settings.AllowDemandStart -and [bool]$task.Settings.Enabled -and $null -ne $actualExecute -and $actualExecute -ieq $expectedExecute -and [string]$actions[0].Arguments -ceq [string]$config.expected_task_arguments -and $null -ne $actualWorkingDirectory -and $actualWorkingDirectory -ieq $expectedWorkingDirectory -and $taskAclOK
 }
-Add-Check 'task.interactive' $taskOK $true $taskActual ([ordered]@{user=$expectedUser; sid=$expectedSid; execute=$hostPath; arguments=[string]$config.expected_task_arguments; working_directory=[System.IO.Path]::GetDirectoryName($hostPath); logon_type='Interactive'; run_level='Limited'; triggers=0; multiple_instances='IgnoreNew'; execution_time_limit='PT0S'}) 'The static task must match the complete Blender Box action and principal contract.'
+Add-Check 'task.interactive' $taskOK $true $taskActual ([ordered]@{user=$expectedUser; sid=$expectedSid; execute=$hostPath; arguments=[string]$config.expected_task_arguments; working_directory=[System.IO.Path]::GetDirectoryName($hostPath); logon_type='Interactive'; run_level='Limited'; triggers=0; multiple_instances='IgnoreNew'; execution_time_limit='PT0S'; allow_demand_start=$true}) 'The static task must match the complete Blender Box action and principal contract.'
 $requiredFailed = @($checks | Where-Object { $_.required -and -not $_.passed }).Count
 [ordered]@{schema_version=1; status=$(if ($requiredFailed -eq 0) {'pass'} else {'fail'}); checks=$checks} | ConvertTo-Json -Compress -Depth 8
 `
