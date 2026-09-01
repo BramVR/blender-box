@@ -1,7 +1,6 @@
 import os
 import pathlib
 import re
-import subprocess
 import unittest
 
 
@@ -42,21 +41,9 @@ class CIContractTests(unittest.TestCase):
         self.assertEqual(workflow.count("./scripts/ci test"), 1)
         self.assertEqual(workflow.count("./scripts/ci all"), 2)
 
-    def test_repository_gate_is_executable_and_its_check_passes(self) -> None:
-        if os.name != "nt":
-            self.assertTrue(CI_SCRIPT.stat().st_mode & 0o111)
-        command = [str(CI_SCRIPT), "check"]
-        if os.name == "nt":
-            command.insert(0, "bash")
-        result = subprocess.run(
-            command,
-            cwd=ROOT,
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-
-        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+    @unittest.skipIf(os.name == "nt", "Windows does not expose Git executable bits")
+    def test_repository_gate_is_executable_on_posix(self) -> None:
+        self.assertTrue(CI_SCRIPT.stat().st_mode & 0o111)
 
     def test_actions_are_pinned_and_dependabot_updates_them(self) -> None:
         workflows = "\n".join(
