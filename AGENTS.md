@@ -96,7 +96,7 @@ An all-fake happy path is a bad test, but real Windows Blender proof does not be
 - Bugs ship with focused regression tests when the boundary can be reproduced safely.
 - Async flows wait on explicit state, events, or receipts, never on sleeps. A test that needs a timing guess to pass is wrong.
 - User-facing live changes should get one integrated pass through a real Scenario when the user authorizes Windows Blender proof. Record the Run ID, exact Session identity, evidence, and cleanup result.
-- The repository has no implementation or build commands yet. Add exact install, lint, typecheck, test, and live-proof commands here as those choices land.
+- Run `./scripts/ci all` for the full local gate. Add exact Go, Python, release, and live-proof commands there as those choices land.
 
 ## Pull requests
 
@@ -129,6 +129,8 @@ Full research and proposed contracts: `docs/research/blender-box-research.html`
 
 - `README.md` - product summary and current status.
 - `docs/research/blender-box-research.html` - research basis, architecture, proposed contracts, evidence layout, risks, and build order.
+- `docs/architecture/ci.md` - local and hosted CI boundary, tradeoffs, and live-proof separation.
+- `scripts/ci` - the local and GitHub Actions check/test entrypoint.
 - `AGENTS.md` - repo-local operating notes.
 - There is no CLI implementation yet. Update this section with exact package paths and boundaries when code lands. Do not invent a generic DCC core before the product proves a stable need for one.
 
