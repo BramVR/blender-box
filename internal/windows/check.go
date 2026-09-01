@@ -112,12 +112,33 @@ function Test-TrustedTaskWriters([string]$Sddl, [string]$PrincipalSid) {
     }
     return $true
 }
-function Test-SafePath([string]$Path, [string]$PrincipalSid, [System.Security.AccessControl.FileSystemRights]$RequiredRights, [bool]$RequireDirectAllow) {
+function Test-NoReparsePoints([string]$Path) {
+    $current = Normalize-Path $Path
+    if ($null -eq $current) { return $false }
+    $root = [System.IO.Path]::GetPathRoot($current)
+    while ($null -ne $current) {
+        try { $item = Get-Item -Force -LiteralPath $current -ErrorAction Stop } catch { return $false }
+        if (([int64]$item.Attributes -band [int64][System.IO.FileAttributes]::ReparsePoint) -ne 0) { return $false }
+        if ($current -ieq $root) { return $true }
+        $next = [System.IO.Path]::GetDirectoryName($current)
+        if ($null -eq $next -or $next -ieq $current) { return $false }
+        $current = $next
+    }
+    return $false
+}
+function Test-SafePath([string]$Path, [string]$PrincipalSid, [System.Security.AccessControl.FileSystemRights]$RequiredRights, [bool]$RequireDirectAllow, [bool]$RequireSealedParent) {
+    if (-not (Test-NoReparsePoints $Path)) { return $false }
     if (-not (Test-ConservativePathAccess $Path $PrincipalSid $RequiredRights $RequireDirectAllow)) { return $false }
     if (-not (Test-TrustedWriters $Path $PrincipalSid)) { return $false }
     $parent = [System.IO.Path]::GetDirectoryName($Path)
-    if ($null -eq $parent -or -not (Test-TrustedWriters $parent $PrincipalSid)) { return $false }
+    if ($null -eq $parent) { return $false }
+    if ($RequireSealedParent) {
+        if (-not (Test-TrustedWriters $parent $PrincipalSid)) { return $false }
+    } elseif (-not (Test-TrustedAncestor $parent $PrincipalSid)) {
+        return $false
+    }
     $root = [System.IO.Path]::GetPathRoot($Path)
+    if ($parent -ieq $root) { return $true }
     $ancestor = [System.IO.Path]::GetDirectoryName($parent)
     while ($null -ne $ancestor) {
         if (-not (Test-TrustedAncestor $ancestor $PrincipalSid)) { return $false }
@@ -144,11 +165,11 @@ $modify = [System.Security.AccessControl.FileSystemRights]::Modify
 $blenderOK = Test-Path -LiteralPath $blenderPath -PathType Leaf
 $daemonOK = Test-Path -LiteralPath $daemonPath -PathType Leaf
 $hostOK = Test-Path -LiteralPath $hostPath -PathType Leaf
-Add-Check 'blender.executable' ($blenderOK -and (Test-SafePath $blenderPath $expectedSid $readExecute $false)) $true $blenderPath 'existing executable with safe readers, owner, and writers' 'The configured Blender executable and parent must reject untrusted writers.'
-Add-Check 'daemon.executable' ($daemonOK -and (Test-SafePath $daemonPath $expectedSid $readExecute $true)) $true $daemonPath 'existing executable with explicit task-principal access and trusted writers' 'The staged session broker and parent must carry the setup ACL.'
-Add-Check 'host.executable' ($hostOK -and (Test-SafePath $hostPath $expectedSid $readExecute $true)) $true $hostPath 'existing executable with explicit task-principal access and trusted writers' 'The staged Blender Box host binary and parent must carry the setup ACL.'
+Add-Check 'blender.executable' ($blenderOK -and (Test-SafePath $blenderPath $expectedSid $readExecute $false $true)) $true $blenderPath 'existing executable with safe readers, owner, and writers' 'The configured Blender executable and parent must reject untrusted writers.'
+Add-Check 'daemon.executable' ($daemonOK -and (Test-SafePath $daemonPath $expectedSid $readExecute $true $true)) $true $daemonPath 'existing executable with explicit task-principal access and trusted writers' 'The staged session broker and parent must carry the setup ACL.'
+Add-Check 'host.executable' ($hostOK -and (Test-SafePath $hostPath $expectedSid $readExecute $true $true)) $true $hostPath 'existing executable with explicit task-principal access and trusted writers' 'The staged Blender Box host binary and parent must carry the setup ACL.'
 $rootExists = Test-Path -LiteralPath ([string]$config.work_root) -PathType Container
-Add-Check 'work-root.access' ($rootExists -and (Test-SafePath ([string]$config.work_root) $expectedSid $modify $true)) $true ([string]$config.work_root) 'existing directory with explicit task-principal access and trusted writers' 'The operator-managed work root and parent must carry the setup ACL.'
+Add-Check 'work-root.access' ($rootExists -and (Test-SafePath ([string]$config.work_root) $expectedSid $modify $true $false)) $true ([string]$config.work_root) 'existing directory with explicit task-principal access and trusted writers' 'The operator-managed work root must carry the setup ACL and have trusted ancestors.'
 $task = Get-ScheduledTask -TaskPath '\' -TaskName ([string]$config.task_name) -ErrorAction SilentlyContinue
 $taskActual = $null
 $taskOK = $false
@@ -200,7 +221,16 @@ type SSH interface {
 type CheckResult struct {
 	SchemaVersion int             `json:"schema_version"`
 	Status        string          `json:"status"`
-	Checks        json.RawMessage `json:"checks"`
+	Checks        []CheckEvidence `json:"checks"`
+}
+
+type CheckEvidence struct {
+	ID       string          `json:"id"`
+	Passed   bool            `json:"passed"`
+	Required bool            `json:"required"`
+	Actual   json.RawMessage `json:"actual,omitempty"`
+	Expected json.RawMessage `json:"expected,omitempty"`
+	Message  string          `json:"message,omitempty"`
 }
 
 func Check(ctx context.Context, ssh SSH, selected target.Target) (CheckResult, error) {
@@ -231,14 +261,64 @@ func Check(ctx context.Context, ssh SSH, selected target.Target) (CheckResult, e
 	if err != nil {
 		return CheckResult{}, fmt.Errorf("inspect Windows host: %w", err)
 	}
-	var result CheckResult
-	if err := json.Unmarshal(output, &result); err != nil {
+	var wire struct {
+		SchemaVersion int             `json:"schema_version"`
+		Status        string          `json:"status"`
+		Checks        json.RawMessage `json:"checks"`
+	}
+	if err := json.Unmarshal(output, &wire); err != nil {
 		return CheckResult{}, fmt.Errorf("parse Windows check result: %w", err)
 	}
-	if result.SchemaVersion != 1 || (result.Status != "pass" && result.Status != "fail") || len(result.Checks) == 0 {
+	var checks []CheckEvidence
+	if err := json.Unmarshal(wire.Checks, &checks); err != nil {
+		return CheckResult{}, fmt.Errorf("Windows check returned an invalid contract: checks must be an array")
+	}
+	result := CheckResult{SchemaVersion: wire.SchemaVersion, Status: wire.Status, Checks: checks}
+	if !validCheckResult(result) {
 		return CheckResult{}, fmt.Errorf("Windows check returned an invalid contract")
 	}
 	return result, nil
+}
+
+func validCheckResult(result CheckResult) bool {
+	requiredIDs := map[string]bool{
+		"host.windows":       false,
+		"host.console-user":  false,
+		"blender.executable": false,
+		"daemon.executable":  false,
+		"host.executable":    false,
+		"work-root.access":   false,
+		"task.interactive":   false,
+	}
+	if result.SchemaVersion != 1 || (result.Status != "pass" && result.Status != "fail") || len(result.Checks) == 0 {
+		return false
+	}
+	seen := make(map[string]struct{}, len(result.Checks))
+	requiredFailed := false
+	for _, check := range result.Checks {
+		if check.ID == "" {
+			return false
+		}
+		if _, duplicate := seen[check.ID]; duplicate {
+			return false
+		}
+		seen[check.ID] = struct{}{}
+		if _, required := requiredIDs[check.ID]; required {
+			if !check.Required {
+				return false
+			}
+			requiredIDs[check.ID] = true
+		}
+		if check.Required && !check.Passed {
+			requiredFailed = true
+		}
+	}
+	for _, present := range requiredIDs {
+		if !present {
+			return false
+		}
+	}
+	return (result.Status == "fail") == requiredFailed
 }
 
 func encodePowerShell(script string) string {

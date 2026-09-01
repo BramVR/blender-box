@@ -47,19 +47,25 @@ func TestWindowsCheckPrintsVersionedJSONWithoutRemoteWrites(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	checks := make([]map[string]any, 0, 7)
+	for _, id := range []string{
+		"host.windows",
+		"host.console-user",
+		"blender.executable",
+		"daemon.executable",
+		"host.executable",
+		"work-root.access",
+		"task.interactive",
+	} {
+		checks = append(checks, map[string]any{"id": id, "passed": true, "required": true})
+	}
+	checks[0]["actual"] = "Microsoft Windows 11 Pro"
+	checks[0]["expected"] = "Windows"
+	checks[0]["message"] = "Windows host detected."
 	remote := map[string]any{
 		"schema_version": 1,
 		"status":         "pass",
-		"checks": []map[string]any{
-			{
-				"id":       "host.windows",
-				"passed":   true,
-				"required": true,
-				"actual":   "Microsoft Windows 11 Pro",
-				"expected": "Windows",
-				"message":  "Windows host detected.",
-			},
-		},
+		"checks":         checks,
 	}
 	remoteJSON, err := json.Marshal(remote)
 	if err != nil {
@@ -142,6 +148,7 @@ func TestWindowsCheckPrintsVersionedJSONWithoutRemoteWrites(t *testing.T) {
 		"rawsecuritydescriptor",
 		"getsecuritydescriptor(7)",
 		"[int]$ace.aceflags",
+		"reparsepoint",
 		"normalize-path",
 		"allowmask",
 		"denymask",
@@ -150,6 +157,7 @@ func TestWindowsCheckPrintsVersionedJSONWithoutRemoteWrites(t *testing.T) {
 		"takeownership",
 		"getdirectoryname",
 		"getpathroot",
+		"$parent -ieq $root",
 		"deletechild",
 		"actions[0].execute",
 		"actions[0].arguments",
