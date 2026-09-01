@@ -139,6 +139,8 @@ func TestWindowsCheckPrintsVersionedJSONWithoutRemoteWrites(t *testing.T) {
 	}
 	for _, required := range []string{
 		"securityidentifier",
+		"rawsecuritydescriptor",
+		"getsecuritydescriptor(7)",
 		"normalize-path",
 		"allowmask",
 		"denymask",
@@ -146,6 +148,8 @@ func TestWindowsCheckPrintsVersionedJSONWithoutRemoteWrites(t *testing.T) {
 		"trustedwriters",
 		"takeownership",
 		"getdirectoryname",
+		"getpathroot",
+		"deletechild",
 		"actions[0].execute",
 		"actions[0].arguments",
 		"actions[0].workingdirectory",

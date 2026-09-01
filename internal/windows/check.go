@@ -64,11 +64,69 @@ function Test-TrustedWriters([string]$Path, [string]$PrincipalSid) {
     }
     return $true
 }
+function Test-TrustedAncestor([string]$Path, [string]$PrincipalSid) {
+    if (-not (Test-Path -LiteralPath $Path -PathType Container)) { return $false }
+    $trustedWriters = @(
+        $PrincipalSid,
+        'S-1-5-18',
+        'S-1-5-32-544',
+        'S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464'
+    )
+    $acl = Get-Acl -LiteralPath $Path
+    $ownerSid = Resolve-Sid ([string]$acl.Owner)
+    if ($trustedWriters -notcontains $ownerSid) { return $false }
+    $rules = $acl.GetAccessRules($true, $true, [System.Security.Principal.SecurityIdentifier])
+    $deleteChild = [int64][System.Security.AccessControl.FileSystemRights]::DeleteSubdirectoriesAndFiles
+    $authorityMask = [int64][System.Security.AccessControl.FileSystemRights]::Delete -bor $deleteChild -bor [int64][System.Security.AccessControl.FileSystemRights]::ChangePermissions -bor [int64][System.Security.AccessControl.FileSystemRights]::TakeOwnership
+    foreach ($rule in $rules) {
+        if (($rule.PropagationFlags -band [System.Security.AccessControl.PropagationFlags]::InheritOnly) -ne 0) { continue }
+        if ($rule.AccessControlType -ne [System.Security.AccessControl.AccessControlType]::Allow) { continue }
+        if ($trustedWriters -contains $rule.IdentityReference.Value) { continue }
+        if (([int64]$rule.FileSystemRights -band $authorityMask) -ne 0) { return $false }
+    }
+    return $true
+}
+function Test-TrustedTaskWriters([string]$Sddl, [string]$PrincipalSid) {
+    if ([string]::IsNullOrWhiteSpace($Sddl)) { return $false }
+    try {
+        $descriptor = [System.Security.AccessControl.RawSecurityDescriptor]::new($Sddl)
+    } catch {
+        return $false
+    }
+    $trustedWriters = @(
+        $PrincipalSid,
+        'S-1-5-18',
+        'S-1-5-32-544',
+        'S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464'
+    )
+    if ($null -eq $descriptor.Owner -or $trustedWriters -notcontains $descriptor.Owner.Value -or $null -eq $descriptor.DiscretionaryAcl) { return $false }
+    [int64]$genericAll = 0x10000000
+    [int64]$genericWrite = 0x40000000
+    [int64]$taskWrite = 0x00000116
+    [int64]$taskWriteMask = $genericAll -bor $genericWrite -bor 0x00010000 -bor 0x00040000 -bor 0x00080000 -bor $taskWrite
+    foreach ($ace in $descriptor.DiscretionaryAcl) {
+        if (($ace.AceFlags -band [System.Security.AccessControl.AceFlags]::InheritOnly) -ne 0) { continue }
+        if ($ace.AceQualifier -ne [System.Security.AccessControl.AceQualifier]::AccessAllowed) { continue }
+        if ($null -eq $ace.SecurityIdentifier -or $trustedWriters -contains $ace.SecurityIdentifier.Value) { continue }
+        if (([int64]$ace.AccessMask -band $taskWriteMask) -ne 0) { return $false }
+    }
+    return $true
+}
 function Test-SafePath([string]$Path, [string]$PrincipalSid, [System.Security.AccessControl.FileSystemRights]$RequiredRights, [bool]$RequireDirectAllow) {
     if (-not (Test-ConservativePathAccess $Path $PrincipalSid $RequiredRights $RequireDirectAllow)) { return $false }
     if (-not (Test-TrustedWriters $Path $PrincipalSid)) { return $false }
     $parent = [System.IO.Path]::GetDirectoryName($Path)
-    return $null -ne $parent -and (Test-TrustedWriters $parent $PrincipalSid)
+    if ($null -eq $parent -or -not (Test-TrustedWriters $parent $PrincipalSid)) { return $false }
+    $root = [System.IO.Path]::GetPathRoot($Path)
+    $ancestor = [System.IO.Path]::GetDirectoryName($parent)
+    while ($null -ne $ancestor) {
+        if (-not (Test-TrustedAncestor $ancestor $PrincipalSid)) { return $false }
+        if ($ancestor -ieq $root) { break }
+        $next = [System.IO.Path]::GetDirectoryName($ancestor)
+        if ($null -eq $next -or $next -ieq $ancestor) { return $false }
+        $ancestor = $next
+    }
+    return $null -ne $ancestor -and $ancestor -ieq $root
 }
 $os = Get-CimInstance -ClassName Win32_OperatingSystem
 Add-Check 'host.windows' ($null -ne $os) $true $os.Caption 'Windows' 'Windows host detected.'
@@ -91,7 +149,7 @@ Add-Check 'daemon.executable' ($daemonOK -and (Test-SafePath $daemonPath $expect
 Add-Check 'host.executable' ($hostOK -and (Test-SafePath $hostPath $expectedSid $readExecute $true)) $true $hostPath 'existing executable with explicit task-principal access and trusted writers' 'The staged Blender Box host binary and parent must carry the setup ACL.'
 $rootExists = Test-Path -LiteralPath ([string]$config.work_root) -PathType Container
 Add-Check 'work-root.access' ($rootExists -and (Test-SafePath ([string]$config.work_root) $expectedSid $modify $true)) $true ([string]$config.work_root) 'existing directory with explicit task-principal access and trusted writers' 'The operator-managed work root and parent must carry the setup ACL.'
-$task = Get-ScheduledTask -TaskName ([string]$config.task_name) -ErrorAction SilentlyContinue
+$task = Get-ScheduledTask -TaskPath '\' -TaskName ([string]$config.task_name) -ErrorAction SilentlyContinue
 $taskActual = $null
 $taskOK = $false
 if ($null -ne $task) {
@@ -117,7 +175,18 @@ if ($null -ne $task) {
     $actualWorkingDirectory = $(if ($actions.Count -eq 1) {Normalize-Path ([string]$actions[0].WorkingDirectory)} else {$null})
     $expectedExecute = Normalize-Path $hostPath
     $expectedWorkingDirectory = Normalize-Path $expectedWorkingDirectory
-    $taskOK = $null -ne $expectedSid -and $taskSid -eq $expectedSid -and [string]$task.Principal.LogonType -eq 'Interactive' -and [string]$task.Principal.RunLevel -eq 'Limited' -and $actions.Count -eq 1 -and $triggers.Count -eq 0 -and [string]$task.Settings.MultipleInstances -eq 'IgnoreNew' -and [string]$task.Settings.ExecutionTimeLimit -in @('PT0S', '00:00:00', '0') -and [bool]$task.Settings.Enabled -and $null -ne $actualExecute -and $actualExecute -ieq $expectedExecute -and [string]$actions[0].Arguments -ceq [string]$config.expected_task_arguments -and $null -ne $actualWorkingDirectory -and $actualWorkingDirectory -ieq $expectedWorkingDirectory
+    $taskSddl = $null
+    try {
+        $taskService = New-Object -ComObject 'Schedule.Service'
+        $taskService.Connect()
+        $registeredTask = $taskService.GetFolder('\').GetTask([string]$config.task_name)
+        $taskSddl = [string]$registeredTask.GetSecurityDescriptor(7)
+    } catch {
+        $taskSddl = $null
+    }
+    $taskAclOK = Test-TrustedTaskWriters $taskSddl $expectedSid
+    $taskActual['task_acl_trusted'] = $taskAclOK
+    $taskOK = $null -ne $expectedSid -and $taskSid -eq $expectedSid -and [string]$task.Principal.LogonType -eq 'Interactive' -and [string]$task.Principal.RunLevel -eq 'Limited' -and $actions.Count -eq 1 -and $triggers.Count -eq 0 -and [string]$task.Settings.MultipleInstances -eq 'IgnoreNew' -and [string]$task.Settings.ExecutionTimeLimit -in @('PT0S', '00:00:00', '0') -and [bool]$task.Settings.Enabled -and $null -ne $actualExecute -and $actualExecute -ieq $expectedExecute -and [string]$actions[0].Arguments -ceq [string]$config.expected_task_arguments -and $null -ne $actualWorkingDirectory -and $actualWorkingDirectory -ieq $expectedWorkingDirectory -and $taskAclOK
 }
 Add-Check 'task.interactive' $taskOK $true $taskActual ([ordered]@{user=$expectedUser; sid=$expectedSid; execute=$hostPath; arguments=[string]$config.expected_task_arguments; working_directory=[System.IO.Path]::GetDirectoryName($hostPath); logon_type='Interactive'; run_level='Limited'; triggers=0; multiple_instances='IgnoreNew'; execution_time_limit='PT0S'}) 'The static task must match the complete Blender Box action and principal contract.'
 $requiredFailed = @($checks | Where-Object { $_.required -and -not $_.passed }).Count
