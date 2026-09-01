@@ -6,10 +6,13 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
+	"time"
 	"unicode/utf16"
 
 	"github.com/BramVR/blender-box/internal/target"
 )
+
+const checkTimeout = time.Minute
 
 const checkScript = `$config = $configText | ConvertFrom-Json
 $checks = [System.Collections.Generic.List[object]]::new()
@@ -234,6 +237,9 @@ type CheckEvidence struct {
 }
 
 func Check(ctx context.Context, ssh SSH, selected target.Target) (CheckResult, error) {
+	ctx, cancel := context.WithTimeout(ctx, checkTimeout)
+	defer cancel()
+
 	input, err := json.Marshal(struct {
 		target.Target
 		ExpectedTaskArguments string `json:"expected_task_arguments"`

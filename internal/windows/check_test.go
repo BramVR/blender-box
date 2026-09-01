@@ -4,15 +4,19 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/BramVR/blender-box/internal/target"
 )
 
 type checkSSH struct {
-	output string
+	output      string
+	hadDeadline bool
 }
 
-func (fake checkSSH) Run(context.Context, string, []string, []byte) ([]byte, error) {
+func (fake *checkSSH) Run(ctx context.Context, _ string, _ []string, _ []byte) ([]byte, error) {
+	deadline, ok := ctx.Deadline()
+	fake.hadDeadline = ok && time.Until(deadline) > 0 && time.Until(deadline) <= time.Minute
 	return []byte(fake.output), nil
 }
 
@@ -45,7 +49,7 @@ func TestCheckRejectsMalformedOrContradictoryEvidence(t *testing.T) {
 
 	for name, output := range cases {
 		t.Run(name, func(t *testing.T) {
-			_, err := Check(context.Background(), checkSSH{output: output}, target.Target{})
+			_, err := Check(context.Background(), &checkSSH{output: output}, target.Target{})
 			if err == nil || !strings.Contains(err.Error(), "invalid contract") {
 				t.Fatalf("Check() error = %v, want invalid contract", err)
 			}
@@ -63,11 +67,15 @@ func TestCheckAcceptsCompleteFailedEvidence(t *testing.T) {
 {"id":"work-root.access","passed":false,"required":true},
 {"id":"task.interactive","passed":false,"required":true}]}`
 
-	result, err := Check(context.Background(), checkSSH{output: output}, target.Target{})
+	fake := &checkSSH{output: output}
+	result, err := Check(context.Background(), fake, target.Target{})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if result.Status != "fail" || len(result.Checks) != 7 {
 		t.Fatalf("unexpected result: %+v", result)
+	}
+	if !fake.hadDeadline {
+		t.Fatal("Windows check called SSH without a bounded deadline")
 	}
 }

@@ -15,6 +15,7 @@ var (
 	taskNamePattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._ -]{0,127}$`)
 	userPattern     = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._\\@-]{0,127}$`)
 	workRootPattern = regexp.MustCompile(`^[A-Za-z]:\\[^\r\n"'*?<>|]{1,238}$`)
+	reservedDevice  = regexp.MustCompile(`(?i)^(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])$`)
 )
 
 // Target contains operator-selected host values. It contains no credentials or addresses.
@@ -59,7 +60,7 @@ func (value Target) Validate() error {
 	if !sshAliasPattern.MatchString(value.SSHAlias) {
 		return fmt.Errorf("target ssh_alias is unsafe")
 	}
-	if !workRootPattern.MatchString(value.WorkRoot) || hasTraversal(value.WorkRoot) || strings.HasSuffix(value.WorkRoot, `\`) {
+	if !isCanonicalWindowsPath(value.WorkRoot) {
 		return fmt.Errorf("target work_root must be an absolute safe Windows path")
 	}
 	if !userPattern.MatchString(value.InteractiveUser) {
@@ -73,18 +74,33 @@ func (value Target) Validate() error {
 		"session_broker_executable": value.SessionBrokerExecutable,
 		"host_executable":           value.HostExecutable,
 	} {
-		if !workRootPattern.MatchString(path) || hasTraversal(path) || strings.HasSuffix(path, `\`) {
+		if !isCanonicalWindowsPath(path) {
 			return fmt.Errorf("target %s must be an absolute safe Windows file path", label)
 		}
 	}
 	return nil
 }
 
-func hasTraversal(path string) bool {
-	for _, segment := range strings.Split(strings.ReplaceAll(path, "/", `\`), `\`) {
-		if segment == "." || segment == ".." {
-			return true
+func isCanonicalWindowsPath(path string) bool {
+	if !workRootPattern.MatchString(path) || strings.Contains(path, "/") || strings.HasSuffix(path, `\`) {
+		return false
+	}
+	for _, segment := range strings.Split(path[3:], `\`) {
+		if segment == "" || segment == "." || segment == ".." || strings.TrimRight(segment, " .") != segment {
+			return false
+		}
+		for _, character := range segment {
+			if character < 32 || strings.ContainsRune(`:"'*?<>|`, character) {
+				return false
+			}
+		}
+		base := segment
+		if dot := strings.IndexByte(base, '.'); dot >= 0 {
+			base = base[:dot]
+		}
+		if reservedDevice.MatchString(base) {
+			return false
 		}
 	}
-	return false
+	return true
 }
