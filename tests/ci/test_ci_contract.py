@@ -1,11 +1,14 @@
 import pathlib
+import re
 import subprocess
 import unittest
 
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 WORKFLOW = ROOT / ".github" / "workflows" / "ci.yml"
+SECURITY_WORKFLOW = ROOT / ".github" / "workflows" / "security.yml"
 CI_SCRIPT = ROOT / "scripts" / "ci"
+DEPENDABOT = ROOT / ".github" / "dependabot.yml"
 
 
 class CIContractTests(unittest.TestCase):
@@ -22,8 +25,10 @@ class CIContractTests(unittest.TestCase):
             "name: Check",
             "name: Test",
             "name: Windows",
+            "name: macOS",
             "runs-on: ubuntu-latest",
             "runs-on: windows-latest",
+            "runs-on: macos-latest",
         )
         for fragment in required_fragments:
             with self.subTest(fragment=fragment):
@@ -34,7 +39,7 @@ class CIContractTests(unittest.TestCase):
 
         self.assertEqual(workflow.count("./scripts/ci check"), 1)
         self.assertEqual(workflow.count("./scripts/ci test"), 1)
-        self.assertEqual(workflow.count("./scripts/ci all"), 1)
+        self.assertEqual(workflow.count("./scripts/ci all"), 2)
 
     def test_repository_gate_is_executable_and_its_check_passes(self) -> None:
         self.assertTrue(CI_SCRIPT.stat().st_mode & 0o111)
@@ -47,6 +52,31 @@ class CIContractTests(unittest.TestCase):
         )
 
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_actions_are_pinned_and_dependabot_updates_them(self) -> None:
+        workflows = "\n".join(
+            path.read_text(encoding="utf-8")
+            for path in sorted((ROOT / ".github" / "workflows").glob("*.yml"))
+        )
+        action_refs = re.findall(r"uses: [^@\s]+@([^\s]+)", workflows)
+
+        self.assertGreaterEqual(len(action_refs), 3)
+        for action_ref in action_refs:
+            with self.subTest(action_ref=action_ref):
+                self.assertRegex(action_ref, r"^[0-9a-f]{40}$")
+
+        dependabot = DEPENDABOT.read_text(encoding="utf-8")
+        self.assertIn('package-ecosystem: "github-actions"', dependabot)
+        self.assertIn("interval: weekly", dependabot)
+
+    def test_pull_requests_scan_changed_content_for_secrets(self) -> None:
+        workflow = SECURITY_WORKFLOW.read_text(encoding="utf-8")
+
+        self.assertIn("pull_request:", workflow)
+        self.assertIn("permissions:\n  contents: read", workflow)
+        self.assertIn("name: Secrets", workflow)
+        self.assertIn("trufflesecurity/trufflehog@", workflow)
+        self.assertIn("--results=verified,unknown", workflow)
 
 
 if __name__ == "__main__":

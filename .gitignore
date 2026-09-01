@@ -1,5 +1,2 @@
-/artifacts/
-/bin/
-/dist/
-/.blender-box/
-/.DS_Store
+__pycache__/
+*.py[cod]

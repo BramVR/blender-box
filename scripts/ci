@@ -40,7 +40,7 @@ check_repository() {
 test_repository() {
   local python_bin
   python_bin=$(python_command)
-  "$python_bin" -m unittest discover -s tests/ci -p 'test_*.py' -v
+  PYTHONDONTWRITEBYTECODE=1 "$python_bin" -m unittest discover -s tests/ci -p 'test_*.py' -v
 
   if [[ -f go.mod ]]; then
     go test ./...
