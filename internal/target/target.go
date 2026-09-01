@@ -90,7 +90,7 @@ func isCanonicalWindowsPath(path string) bool {
 			return false
 		}
 		for _, character := range segment {
-			if character < 32 || strings.ContainsRune(`:"'*?<>|`, character) {
+			if character < 32 || strings.ContainsRune(`%:"'*?<>|`, character) {
 				return false
 			}
 		}

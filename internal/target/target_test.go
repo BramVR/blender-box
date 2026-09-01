@@ -43,6 +43,7 @@ func TestTargetRejectsNonCanonicalWindowsPaths(t *testing.T) {
 		"trailing space":        `C:\BlenderBoxTest\bin \host.exe`,
 		"reserved device":       `C:\BlenderBoxTest\CON\host.exe`,
 		"control character":     "C:\\BlenderBoxTest\\bin\\host\x00.exe",
+		"environment expansion": `C:\BlenderBoxTest\%USERNAME%\host.exe`,
 	} {
 		t.Run(name, func(t *testing.T) {
 			value := base
