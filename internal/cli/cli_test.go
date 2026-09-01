@@ -38,7 +38,10 @@ func TestWindowsCheckPrintsVersionedJSONWithoutRemoteWrites(t *testing.T) {
   "ssh_alias": "windows-test",
   "work_root": "C:\\BlenderBoxTest",
   "interactive_user": "test-user",
-  "task_name": "BlenderBoxTest"
+  "task_name": "BlenderBoxTest",
+  "blender_executable": "C:\\Program Files\\Blender Foundation\\Blender 5.2\\blender.exe",
+  "session_broker_executable": "C:\\BlenderBoxTest\\bin\\blendersessiond.exe",
+  "host_executable": "C:\\BlenderBoxTest\\bin\\blender-box.exe"
 }`
 	if err := os.WriteFile(targetPath, []byte(targetJSON), 0o600); err != nil {
 		t.Fatal(err)
@@ -119,6 +122,22 @@ func TestWindowsCheckPrintsVersionedJSONWithoutRemoteWrites(t *testing.T) {
 		if strings.Contains(remoteCommand, forbidden) {
 			t.Errorf("check command contains remote write %q", forbidden)
 		}
+	}
+	for _, required := range []string{
+		"securityidentifier",
+		"actions[0].execute",
+		"actions[0].arguments",
+		"actions[0].workingdirectory",
+		"blender_executable",
+		"session_broker_executable",
+		"host_executable",
+	} {
+		if !strings.Contains(remoteCommand, required) {
+			t.Errorf("check command does not validate %q", required)
+		}
+	}
+	if strings.Contains(remoteCommand, "get-command") {
+		t.Error("check command resolves executables from the SSH user's PATH")
 	}
 	if !bytes.Contains(fake.stdin, []byte(`"work_root":"C:\\BlenderBoxTest"`)) {
 		t.Fatalf("check input does not contain target contract: %s", fake.stdin)

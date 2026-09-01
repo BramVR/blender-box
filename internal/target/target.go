@@ -17,11 +17,14 @@ var (
 
 // Target contains operator-selected host values. It contains no credentials or addresses.
 type Target struct {
-	SchemaVersion   int    `json:"schema_version"`
-	SSHAlias        string `json:"ssh_alias"`
-	WorkRoot        string `json:"work_root"`
-	InteractiveUser string `json:"interactive_user"`
-	TaskName        string `json:"task_name"`
+	SchemaVersion           int    `json:"schema_version"`
+	SSHAlias                string `json:"ssh_alias"`
+	WorkRoot                string `json:"work_root"`
+	InteractiveUser         string `json:"interactive_user"`
+	TaskName                string `json:"task_name"`
+	BlenderExecutable       string `json:"blender_executable"`
+	SessionBrokerExecutable string `json:"session_broker_executable"`
+	HostExecutable          string `json:"host_executable"`
 }
 
 func Load(path string) (Target, error) {
@@ -56,6 +59,15 @@ func (value Target) Validate() error {
 	}
 	if !taskNamePattern.MatchString(value.TaskName) {
 		return fmt.Errorf("target task_name is unsafe")
+	}
+	for label, path := range map[string]string{
+		"blender_executable":        value.BlenderExecutable,
+		"session_broker_executable": value.SessionBrokerExecutable,
+		"host_executable":           value.HostExecutable,
+	} {
+		if !workRootPattern.MatchString(path) || hasTraversal(path) || strings.HasSuffix(path, `\`) {
+			return fmt.Errorf("target %s must be an absolute safe Windows file path", label)
+		}
 	}
 	return nil
 }
