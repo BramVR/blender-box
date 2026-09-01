@@ -26,18 +26,22 @@ function Resolve-Sid([string]$Identity) {
         return $null
     }
 }
-function Test-PathAccess([string]$Path, [string]$PrincipalSid, [System.Security.AccessControl.FileSystemRights]$RequiredRights) {
+function Normalize-Path([string]$Path) {
+    if ([string]::IsNullOrWhiteSpace($Path)) { return $null }
+    try { return [System.IO.Path]::GetFullPath($Path) } catch { return $null }
+}
+function Test-ExplicitPathAccess([string]$Path, [string]$PrincipalSid, [System.Security.AccessControl.FileSystemRights]$RequiredRights) {
     if (-not (Test-Path -LiteralPath $Path)) { return $false }
-    $relevantSids = @($PrincipalSid, 'S-1-1-0', 'S-1-5-11', 'S-1-5-32-545')
-    $rules = (Get-Acl -LiteralPath $Path).GetAccessRules($true, $true, [System.Security.Principal.SecurityIdentifier])
-    $allowed = $false
+    $rules = (Get-Acl -LiteralPath $Path).GetAccessRules($true, $false, [System.Security.Principal.SecurityIdentifier])
+    [int64]$allowMask = 0
+    [int64]$denyMask = 0
     foreach ($rule in $rules) {
-        if ($relevantSids -notcontains $rule.IdentityReference.Value) { continue }
-        if (($rule.FileSystemRights -band $RequiredRights) -ne $RequiredRights) { continue }
-        if ($rule.AccessControlType -eq [System.Security.AccessControl.AccessControlType]::Deny) { return $false }
-        if ($rule.AccessControlType -eq [System.Security.AccessControl.AccessControlType]::Allow) { $allowed = $true }
+        if ($rule.IdentityReference.Value -ne $PrincipalSid) { continue }
+        if ($rule.AccessControlType -eq [System.Security.AccessControl.AccessControlType]::Deny) { $denyMask = $denyMask -bor [int64]$rule.FileSystemRights }
+        if ($rule.AccessControlType -eq [System.Security.AccessControl.AccessControlType]::Allow) { $allowMask = $allowMask -bor [int64]$rule.FileSystemRights }
     }
-    return $allowed
+    $requiredMask = [int64]$RequiredRights
+    return ($denyMask -band $requiredMask) -eq 0 -and ($allowMask -band $requiredMask) -eq $requiredMask
 }
 $os = Get-CimInstance -ClassName Win32_OperatingSystem
 Add-Check 'host.windows' ($null -ne $os) $true $os.Caption 'Windows' 'Windows host detected.'
@@ -55,11 +59,11 @@ $modify = [System.Security.AccessControl.FileSystemRights]::Modify
 $blenderOK = Test-Path -LiteralPath $blenderPath -PathType Leaf
 $daemonOK = Test-Path -LiteralPath $daemonPath -PathType Leaf
 $hostOK = Test-Path -LiteralPath $hostPath -PathType Leaf
-Add-Check 'blender.executable' ($blenderOK -and (Test-PathAccess $blenderPath $expectedSid $readExecute)) $true $blenderPath 'existing executable readable by interactive user' 'The configured Blender executable must be available to the task principal.'
-Add-Check 'daemon.executable' ($daemonOK -and (Test-PathAccess $daemonPath $expectedSid $readExecute)) $true $daemonPath 'existing executable readable by interactive user' 'The configured session broker must be available to the task principal.'
-Add-Check 'host.executable' ($hostOK -and (Test-PathAccess $hostPath $expectedSid $readExecute)) $true $hostPath 'existing executable readable by interactive user' 'The configured Blender Box host binary must be available to the task principal.'
+Add-Check 'blender.executable' $blenderOK $true $blenderPath 'existing file' 'The configured Blender executable must exist at its canonical path.'
+Add-Check 'daemon.executable' ($daemonOK -and (Test-ExplicitPathAccess $daemonPath $expectedSid $readExecute)) $true $daemonPath 'existing file with explicit task-principal ReadAndExecute access' 'The staged session broker must carry the setup ACL.'
+Add-Check 'host.executable' ($hostOK -and (Test-ExplicitPathAccess $hostPath $expectedSid $readExecute)) $true $hostPath 'existing file with explicit task-principal ReadAndExecute access' 'The staged Blender Box host binary must carry the setup ACL.'
 $rootExists = Test-Path -LiteralPath ([string]$config.work_root) -PathType Container
-Add-Check 'work-root.access' ($rootExists -and (Test-PathAccess ([string]$config.work_root) $expectedSid $modify)) $true ([string]$config.work_root) 'existing directory modifiable by interactive user' 'The operator-managed work root must be available to the task principal.'
+Add-Check 'work-root.access' ($rootExists -and (Test-ExplicitPathAccess ([string]$config.work_root) $expectedSid $modify)) $true ([string]$config.work_root) 'existing directory with explicit task-principal Modify access' 'The operator-managed work root must carry the setup ACL.'
 $task = Get-ScheduledTask -TaskName ([string]$config.task_name) -ErrorAction SilentlyContinue
 $taskActual = $null
 $taskOK = $false
@@ -82,7 +86,11 @@ if ($null -ne $task) {
         working_directory = $(if ($actions.Count -eq 1) {[string]$actions[0].WorkingDirectory} else {$null})
     }
     $expectedWorkingDirectory = [System.IO.Path]::GetDirectoryName($hostPath)
-    $taskOK = $null -ne $expectedSid -and $taskSid -eq $expectedSid -and [string]$task.Principal.LogonType -eq 'Interactive' -and [string]$task.Principal.RunLevel -eq 'Limited' -and $actions.Count -eq 1 -and $triggers.Count -eq 0 -and [string]$task.Settings.MultipleInstances -eq 'IgnoreNew' -and [string]$task.Settings.ExecutionTimeLimit -in @('PT0S', '00:00:00', '0') -and [bool]$task.Settings.Enabled -and [System.IO.Path]::GetFullPath([string]$actions[0].Execute) -ieq [System.IO.Path]::GetFullPath($hostPath) -and [string]$actions[0].Arguments -ceq [string]$config.expected_task_arguments -and [System.IO.Path]::GetFullPath([string]$actions[0].WorkingDirectory) -ieq [System.IO.Path]::GetFullPath($expectedWorkingDirectory)
+    $actualExecute = $(if ($actions.Count -eq 1) {Normalize-Path ([string]$actions[0].Execute)} else {$null})
+    $actualWorkingDirectory = $(if ($actions.Count -eq 1) {Normalize-Path ([string]$actions[0].WorkingDirectory)} else {$null})
+    $expectedExecute = Normalize-Path $hostPath
+    $expectedWorkingDirectory = Normalize-Path $expectedWorkingDirectory
+    $taskOK = $null -ne $expectedSid -and $taskSid -eq $expectedSid -and [string]$task.Principal.LogonType -eq 'Interactive' -and [string]$task.Principal.RunLevel -eq 'Limited' -and $actions.Count -eq 1 -and $triggers.Count -eq 0 -and [string]$task.Settings.MultipleInstances -eq 'IgnoreNew' -and [string]$task.Settings.ExecutionTimeLimit -in @('PT0S', '00:00:00', '0') -and [bool]$task.Settings.Enabled -and $null -ne $actualExecute -and $actualExecute -ieq $expectedExecute -and [string]$actions[0].Arguments -ceq [string]$config.expected_task_arguments -and $null -ne $actualWorkingDirectory -and $actualWorkingDirectory -ieq $expectedWorkingDirectory
 }
 Add-Check 'task.interactive' $taskOK $true $taskActual ([ordered]@{user=$expectedUser; sid=$expectedSid; execute=$hostPath; arguments=[string]$config.expected_task_arguments; working_directory=[System.IO.Path]::GetDirectoryName($hostPath); logon_type='Interactive'; run_level='Limited'; triggers=0; multiple_instances='IgnoreNew'; execution_time_limit='PT0S'}) 'The static task must match the complete Blender Box action and principal contract.'
 $requiredFailed = @($checks | Where-Object { $_.required -and -not $_.passed }).Count
@@ -105,7 +113,7 @@ func Check(ctx context.Context, ssh SSH, selected target.Target) (CheckResult, e
 		ExpectedTaskArguments string `json:"expected_task_arguments"`
 	}{
 		Target:                selected,
-		ExpectedTaskArguments: fmt.Sprintf(`host run-request --state-root %q`, selected.WorkRoot),
+		ExpectedTaskArguments: fmt.Sprintf(`host run-request --state-root "%s"`, selected.WorkRoot),
 	})
 	if err != nil {
 		return CheckResult{}, fmt.Errorf("encode target check input: %w", err)

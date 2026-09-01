@@ -125,6 +125,9 @@ func TestWindowsCheckPrintsVersionedJSONWithoutRemoteWrites(t *testing.T) {
 	}
 	for _, required := range []string{
 		"securityidentifier",
+		"normalize-path",
+		"allowmask",
+		"denymask",
 		"actions[0].execute",
 		"actions[0].arguments",
 		"actions[0].workingdirectory",
@@ -141,6 +144,15 @@ func TestWindowsCheckPrintsVersionedJSONWithoutRemoteWrites(t *testing.T) {
 	}
 	if !bytes.Contains(fake.stdin, []byte(`"work_root":"C:\\BlenderBoxTest"`)) {
 		t.Fatalf("check input does not contain target contract: %s", fake.stdin)
+	}
+	var checkInput struct {
+		ExpectedTaskArguments string `json:"expected_task_arguments"`
+	}
+	if err := json.Unmarshal(fake.stdin, &checkInput); err != nil {
+		t.Fatalf("check input is not JSON: %v", err)
+	}
+	if checkInput.ExpectedTaskArguments != `host run-request --state-root "C:\BlenderBoxTest"` {
+		t.Fatalf("task arguments use the wrong Windows quoting: %q", checkInput.ExpectedTaskArguments)
 	}
 
 	var result struct {
