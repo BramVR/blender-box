@@ -11,9 +11,7 @@ import (
 	"github.com/BramVR/blender-box/internal/target"
 )
 
-const checkScript = `$ErrorActionPreference = 'Stop'
-$configText = [Console]::In.ReadToEnd()
-$config = $configText | ConvertFrom-Json
+const checkScript = `$config = $configText | ConvertFrom-Json
 $checks = [System.Collections.Generic.List[object]]::new()
 function Add-Check([string]$Id, [bool]$Passed, [bool]$Required, $Actual, $Expected, [string]$Message) {
     $checks.Add([ordered]@{id=$Id; passed=$Passed; required=$Required; actual=$Actual; expected=$Expected; message=$Message})
@@ -30,17 +28,18 @@ function Normalize-Path([string]$Path) {
     if ([string]::IsNullOrWhiteSpace($Path)) { return $null }
     try { return [System.IO.Path]::GetFullPath($Path) } catch { return $null }
 }
-function Test-ExplicitPathAccess([string]$Path, [string]$PrincipalSid, [System.Security.AccessControl.FileSystemRights]$RequiredRights) {
+function Test-ConservativePathAccess([string]$Path, [string]$PrincipalSid, [System.Security.AccessControl.FileSystemRights]$RequiredRights, [bool]$RequireDirectAllow) {
     if (-not (Test-Path -LiteralPath $Path)) { return $false }
-    $rules = (Get-Acl -LiteralPath $Path).GetAccessRules($true, $false, [System.Security.Principal.SecurityIdentifier])
+    $rules = (Get-Acl -LiteralPath $Path).GetAccessRules($true, $true, [System.Security.Principal.SecurityIdentifier])
+    $allowedSids = if ($RequireDirectAllow) { @($PrincipalSid) } else { @($PrincipalSid, 'S-1-1-0', 'S-1-5-11', 'S-1-5-32-545') }
     [int64]$allowMask = 0
     [int64]$denyMask = 0
-    foreach ($rule in $rules) {
-        if ($rule.IdentityReference.Value -ne $PrincipalSid) { continue }
-        if ($rule.AccessControlType -eq [System.Security.AccessControl.AccessControlType]::Deny) { $denyMask = $denyMask -bor [int64]$rule.FileSystemRights }
-        if ($rule.AccessControlType -eq [System.Security.AccessControl.AccessControlType]::Allow) { $allowMask = $allowMask -bor [int64]$rule.FileSystemRights }
-    }
     $requiredMask = [int64]$RequiredRights
+    foreach ($rule in $rules) {
+        $ruleMask = [int64]$rule.FileSystemRights
+        if ($rule.AccessControlType -eq [System.Security.AccessControl.AccessControlType]::Deny -and ($ruleMask -band $requiredMask) -ne 0) { $denyMask = $denyMask -bor $ruleMask }
+        if ($rule.AccessControlType -eq [System.Security.AccessControl.AccessControlType]::Allow -and $allowedSids -contains $rule.IdentityReference.Value) { $allowMask = $allowMask -bor $ruleMask }
+    }
     return ($denyMask -band $requiredMask) -eq 0 -and ($allowMask -band $requiredMask) -eq $requiredMask
 }
 $os = Get-CimInstance -ClassName Win32_OperatingSystem
@@ -59,11 +58,11 @@ $modify = [System.Security.AccessControl.FileSystemRights]::Modify
 $blenderOK = Test-Path -LiteralPath $blenderPath -PathType Leaf
 $daemonOK = Test-Path -LiteralPath $daemonPath -PathType Leaf
 $hostOK = Test-Path -LiteralPath $hostPath -PathType Leaf
-Add-Check 'blender.executable' $blenderOK $true $blenderPath 'existing file' 'The configured Blender executable must exist at its canonical path.'
-Add-Check 'daemon.executable' ($daemonOK -and (Test-ExplicitPathAccess $daemonPath $expectedSid $readExecute)) $true $daemonPath 'existing file with explicit task-principal ReadAndExecute access' 'The staged session broker must carry the setup ACL.'
-Add-Check 'host.executable' ($hostOK -and (Test-ExplicitPathAccess $hostPath $expectedSid $readExecute)) $true $hostPath 'existing file with explicit task-principal ReadAndExecute access' 'The staged Blender Box host binary must carry the setup ACL.'
+Add-Check 'blender.executable' ($blenderOK -and (Test-ConservativePathAccess $blenderPath $expectedSid $readExecute $false)) $true $blenderPath 'existing file with unambiguous ReadAndExecute access' 'The configured Blender executable must be readable by the task principal without an overlapping deny ACE.'
+Add-Check 'daemon.executable' ($daemonOK -and (Test-ConservativePathAccess $daemonPath $expectedSid $readExecute $true)) $true $daemonPath 'existing file with explicit task-principal ReadAndExecute access' 'The staged session broker must carry the setup ACL without an overlapping deny ACE.'
+Add-Check 'host.executable' ($hostOK -and (Test-ConservativePathAccess $hostPath $expectedSid $readExecute $true)) $true $hostPath 'existing file with explicit task-principal ReadAndExecute access' 'The staged Blender Box host binary must carry the setup ACL without an overlapping deny ACE.'
 $rootExists = Test-Path -LiteralPath ([string]$config.work_root) -PathType Container
-Add-Check 'work-root.access' ($rootExists -and (Test-ExplicitPathAccess ([string]$config.work_root) $expectedSid $modify)) $true ([string]$config.work_root) 'existing directory with explicit task-principal Modify access' 'The operator-managed work root must carry the setup ACL.'
+Add-Check 'work-root.access' ($rootExists -and (Test-ConservativePathAccess ([string]$config.work_root) $expectedSid $modify $true)) $true ([string]$config.work_root) 'existing directory with explicit task-principal Modify access' 'The operator-managed work root must carry the setup ACL without an overlapping deny ACE.'
 $task = Get-ScheduledTask -TaskName ([string]$config.task_name) -ErrorAction SilentlyContinue
 $taskActual = $null
 $taskOK = $false
@@ -118,15 +117,20 @@ func Check(ctx context.Context, ssh SSH, selected target.Target) (CheckResult, e
 	if err != nil {
 		return CheckResult{}, fmt.Errorf("encode target check input: %w", err)
 	}
+	scriptInput := fmt.Sprintf(
+		"$ErrorActionPreference = 'Stop'\n$ProgressPreference = 'SilentlyContinue'\n$configText = [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String('%s'))\n%s",
+		base64.StdEncoding.EncodeToString(input),
+		checkScript,
+	)
 	arguments := []string{
 		"powershell.exe",
 		"-NoLogo",
 		"-NoProfile",
 		"-NonInteractive",
 		"-EncodedCommand",
-		encodePowerShell(checkScript),
+		encodePowerShell("[Console]::In.ReadToEnd() | Invoke-Expression"),
 	}
-	output, err := ssh.Run(ctx, selected.SSHAlias, arguments, input)
+	output, err := ssh.Run(ctx, selected.SSHAlias, arguments, []byte(scriptInput))
 	if err != nil {
 		return CheckResult{}, fmt.Errorf("inspect Windows host: %w", err)
 	}

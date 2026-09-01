@@ -83,9 +83,7 @@ func TestWindowsCheckPrintsVersionedJSONWithoutRemoteWrites(t *testing.T) {
 	if fake.host != "windows-test" {
 		t.Fatalf("SSH host = %q", fake.host)
 	}
-	if !strings.Contains(strings.Join(fake.args, " "), "-EncodedCommand") {
-		t.Fatalf("SSH arguments do not use an encoded PowerShell command: %q", fake.args)
-	}
+	joinedArguments := strings.Join(fake.args, " ")
 	encodedIndex := -1
 	for index, argument := range fake.args {
 		if argument == "-EncodedCommand" {
@@ -94,24 +92,40 @@ func TestWindowsCheckPrintsVersionedJSONWithoutRemoteWrites(t *testing.T) {
 		}
 	}
 	if encodedIndex < 0 || encodedIndex >= len(fake.args) {
-		t.Fatalf("missing encoded command payload: %q", fake.args)
+		t.Fatalf("SSH arguments have no PowerShell bootstrap: %q", fake.args)
 	}
-	commandBytes, err := base64.StdEncoding.DecodeString(fake.args[encodedIndex])
+	if len(joinedArguments) >= 8191 {
+		t.Fatalf("SSH arguments exceed the default Windows command limit: %d", len(joinedArguments))
+	}
+	bootstrapBytes, err := base64.StdEncoding.DecodeString(fake.args[encodedIndex])
+	if err != nil || len(bootstrapBytes)%2 != 0 {
+		t.Fatalf("invalid PowerShell bootstrap: %v", err)
+	}
+	bootstrap := make([]byte, len(bootstrapBytes)/2)
+	for index := range bootstrap {
+		bootstrap[index] = byte(binary.LittleEndian.Uint16(bootstrapBytes[index*2:]))
+	}
+	if !strings.Contains(string(bootstrap), "ReadToEnd() | Invoke-Expression") {
+		t.Fatalf("PowerShell bootstrap does not execute streamed input: %q", bootstrap)
+	}
+	if strings.Contains(string(bootstrap), "function ") || len(bootstrap) >= 256 {
+		t.Fatalf("PowerShell bootstrap contains the inspection script: %q", bootstrap)
+	}
+	remoteCommand := strings.ToLower(string(fake.stdin))
+	marker := "frombase64string('"
+	configStart := strings.Index(remoteCommand, marker)
+	if configStart < 0 {
+		t.Fatalf("PowerShell input has no encoded target contract")
+	}
+	configStart += len(marker)
+	configEnd := strings.Index(remoteCommand[configStart:], "')")
+	if configEnd < 0 {
+		t.Fatalf("PowerShell input has an incomplete target contract")
+	}
+	configJSON, err := base64.StdEncoding.DecodeString(string(fake.stdin)[configStart : configStart+configEnd])
 	if err != nil {
-		t.Fatalf("invalid encoded command: %v", err)
+		t.Fatalf("PowerShell input has invalid target Base64: %v", err)
 	}
-	if len(commandBytes)%2 != 0 {
-		t.Fatalf("encoded command has odd UTF-16 byte count: %d", len(commandBytes))
-	}
-	codeUnits := make([]uint16, len(commandBytes)/2)
-	for index := range codeUnits {
-		codeUnits[index] = binary.LittleEndian.Uint16(commandBytes[index*2:])
-	}
-	var decoded strings.Builder
-	for _, codeUnit := range codeUnits {
-		decoded.WriteRune(rune(codeUnit))
-	}
-	remoteCommand := strings.ToLower(decoded.String())
 	for _, forbidden := range []string{
 		"register-scheduledtask",
 		"start-scheduledtask",
@@ -142,13 +156,10 @@ func TestWindowsCheckPrintsVersionedJSONWithoutRemoteWrites(t *testing.T) {
 	if strings.Contains(remoteCommand, "get-command") {
 		t.Error("check command resolves executables from the SSH user's PATH")
 	}
-	if !bytes.Contains(fake.stdin, []byte(`"work_root":"C:\\BlenderBoxTest"`)) {
-		t.Fatalf("check input does not contain target contract: %s", fake.stdin)
-	}
 	var checkInput struct {
 		ExpectedTaskArguments string `json:"expected_task_arguments"`
 	}
-	if err := json.Unmarshal(fake.stdin, &checkInput); err != nil {
+	if err := json.Unmarshal(configJSON, &checkInput); err != nil {
 		t.Fatalf("check input is not JSON: %v", err)
 	}
 	if checkInput.ExpectedTaskArguments != `host run-request --state-root "C:\BlenderBoxTest"` {

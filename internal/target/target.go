@@ -51,7 +51,7 @@ func (value Target) Validate() error {
 	if !sshAliasPattern.MatchString(value.SSHAlias) {
 		return fmt.Errorf("target ssh_alias is unsafe")
 	}
-	if !workRootPattern.MatchString(value.WorkRoot) || hasTraversal(value.WorkRoot) {
+	if !workRootPattern.MatchString(value.WorkRoot) || hasTraversal(value.WorkRoot) || strings.HasSuffix(value.WorkRoot, `\`) {
 		return fmt.Errorf("target work_root must be an absolute safe Windows path")
 	}
 	if !userPattern.MatchString(value.InteractiveUser) {
