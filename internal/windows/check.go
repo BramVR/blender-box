@@ -105,7 +105,7 @@ function Test-TrustedTaskWriters([string]$Sddl, [string]$PrincipalSid) {
     [int64]$taskWrite = 0x00000116
     [int64]$taskWriteMask = $genericAll -bor $genericWrite -bor 0x00010000 -bor 0x00040000 -bor 0x00080000 -bor $taskWrite
     foreach ($ace in $descriptor.DiscretionaryAcl) {
-        if (($ace.AceFlags -band [System.Security.AccessControl.AceFlags]::InheritOnly) -ne 0) { continue }
+        if (([int]$ace.AceFlags -band [int][System.Security.AccessControl.AceFlags]::InheritOnly) -ne 0) { continue }
         if ($ace.AceQualifier -ne [System.Security.AccessControl.AceQualifier]::AccessAllowed) { continue }
         if ($null -eq $ace.SecurityIdentifier -or $trustedWriters -contains $ace.SecurityIdentifier.Value) { continue }
         if (([int64]$ace.AccessMask -band $taskWriteMask) -ne 0) { return $false }

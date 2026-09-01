@@ -141,6 +141,7 @@ func TestWindowsCheckPrintsVersionedJSONWithoutRemoteWrites(t *testing.T) {
 		"securityidentifier",
 		"rawsecuritydescriptor",
 		"getsecuritydescriptor(7)",
+		"[int]$ace.aceflags",
 		"normalize-path",
 		"allowmask",
 		"denymask",
