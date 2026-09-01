@@ -45,8 +45,11 @@ class CIContractTests(unittest.TestCase):
     def test_repository_gate_is_executable_and_its_check_passes(self) -> None:
         if os.name != "nt":
             self.assertTrue(CI_SCRIPT.stat().st_mode & 0o111)
+        command = [str(CI_SCRIPT), "check"]
+        if os.name == "nt":
+            command.insert(0, "bash")
         result = subprocess.run(
-            [str(CI_SCRIPT), "check"],
+            command,
             cwd=ROOT,
             capture_output=True,
             text=True,
