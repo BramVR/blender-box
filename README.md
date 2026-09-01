@@ -20,3 +20,12 @@ Research and product design. No CLI implementation yet.
 
 Read the [Blender Box research brief](docs/research/blender-box-research.html).
 
+## Development
+
+Run the same gate used by GitHub Actions:
+
+```sh
+./scripts/ci all
+```
+
+The current gate checks the repository and CI contract on Linux, macOS, and Windows. It will pick up Go and Python checks when their project files land. Live Windows Blender proof stays opt-in and separate from pull-request CI.

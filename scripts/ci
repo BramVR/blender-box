@@ -1,0 +1,83 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+cd "$repo_root"
+
+python_command() {
+  if command -v python3 >/dev/null 2>&1; then
+    printf '%s\n' python3
+  else
+    printf '%s\n' python
+  fi
+}
+
+check_repository() {
+  local base_sha="${CI_BASE_SHA:-}"
+  if ! git cat-file -e "${base_sha}^{commit}" 2>/dev/null; then
+    if git rev-parse --verify origin/main >/dev/null 2>&1; then
+      base_sha=$(git merge-base origin/main HEAD)
+    elif git rev-parse --verify HEAD^ >/dev/null 2>&1; then
+      base_sha=$(git rev-parse HEAD^)
+    else
+      base_sha=""
+    fi
+  fi
+  if [[ -n "$base_sha" ]]; then
+    git diff --no-ext-diff --no-textconv --check "$base_sha" HEAD
+  fi
+  git diff --cached --check
+  git diff --check
+  bash -n scripts/ci
+
+  if [[ -f go.mod ]]; then
+    local unformatted
+    unformatted=$(gofmt -l $(git ls-files '*.go'))
+    if [[ -n "$unformatted" ]]; then
+      printf 'Go files need gofmt:\n%s\n' "$unformatted" >&2
+      return 1
+    fi
+    go vet ./...
+  fi
+
+  if [[ -f pyproject.toml ]]; then
+    command -v uv >/dev/null
+    [[ -f uv.lock ]]
+    uv sync --locked
+    uv run ruff check .
+  fi
+}
+
+test_repository() {
+  local python_bin
+  python_bin=$(python_command)
+  PYTHONDONTWRITEBYTECODE=1 "$python_bin" -m unittest discover -s tests/ci -p 'test_*.py' -v
+
+  if [[ -f go.mod ]]; then
+    go test ./...
+  fi
+
+  if [[ -f pyproject.toml ]]; then
+    command -v uv >/dev/null
+    [[ -f uv.lock ]]
+    uv sync --locked
+    uv run pytest
+  fi
+}
+
+case "${1:-all}" in
+  check)
+    check_repository
+    ;;
+  test)
+    test_repository
+    ;;
+  all)
+    check_repository
+    test_repository
+    ;;
+  *)
+    printf 'usage: %s [check|test|all]\n' "$0" >&2
+    exit 2
+    ;;
+esac
