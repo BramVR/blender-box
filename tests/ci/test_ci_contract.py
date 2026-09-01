@@ -1,3 +1,4 @@
+import os
 import pathlib
 import re
 import subprocess
@@ -42,7 +43,8 @@ class CIContractTests(unittest.TestCase):
         self.assertEqual(workflow.count("./scripts/ci all"), 2)
 
     def test_repository_gate_is_executable_and_its_check_passes(self) -> None:
-        self.assertTrue(CI_SCRIPT.stat().st_mode & 0o111)
+        if os.name != "nt":
+            self.assertTrue(CI_SCRIPT.stat().st_mode & 0o111)
         result = subprocess.run(
             [str(CI_SCRIPT), "check"],
             cwd=ROOT,
