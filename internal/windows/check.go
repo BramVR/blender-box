@@ -192,12 +192,14 @@ if ($null -ne $task) {
         multiple_instances = [string]$task.Settings.MultipleInstances
         execution_time_limit = [string]$task.Settings.ExecutionTimeLimit
         allow_demand_start = [bool]$task.Settings.AllowDemandStart
+        allow_hard_terminate = [bool]$task.Settings.AllowHardTerminate
         disallow_start_if_on_batteries = [bool]$task.Settings.DisallowStartIfOnBatteries
         stop_if_going_on_batteries = [bool]$task.Settings.StopIfGoingOnBatteries
         run_only_if_idle = [bool]$task.Settings.RunOnlyIfIdle
         run_only_if_network_available = [bool]$task.Settings.RunOnlyIfNetworkAvailable
         restart_count = [int]$task.Settings.RestartCount
         restart_interval = [string]$task.Settings.RestartInterval
+        volatile = [bool]$task.Settings.Volatile
         enabled = [bool]$task.Settings.Enabled
         execute = $(if ($actions.Count -eq 1) {[string]$actions[0].Execute} else {$null})
         arguments = $(if ($actions.Count -eq 1) {[string]$actions[0].Arguments} else {$null})
@@ -219,10 +221,10 @@ if ($null -ne $task) {
     }
     $taskAclOK = Test-TrustedTaskAuthorities $taskSddl $expectedSid
     $taskActual['task_acl_trusted'] = $taskAclOK
-    $taskSettingsOK = [string]$task.Settings.MultipleInstances -eq 'IgnoreNew' -and [string]$task.Settings.ExecutionTimeLimit -in @('PT0S', '00:00:00', '0') -and [bool]$task.Settings.AllowDemandStart -and -not ([bool]$task.Settings.DisallowStartIfOnBatteries) -and -not ([bool]$task.Settings.StopIfGoingOnBatteries) -and -not ([bool]$task.Settings.RunOnlyIfIdle) -and -not ([bool]$task.Settings.RunOnlyIfNetworkAvailable) -and [int]$task.Settings.RestartCount -eq 0 -and [bool]$task.Settings.Enabled
+    $taskSettingsOK = [string]$task.Settings.MultipleInstances -eq 'IgnoreNew' -and [string]$task.Settings.ExecutionTimeLimit -in @('PT0S', '00:00:00', '0') -and [bool]$task.Settings.AllowDemandStart -and [bool]$task.Settings.AllowHardTerminate -and -not ([bool]$task.Settings.DisallowStartIfOnBatteries) -and -not ([bool]$task.Settings.StopIfGoingOnBatteries) -and -not ([bool]$task.Settings.RunOnlyIfIdle) -and -not ([bool]$task.Settings.RunOnlyIfNetworkAvailable) -and [int]$task.Settings.RestartCount -eq 0 -and -not ([bool]$task.Settings.Volatile) -and [bool]$task.Settings.Enabled
     $taskOK = $null -ne $expectedSid -and $taskSid -eq $expectedSid -and [string]$task.Principal.LogonType -eq 'Interactive' -and [string]$task.Principal.RunLevel -eq 'Limited' -and $actions.Count -eq 1 -and $triggers.Count -eq 0 -and $taskSettingsOK -and $null -ne $actualExecute -and $actualExecute -ieq $expectedExecute -and [string]$actions[0].Arguments -ceq [string]$config.expected_task_arguments -and $null -ne $actualWorkingDirectory -and $actualWorkingDirectory -ieq $expectedWorkingDirectory -and $taskAclOK
 }
-Add-Check 'task.interactive' $taskOK $true $taskActual ([ordered]@{user=$expectedUser; sid=$expectedSid; execute=$hostPath; arguments=[string]$config.expected_task_arguments; working_directory=[System.IO.Path]::GetDirectoryName($hostPath); logon_type='Interactive'; run_level='Limited'; triggers=0; multiple_instances='IgnoreNew'; execution_time_limit='PT0S'; allow_demand_start=$true; disallow_start_if_on_batteries=$false; stop_if_going_on_batteries=$false; run_only_if_idle=$false; run_only_if_network_available=$false; restart_count=0}) 'The static task must match the complete Blender Box action and principal contract.'
+Add-Check 'task.interactive' $taskOK $true $taskActual ([ordered]@{user=$expectedUser; sid=$expectedSid; execute=$hostPath; arguments=[string]$config.expected_task_arguments; working_directory=[System.IO.Path]::GetDirectoryName($hostPath); logon_type='Interactive'; run_level='Limited'; triggers=0; multiple_instances='IgnoreNew'; execution_time_limit='PT0S'; allow_demand_start=$true; allow_hard_terminate=$true; disallow_start_if_on_batteries=$false; stop_if_going_on_batteries=$false; run_only_if_idle=$false; run_only_if_network_available=$false; restart_count=0; volatile=$false}) 'The static task must match the complete Blender Box action and principal contract.'
 $requiredFailed = @($checks | Where-Object { $_.required -and -not $_.passed }).Count
 [ordered]@{schema_version=1; status=$(if ($requiredFailed -eq 0) {'pass'} else {'fail'}); checks=$checks} | ConvertTo-Json -Compress -Depth 8
 `
