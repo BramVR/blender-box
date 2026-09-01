@@ -26,6 +26,7 @@ check_repository() {
   if [[ -n "$base_sha" ]]; then
     git diff --no-ext-diff --no-textconv --check "$base_sha" HEAD
   fi
+  git diff --cached --check
   git diff --check
   bash -n scripts/ci
 

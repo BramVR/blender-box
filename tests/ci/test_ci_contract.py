@@ -71,7 +71,14 @@ class CIContractTests(unittest.TestCase):
         self.assertIn("permissions:\n  contents: read", workflow)
         self.assertIn("name: Secrets", workflow)
         self.assertIn("trufflesecurity/trufflehog@", workflow)
+        self.assertIn("version: 3.97.1", workflow)
         self.assertIn("--results=verified,unknown", workflow)
+
+    def test_local_gate_checks_staged_and_unstaged_changes(self) -> None:
+        script = CI_SCRIPT.read_text(encoding="utf-8")
+
+        self.assertIn("git diff --cached --check", script)
+        self.assertIn("git diff --check", script)
 
     def test_generated_outputs_stay_ignored(self) -> None:
         ignored = GITIGNORE.read_text(encoding="utf-8").splitlines()
