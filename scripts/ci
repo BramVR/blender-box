@@ -13,8 +13,18 @@ python_command() {
 }
 
 check_repository() {
-  if git rev-parse --verify HEAD^ >/dev/null 2>&1; then
-    git diff --check HEAD^ HEAD
+  local base_sha="${CI_BASE_SHA:-}"
+  if ! git cat-file -e "${base_sha}^{commit}" 2>/dev/null; then
+    if git rev-parse --verify origin/main >/dev/null 2>&1; then
+      base_sha=$(git merge-base origin/main HEAD)
+    elif git rev-parse --verify HEAD^ >/dev/null 2>&1; then
+      base_sha=$(git rev-parse HEAD^)
+    else
+      base_sha=""
+    fi
+  fi
+  if [[ -n "$base_sha" ]]; then
+    git diff --no-ext-diff --no-textconv --check "$base_sha" HEAD
   fi
   git diff --check
   bash -n scripts/ci

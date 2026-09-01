@@ -9,6 +9,7 @@ WORKFLOW = ROOT / ".github" / "workflows" / "ci.yml"
 SECURITY_WORKFLOW = ROOT / ".github" / "workflows" / "security.yml"
 CI_SCRIPT = ROOT / "scripts" / "ci"
 DEPENDABOT = ROOT / ".github" / "dependabot.yml"
+GITIGNORE = ROOT / ".gitignore"
 
 
 class CIContractTests(unittest.TestCase):
@@ -21,6 +22,7 @@ class CIContractTests(unittest.TestCase):
             "branches: [main]",
             "permissions:\n  contents: read",
             "cancel-in-progress: true",
+            "CI_BASE_SHA:",
             "timeout-minutes:",
             "name: Check",
             "name: Test",
@@ -40,6 +42,7 @@ class CIContractTests(unittest.TestCase):
         self.assertEqual(workflow.count("./scripts/ci check"), 1)
         self.assertEqual(workflow.count("./scripts/ci test"), 1)
         self.assertEqual(workflow.count("./scripts/ci all"), 2)
+        self.assertEqual(workflow.count("fetch-depth: 0"), 4)
 
     @unittest.skipIf(os.name == "nt", "Windows does not expose Git executable bits")
     def test_repository_gate_is_executable_on_posix(self) -> None:
@@ -69,6 +72,21 @@ class CIContractTests(unittest.TestCase):
         self.assertIn("name: Secrets", workflow)
         self.assertIn("trufflesecurity/trufflehog@", workflow)
         self.assertIn("--results=verified,unknown", workflow)
+
+    def test_generated_outputs_stay_ignored(self) -> None:
+        ignored = GITIGNORE.read_text(encoding="utf-8").splitlines()
+
+        for pattern in (
+            "/artifacts/",
+            "/bin/",
+            "/dist/",
+            "/.blender-box/",
+            "/.DS_Store",
+            "__pycache__/",
+            "*.py[cod]",
+        ):
+            with self.subTest(pattern=pattern):
+                self.assertIn(pattern, ignored)
 
 
 if __name__ == "__main__":
