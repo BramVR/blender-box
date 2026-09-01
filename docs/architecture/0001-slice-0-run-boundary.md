@@ -125,6 +125,8 @@ A Python-only client and host helper would make the first code quick to write, b
 - Does Windows OpenSSH on the proof host support the chosen bounded archive stream without an extra tool, or should slice 0 transfer files one at a time through standard input?
 - Which evidence capture types can the first real proof support without claiming Blender-window or desktop proof from viewport pixels?
 
-## Next implementation step
+## Implementation status
 
-Add a failing CLI contract test for read-only `windows check --json`, then implement only enough target parsing and SSH inspection to pass it.
+The first landed seam is `windows check --target <file> --json`. One Go binary serves both the client and the future static task entry point; Python remains inside Blender-owned Scenario scripts. The check streams a bounded read-only PowerShell program over SSH, resolves the configured console user to an SID, and validates declared paths and the root Scheduled Task without relying on the SSH user's `PATH`.
+
+The remaining `run`, `status`, and `stop` commands must enter through the `Runner` boundary above. They must not expose host adapter phases as public CLI switches.

@@ -8,7 +8,32 @@ Tailscale currently provides private host reachability through the configured SS
 
 ## Status
 
-Research and product design. No CLI implementation yet.
+Slice 0 implementation is in progress. The public CLI currently provides a read-only Windows target check. Run orchestration, setup apply, Host Locks, evidence, and exact stop are not available yet.
+
+## Windows target check
+
+Create a non-secret target file with absolute Windows paths and a safe SSH config alias:
+
+```json
+{
+  "schema_version": 1,
+  "ssh_alias": "owned-windows-host",
+  "work_root": "C:\\BlenderBox",
+  "interactive_user": "HOST\\operator",
+  "task_name": "BlenderBoxHost",
+  "blender_executable": "C:\\Program Files\\Blender Foundation\\Blender\\blender.exe",
+  "session_broker_executable": "C:\\BlenderBox\\bin\\blendersessiond.exe",
+  "host_executable": "C:\\BlenderBox\\bin\\blender-box.exe"
+}
+```
+
+Then run:
+
+```sh
+go run ./cmd/blender-box windows check --target target.json --json
+```
+
+The command streams one bounded, read-only PowerShell inspection over SSH and returns versioned JSON. It verifies the console-user SID, declared executable and work-root access, trusted path authorities through the volume root, and the complete root Scheduled Task action, principal, settings, and security descriptor. A failed requirement returns `status: "fail"`; malformed or oversized transport output is an error.
 
 ## Proposed boundary
 
@@ -28,4 +53,4 @@ Run the same gate used by GitHub Actions:
 ./scripts/ci all
 ```
 
-The current gate checks the repository and CI contract on Linux, macOS, and Windows. It will pick up Go and Python checks when their project files land. Live Windows Blender proof stays opt-in and separate from pull-request CI.
+The current gate checks the repository, Go CLI, and CI contract on Linux, macOS, and Windows. Live Windows Blender proof stays opt-in and separate from pull-request CI.
