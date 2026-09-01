@@ -142,6 +142,7 @@ func TestWindowsCheckPrintsVersionedJSONWithoutRemoteWrites(t *testing.T) {
 		"normalize-path",
 		"allowmask",
 		"denymask",
+		"inheritonly",
 		"actions[0].execute",
 		"actions[0].arguments",
 		"actions[0].workingdirectory",

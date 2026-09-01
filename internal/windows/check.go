@@ -36,6 +36,7 @@ function Test-ConservativePathAccess([string]$Path, [string]$PrincipalSid, [Syst
     [int64]$denyMask = 0
     $requiredMask = [int64]$RequiredRights
     foreach ($rule in $rules) {
+		if (($rule.PropagationFlags -band [System.Security.AccessControl.PropagationFlags]::InheritOnly) -ne 0) { continue }
         $ruleMask = [int64]$rule.FileSystemRights
         if ($rule.AccessControlType -eq [System.Security.AccessControl.AccessControlType]::Deny -and ($ruleMask -band $requiredMask) -ne 0) { $denyMask = $denyMask -bor $ruleMask }
         if ($rule.AccessControlType -eq [System.Security.AccessControl.AccessControlType]::Allow -and $allowedSids -contains $rule.IdentityReference.Value) { $allowMask = $allowMask -bor $ruleMask }

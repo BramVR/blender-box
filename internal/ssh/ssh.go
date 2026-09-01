@@ -3,7 +3,6 @@ package ssh
 import (
 	"bytes"
 	"context"
-	"errors"
 	"fmt"
 	"os/exec"
 )
@@ -30,7 +29,7 @@ func (Runner) Run(ctx context.Context, host string, remoteArgs []string, stdin [
 	command.Stdout = stdout
 	command.Stderr = stderr
 	if err := command.Run(); err != nil {
-		if errors.Is(stdout.err, errOutputLimit) || errors.Is(stderr.err, errOutputLimit) {
+		if stdout.exceeded || stderr.exceeded {
 			return nil, fmt.Errorf("SSH output exceeded its limit")
 		}
 		if message := stderr.String(); message != "" {
@@ -38,15 +37,16 @@ func (Runner) Run(ctx context.Context, host string, remoteArgs []string, stdin [
 		}
 		return nil, fmt.Errorf("SSH failed: %w", err)
 	}
+	if stdout.exceeded || stderr.exceeded {
+		return nil, fmt.Errorf("SSH output exceeded its limit")
+	}
 	return append([]byte(nil), stdout.Bytes()...), nil
 }
 
-var errOutputLimit = errors.New("output limit exceeded")
-
 type boundedBuffer struct {
-	buffer bytes.Buffer
-	limit  int
-	err    error
+	buffer   bytes.Buffer
+	limit    int
+	exceeded bool
 }
 
 func newBoundedBuffer(limit int) *boundedBuffer {
@@ -56,13 +56,13 @@ func newBoundedBuffer(limit int) *boundedBuffer {
 func (buffer *boundedBuffer) Write(content []byte) (int, error) {
 	remaining := buffer.limit - buffer.buffer.Len()
 	if remaining <= 0 {
-		buffer.err = errOutputLimit
-		return 0, errOutputLimit
+		buffer.exceeded = true
+		return len(content), nil
 	}
 	if len(content) > remaining {
 		_, _ = buffer.buffer.Write(content[:remaining])
-		buffer.err = errOutputLimit
-		return remaining, errOutputLimit
+		buffer.exceeded = true
+		return len(content), nil
 	}
 	return buffer.buffer.Write(content)
 }

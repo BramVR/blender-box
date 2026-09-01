@@ -1,8 +1,10 @@
 package target
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"regexp"
 	"strings"
@@ -33,9 +35,15 @@ func Load(path string) (Target, error) {
 		return Target{}, fmt.Errorf("read target: %w", err)
 	}
 	var value Target
-	decoder := json.NewDecoder(strings.NewReader(string(content)))
+	decoder := json.NewDecoder(bytes.NewReader(content))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&value); err != nil {
+		return Target{}, fmt.Errorf("parse target: %w", err)
+	}
+	if err := decoder.Decode(&struct{}{}); err != io.EOF {
+		if err == nil {
+			return Target{}, fmt.Errorf("parse target: trailing JSON value")
+		}
 		return Target{}, fmt.Errorf("parse target: %w", err)
 	}
 	if err := value.Validate(); err != nil {
