@@ -43,6 +43,33 @@ function Test-ConservativePathAccess([string]$Path, [string]$PrincipalSid, [Syst
     }
     return ($denyMask -band $requiredMask) -eq 0 -and ($allowMask -band $requiredMask) -eq $requiredMask
 }
+function Test-TrustedWriters([string]$Path, [string]$PrincipalSid) {
+    if (-not (Test-Path -LiteralPath $Path)) { return $false }
+    $trustedWriters = @(
+        $PrincipalSid,
+        'S-1-5-18',
+        'S-1-5-32-544',
+        'S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464'
+    )
+    $acl = Get-Acl -LiteralPath $Path
+    $ownerSid = Resolve-Sid ([string]$acl.Owner)
+    if ($trustedWriters -notcontains $ownerSid) { return $false }
+    $rules = $acl.GetAccessRules($true, $true, [System.Security.Principal.SecurityIdentifier])
+    $writeMask = [int64][System.Security.AccessControl.FileSystemRights]::Write -bor [int64][System.Security.AccessControl.FileSystemRights]::Delete -bor [int64][System.Security.AccessControl.FileSystemRights]::DeleteSubdirectoriesAndFiles -bor [int64][System.Security.AccessControl.FileSystemRights]::ChangePermissions -bor [int64][System.Security.AccessControl.FileSystemRights]::TakeOwnership
+    foreach ($rule in $rules) {
+        if (($rule.PropagationFlags -band [System.Security.AccessControl.PropagationFlags]::InheritOnly) -ne 0) { continue }
+        if ($rule.AccessControlType -ne [System.Security.AccessControl.AccessControlType]::Allow) { continue }
+        if ($trustedWriters -contains $rule.IdentityReference.Value) { continue }
+        if (([int64]$rule.FileSystemRights -band $writeMask) -ne 0) { return $false }
+    }
+    return $true
+}
+function Test-SafePath([string]$Path, [string]$PrincipalSid, [System.Security.AccessControl.FileSystemRights]$RequiredRights, [bool]$RequireDirectAllow) {
+    if (-not (Test-ConservativePathAccess $Path $PrincipalSid $RequiredRights $RequireDirectAllow)) { return $false }
+    if (-not (Test-TrustedWriters $Path $PrincipalSid)) { return $false }
+    $parent = [System.IO.Path]::GetDirectoryName($Path)
+    return $null -ne $parent -and (Test-TrustedWriters $parent $PrincipalSid)
+}
 $os = Get-CimInstance -ClassName Win32_OperatingSystem
 Add-Check 'host.windows' ($null -ne $os) $true $os.Caption 'Windows' 'Windows host detected.'
 $computer = Get-CimInstance -ClassName Win32_ComputerSystem
@@ -59,11 +86,11 @@ $modify = [System.Security.AccessControl.FileSystemRights]::Modify
 $blenderOK = Test-Path -LiteralPath $blenderPath -PathType Leaf
 $daemonOK = Test-Path -LiteralPath $daemonPath -PathType Leaf
 $hostOK = Test-Path -LiteralPath $hostPath -PathType Leaf
-Add-Check 'blender.executable' ($blenderOK -and (Test-ConservativePathAccess $blenderPath $expectedSid $readExecute $false)) $true $blenderPath 'existing file with unambiguous ReadAndExecute access' 'The configured Blender executable must be readable by the task principal without an overlapping deny ACE.'
-Add-Check 'daemon.executable' ($daemonOK -and (Test-ConservativePathAccess $daemonPath $expectedSid $readExecute $true)) $true $daemonPath 'existing file with explicit task-principal ReadAndExecute access' 'The staged session broker must carry the setup ACL without an overlapping deny ACE.'
-Add-Check 'host.executable' ($hostOK -and (Test-ConservativePathAccess $hostPath $expectedSid $readExecute $true)) $true $hostPath 'existing file with explicit task-principal ReadAndExecute access' 'The staged Blender Box host binary must carry the setup ACL without an overlapping deny ACE.'
+Add-Check 'blender.executable' ($blenderOK -and (Test-SafePath $blenderPath $expectedSid $readExecute $false)) $true $blenderPath 'existing executable with safe readers, owner, and writers' 'The configured Blender executable and parent must reject untrusted writers.'
+Add-Check 'daemon.executable' ($daemonOK -and (Test-SafePath $daemonPath $expectedSid $readExecute $true)) $true $daemonPath 'existing executable with explicit task-principal access and trusted writers' 'The staged session broker and parent must carry the setup ACL.'
+Add-Check 'host.executable' ($hostOK -and (Test-SafePath $hostPath $expectedSid $readExecute $true)) $true $hostPath 'existing executable with explicit task-principal access and trusted writers' 'The staged Blender Box host binary and parent must carry the setup ACL.'
 $rootExists = Test-Path -LiteralPath ([string]$config.work_root) -PathType Container
-Add-Check 'work-root.access' ($rootExists -and (Test-ConservativePathAccess ([string]$config.work_root) $expectedSid $modify $true)) $true ([string]$config.work_root) 'existing directory with explicit task-principal Modify access' 'The operator-managed work root must carry the setup ACL without an overlapping deny ACE.'
+Add-Check 'work-root.access' ($rootExists -and (Test-SafePath ([string]$config.work_root) $expectedSid $modify $true)) $true ([string]$config.work_root) 'existing directory with explicit task-principal access and trusted writers' 'The operator-managed work root and parent must carry the setup ACL.'
 $task = Get-ScheduledTask -TaskName ([string]$config.task_name) -ErrorAction SilentlyContinue
 $taskActual = $null
 $taskOK = $false
