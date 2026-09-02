@@ -169,6 +169,17 @@ func TestCheckRequiresDeclaredControllerTaskManagementAuthority(t *testing.T) {
 	}
 }
 
+func TestCheckAcceptsCanonicalizedTaskFullControl(t *testing.T) {
+	for _, required := range []string{
+		"$taskFullControl = 0x001F01FF",
+		"($aceMask -band $taskFullControl) -eq $taskFullControl",
+	} {
+		if !strings.Contains(checkScript, required) {
+			t.Fatalf("task inspection does not accept canonicalized FullControl: missing %q", required)
+		}
+	}
+}
+
 func TestCheckRequiresControllerMutationAndTaskRootFileInheritance(t *testing.T) {
 	for _, required := range []string{
 		"function Test-RootStateFileInheritance",

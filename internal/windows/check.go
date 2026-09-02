@@ -134,6 +134,7 @@ function Test-TrustedTaskAuthorities([string]$Sddl, [string]$ControllerSid) {
     [int64]$genericAll = 0x10000000
     [int64]$genericWrite = 0x40000000
     [int64]$genericExecute = 0x20000000
+    [int64]$taskFullControl = 0x001F01FF
     [int64]$taskWrite = 0x00000116
     [int64]$taskExecute = 0x00000020
     [int64]$taskWriteMask = $genericAll -bor $genericWrite -bor 0x00010000 -bor 0x00040000 -bor 0x00080000 -bor $taskWrite
@@ -150,7 +151,7 @@ function Test-TrustedTaskAuthorities([string]$Sddl, [string]$ControllerSid) {
         if ($ace.AceQualifier -ne [System.Security.AccessControl.AceQualifier]::AccessAllowed) { continue }
         if ($trustedManagers -contains $ace.SecurityIdentifier.Value) { continue }
         if ($ace.SecurityIdentifier.Value -eq $ControllerSid) {
-            if (($aceMask -band $genericAll) -eq $genericAll) { $controllerCanManage = $true }
+            if (($aceMask -band $genericAll) -eq $genericAll -or ($aceMask -band $taskFullControl) -eq $taskFullControl) { $controllerCanManage = $true }
             if (($aceMask -band $taskExecuteMask) -ne 0) { $controllerCanExecute = $true }
             continue
         }
