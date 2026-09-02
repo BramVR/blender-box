@@ -27,6 +27,7 @@ func TestCheckRejectsMalformedOrContradictoryEvidence(t *testing.T) {
 {"id":"host.windows","passed":true,"required":true},
 {"id":"host.console-user","passed":true,"required":true},
 {"id":"host.ssh-user","passed":true,"required":true},
+{"id":"host.limited-token-policy","passed":true,"required":true},
 {"id":"blender.executable","passed":true,"required":true},
 {"id":"daemon.executable","passed":true,"required":true},
 {"id":"host.executable","passed":true,"required":true},
@@ -43,6 +44,7 @@ func TestCheckRejectsMalformedOrContradictoryEvidence(t *testing.T) {
 {"id":"host.windows","passed":false,"required":true},
 {"id":"host.console-user","passed":true,"required":true},
 {"id":"host.ssh-user","passed":true,"required":true},
+{"id":"host.limited-token-policy","passed":true,"required":true},
 {"id":"blender.executable","passed":true,"required":true},
 {"id":"daemon.executable","passed":true,"required":true},
 {"id":"host.executable","passed":true,"required":true},
@@ -66,6 +68,7 @@ func TestCheckAcceptsCompleteFailedEvidence(t *testing.T) {
 {"id":"host.windows","passed":true,"required":true},
 {"id":"host.console-user","passed":true,"required":true},
 {"id":"host.ssh-user","passed":true,"required":true},
+{"id":"host.limited-token-policy","passed":true,"required":true},
 {"id":"blender.executable","passed":false,"required":true},
 {"id":"daemon.executable","passed":false,"required":true},
 {"id":"host.executable","passed":false,"required":true},
@@ -77,7 +80,7 @@ func TestCheckAcceptsCompleteFailedEvidence(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Status != "fail" || len(result.Checks) != 8 {
+	if result.Status != "fail" || len(result.Checks) != 9 {
 		t.Fatalf("unexpected result: %+v", result)
 	}
 	if fake.deadlineWindow < 90*time.Second || fake.deadlineWindow > 2*time.Minute {

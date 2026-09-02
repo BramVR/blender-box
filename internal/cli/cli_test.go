@@ -48,11 +48,12 @@ func TestWindowsCheckPrintsVersionedJSONWithoutRemoteWrites(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	checks := make([]map[string]any, 0, 8)
+	checks := make([]map[string]any, 0, 9)
 	for _, id := range []string{
 		"host.windows",
 		"host.console-user",
 		"host.ssh-user",
+		"host.limited-token-policy",
 		"blender.executable",
 		"daemon.executable",
 		"host.executable",
@@ -153,6 +154,7 @@ func TestWindowsCheckPrintsVersionedJSONWithoutRemoteWrites(t *testing.T) {
 		"commonace",
 		"trustedmanagers",
 		"requiredprivilege",
+		"enablelua",
 		"utf8encoding]::new($false)",
 		"rawsecuritydescriptor",
 		"getsecuritydescriptor(7)",

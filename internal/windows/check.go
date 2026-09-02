@@ -212,6 +212,9 @@ $sshSid = [string]$sshIdentity.User.Value
 $expectedSSHUser = [string]$config.ssh_user
 $expectedSSHSid = Resolve-Sid $expectedSSHUser
 Add-Check 'host.ssh-user' ($null -ne $expectedSSHSid -and $sshSid -eq $expectedSSHSid) $true ([ordered]@{identity=$sshUser; sid=$sshSid}) ([ordered]@{identity=$expectedSSHUser; sid=$expectedSSHSid}) 'The SSH process SID must match the declared controller identity.'
+$enableLUA = Get-ItemPropertyValue -LiteralPath 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System' -Name EnableLUA -ErrorAction SilentlyContinue
+$builtInAdministrator = $null -ne $expectedSid -and $expectedSid -match '-500$'
+Add-Check 'host.limited-token-policy' ([int]$enableLUA -eq 1 -and -not $builtInAdministrator) $true ([ordered]@{enable_lua=[int]$enableLUA; built_in_administrator=$builtInAdministrator}) ([ordered]@{enable_lua=1; built_in_administrator=$false}) 'UAC filtering must be enabled and the task principal must not be a RID-500 Administrator account.'
 $blenderPath = [string]$config.blender_executable
 $daemonPath = [string]$config.session_broker_executable
 $hostPath = [string]$config.host_executable
@@ -352,14 +355,15 @@ func Check(ctx context.Context, ssh SSH, selected target.Target) (CheckResult, e
 
 func validCheckResult(result CheckResult) bool {
 	requiredIDs := map[string]bool{
-		"host.windows":       false,
-		"host.console-user":  false,
-		"host.ssh-user":      false,
-		"blender.executable": false,
-		"daemon.executable":  false,
-		"host.executable":    false,
-		"work-root.access":   false,
-		"task.interactive":   false,
+		"host.windows":              false,
+		"host.console-user":         false,
+		"host.ssh-user":             false,
+		"host.limited-token-policy": false,
+		"blender.executable":        false,
+		"daemon.executable":         false,
+		"host.executable":           false,
+		"work-root.access":          false,
+		"task.interactive":          false,
 	}
 	if result.SchemaVersion != 1 || (result.Status != "pass" && result.Status != "fail") || len(result.Checks) == 0 {
 		return false
