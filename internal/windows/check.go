@@ -41,6 +41,7 @@ function Test-ConservativePathAccess([string]$Path, [string]$PrincipalSid, [Syst
     foreach ($rule in $rules) {
 		if (($rule.PropagationFlags -band [System.Security.AccessControl.PropagationFlags]::InheritOnly) -ne 0) { continue }
         $ruleMask = [int64]$rule.FileSystemRights
+        # This process does not own the interactive task token. Treat every deny as applicable so inspection can fail closed instead of guessing group membership.
         if ($rule.AccessControlType -eq [System.Security.AccessControl.AccessControlType]::Deny -and ($ruleMask -band $requiredMask) -ne 0) { $denyMask = $denyMask -bor $ruleMask }
         if ($rule.AccessControlType -eq [System.Security.AccessControl.AccessControlType]::Allow -and $allowedSids -contains $rule.IdentityReference.Value) { $allowMask = $allowMask -bor $ruleMask }
     }
@@ -273,7 +274,7 @@ func Check(ctx context.Context, ssh SSH, selected target.Target) (CheckResult, e
 		return CheckResult{}, fmt.Errorf("encode target check input: %w", err)
 	}
 	scriptInput := fmt.Sprintf(
-		"$ErrorActionPreference = 'Stop'\n$ProgressPreference = 'SilentlyContinue'\n$configText = [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String('%s'))\n%s",
+		"$ErrorActionPreference = 'Stop'\n$ProgressPreference = 'SilentlyContinue'\n$OutputEncoding = [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)\n$configText = [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String('%s'))\n%s",
 		base64.StdEncoding.EncodeToString(input),
 		checkScript,
 	)

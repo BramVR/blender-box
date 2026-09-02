@@ -145,6 +145,7 @@ func TestWindowsCheckPrintsVersionedJSONWithoutRemoteWrites(t *testing.T) {
 	}
 	for _, required := range []string{
 		"securityidentifier",
+		"utf8encoding]::new($false)",
 		"rawsecuritydescriptor",
 		"getsecuritydescriptor(7)",
 		"[int]$ace.aceflags",

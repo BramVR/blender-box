@@ -33,7 +33,7 @@ Then run:
 go run ./cmd/blender-box windows check --target target.json --json
 ```
 
-The command streams one bounded, read-only PowerShell inspection over SSH and returns versioned JSON. It verifies the console-user SID, declared executable and work-root access, trusted path authorities through the volume root, and the complete root Scheduled Task action, principal, settings, and security descriptor. A failed requirement returns `status: "fail"`; malformed or oversized transport output is an error.
+The command streams one bounded, read-only PowerShell inspection over SSH and returns versioned UTF-8 JSON. It verifies the console-user SID, declared executable and work-root access, trusted path authorities through the volume root, and the complete root Scheduled Task action, principal, settings, and security descriptor. Access inspection treats every applicable-rights deny ACE conservatively because an SSH check does not own the interactive task token; operator-managed setup paths should not use deny ACEs. A failed requirement returns `status: "fail"`; malformed or oversized transport output is an error.
 
 ## Proposed boundary
 
