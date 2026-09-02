@@ -686,18 +686,33 @@ func (service *Service) Settle(ctx context.Context, root string, request SettleR
 		return orchestrator.CleanupState{}, err
 	}
 	runRoot := runPath(root, stored.Claim.RunID)
-	if _, err := os.Lstat(runRoot); err == nil {
+	if info, err := os.Lstat(runRoot); err == nil {
+		if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+			return orchestrator.CleanupState{}, fmt.Errorf("Run root ownership does not match")
+		}
 		ownershipPath := filepath.Join(runRoot, "ownership.json")
 		var ownership lockRecord
+		ownershipMissing := false
 		if err := readJSON(ownershipPath, &ownership, maxScenarioJSON); err != nil {
 			if _, statErr := os.Lstat(ownershipPath); !stored.Cleanup.SessionStopped || !os.IsNotExist(statErr) {
 				return orchestrator.CleanupState{}, fmt.Errorf("Run root ownership does not match")
 			}
+			ownershipMissing = true
 		} else if !ownership.Claim.Equal(stored.Claim) || ownership.SessionID != "" {
 			return orchestrator.CleanupState{}, fmt.Errorf("Run root ownership does not match")
 		}
-		if err := removeRunRootWithRetry(ctx, runRoot, os.RemoveAll, retryableRunRemoval, 100*time.Millisecond); err != nil {
-			return orchestrator.CleanupState{}, err
+		if ownershipMissing {
+			entries, err := os.ReadDir(runRoot)
+			if err != nil || len(entries) != 0 {
+				return orchestrator.CleanupState{}, fmt.Errorf("Run root ownership does not match")
+			}
+			if err := os.Remove(runRoot); err != nil {
+				return orchestrator.CleanupState{}, err
+			}
+		} else {
+			if err := removeRunRootWithRetry(ctx, runRoot, os.RemoveAll, retryableRunRemoval, 100*time.Millisecond); err != nil {
+				return orchestrator.CleanupState{}, err
+			}
 		}
 	} else if !os.IsNotExist(err) {
 		return orchestrator.CleanupState{}, err

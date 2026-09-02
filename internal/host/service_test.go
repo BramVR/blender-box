@@ -490,6 +490,17 @@ func TestSettleRecoversPartialRunRootCleanupWithoutRepeatingStop(t *testing.T) {
 		t.Fatal(err)
 	}
 	runRoot := runPath(root, request.Claim.RunID)
+	entries, err := os.ReadDir(runRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range entries {
+		if entry.Name() != "ownership.json" {
+			if err := os.RemoveAll(filepath.Join(runRoot, entry.Name())); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
 	if err := os.Remove(filepath.Join(runRoot, "ownership.json")); err != nil {
 		t.Fatal(err)
 	}
@@ -500,6 +511,44 @@ func TestSettleRecoversPartialRunRootCleanupWithoutRepeatingStop(t *testing.T) {
 	}
 	if !cleanup.Known() || len(daemon.stops) != 0 {
 		t.Fatalf("cleanup = %+v, stops = %+v", cleanup, daemon.stops)
+	}
+}
+
+func TestSettleRejectsNonEmptyRunRootWithoutOwnership(t *testing.T) {
+	root := t.TempDir()
+	now := time.Now().UTC()
+	daemon := &fakeDaemon{}
+	service := NewService(Dependencies{Tasks: &fakeTaskLauncher{}, Daemon: daemon, Now: func() time.Time { return now }})
+	request := stageHostTestRun(t, service, root, now, false)
+	if _, err := service.Start(context.Background(), root, request); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.ExecutePending(context.Background(), root); err != nil {
+		t.Fatal(err)
+	}
+	receipt, err := service.Status(root, StatusRequest{SchemaVersion: 1, RunID: request.Claim.RunID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	receipt.Cleanup.SessionStopped = true
+	if err := service.writeReceipt(root, receipt); err != nil {
+		t.Fatal(err)
+	}
+	runRoot := runPath(root, request.Claim.RunID)
+	if err := os.Remove(filepath.Join(runRoot, "ownership.json")); err != nil {
+		t.Fatal(err)
+	}
+	foreign := filepath.Join(runRoot, "foreign.txt")
+	if err := os.WriteFile(foreign, []byte("preserve"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = service.Settle(context.Background(), root, SettleRequest{SchemaVersion: 1, Receipt: receipt})
+	if err == nil || !strings.Contains(err.Error(), "ownership") {
+		t.Fatalf("Settle() error = %v", err)
+	}
+	if contents, readErr := os.ReadFile(foreign); readErr != nil || string(contents) != "preserve" {
+		t.Fatalf("foreign file changed: contents = %q, error = %v", contents, readErr)
 	}
 }
 
