@@ -5,7 +5,7 @@ Windows setup previews a bounded host binary install by default and applies only
 ## Sub-features
 
 - `setup-plan` hashes and sizes the host binary without SSH or remote writes.
-- `setup-apply` validates physical paths and uses the shared OS operation lock while refusing an active Host Lock, sealing existing managed state without following reparse points, publishing the non-empty bounded binary, and registering the fixed task.
+- `setup-apply` validates physical paths and ancestor replacement authority, then uses the shared OS operation lock while refusing an active Host Lock, sealing existing managed state without following reparse points, publishing the non-empty bounded binary, and registering the fixed task.
 - `setup-postcheck` proves the applied root, state-tree, executable, and task contract through the read-only check, including safe controller-owned runtime state under sealed parents.
 
 ## How to get to it (user POV)
