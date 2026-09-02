@@ -12,7 +12,9 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/BramVR/blender-box/internal/orchestrator"
@@ -663,7 +665,7 @@ func (service *Service) Settle(ctx context.Context, root string, request SettleR
 		} else if !ownership.Claim.Equal(stored.Claim) || ownership.SessionID != "" {
 			return orchestrator.CleanupState{}, fmt.Errorf("Run root ownership does not match")
 		}
-		if err := removeRunRootPreservingOwnership(runRoot, os.RemoveAll); err != nil {
+		if err := removeRunRootWithRetry(ctx, runRoot, os.RemoveAll, retryableRunRemoval, 100*time.Millisecond); err != nil {
 			return orchestrator.CleanupState{}, err
 		}
 	} else if !os.IsNotExist(err) {
@@ -684,6 +686,39 @@ func (service *Service) Settle(ctx context.Context, root string, request SettleR
 	}
 	_ = os.Remove(filepath.Join(root, "pending-request.json"))
 	return stored.Cleanup, nil
+}
+
+func removeRunRootWithRetry(ctx context.Context, runRoot string, removeAll func(string) error, retryable func(error) bool, interval time.Duration) error {
+	for {
+		err := removeRunRootPreservingOwnership(runRoot, removeAll)
+		if err == nil {
+			return nil
+		}
+		if !retryable(err) {
+			return err
+		}
+		if ctx.Err() != nil {
+			return errors.Join(err, ctx.Err())
+		}
+		if interval <= 0 {
+			continue
+		}
+		timer := time.NewTimer(interval)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return errors.Join(err, ctx.Err())
+		case <-timer.C:
+		}
+	}
+}
+
+func retryableRunRemoval(err error) bool {
+	if runtime.GOOS != "windows" {
+		return false
+	}
+	var errno syscall.Errno
+	return errors.As(err, &errno) && errno == 32 // ERROR_SHARING_VIOLATION
 }
 
 func removeRunRootPreservingOwnership(runRoot string, removeAll func(string) error) error {

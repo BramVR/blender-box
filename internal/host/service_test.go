@@ -435,6 +435,34 @@ func TestRunRootCleanupPreservesOwnershipUntilOtherEntriesAreRemoved(t *testing.
 	}
 }
 
+func TestRunRootCleanupRetriesTransientSharingViolation(t *testing.T) {
+	runRoot := t.TempDir()
+	if err := os.WriteFile(filepath.Join(runRoot, "ownership.json"), []byte("owned\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	blocked := filepath.Join(runRoot, "daemon")
+	if err := os.Mkdir(blocked, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	attempts := 0
+	removeAll := func(path string) error {
+		if path == blocked && attempts == 0 {
+			attempts++
+			return fmt.Errorf("sharing violation")
+		}
+		return os.RemoveAll(path)
+	}
+	if err := removeRunRootWithRetry(context.Background(), runRoot, removeAll, func(error) bool { return true }, 0); err != nil {
+		t.Fatal(err)
+	}
+	if attempts != 1 {
+		t.Fatalf("transient removals = %d, want 1", attempts)
+	}
+	if _, err := os.Stat(runRoot); !os.IsNotExist(err) {
+		t.Fatalf("Run root remains: %v", err)
+	}
+}
+
 func TestStartRehashesPublishedPayloadBeforeLaunch(t *testing.T) {
 	root := t.TempDir()
 	now := time.Now().UTC()
