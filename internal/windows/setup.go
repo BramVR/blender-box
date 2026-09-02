@@ -3,6 +3,7 @@ package windows
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -14,9 +15,31 @@ import (
 )
 
 const (
-	maxHostBinary = 64 << 20
-	setupTimeout  = 5 * time.Minute
+	maxHostBinary  = 64 << 20
+	maxSetupScript = 128 << 10
+	setupTimeout   = 5 * time.Minute
 )
+
+const setupBootstrap = `$ErrorActionPreference = 'Stop'
+Set-StrictMode -Version Latest
+function Read-Exact([int]$length) {
+    [byte[]]$contents = [byte[]]::new($length)
+    [int]$offset = 0
+    while ($offset -lt $length) {
+        $read = $stream.Read($contents, $offset, $length - $offset)
+        if ($read -le 0) { throw 'Setup frame ended early.' }
+        $offset += $read
+    }
+    return ,$contents
+}
+$stream = [Console]::OpenStandardInput()
+$magic = [Text.Encoding]::ASCII.GetString((Read-Exact 8))
+if ($magic -cne 'BBXSET01') { throw 'Setup frame magic is invalid.' }
+$scriptLength = [BitConverter]::ToUInt32((Read-Exact 4), 0)
+if ($scriptLength -lt 1 -or $scriptLength -gt 131072) { throw 'Setup script exceeds its limit.' }
+$script = [Text.Encoding]::UTF8.GetString((Read-Exact ([int]$scriptLength)))
+$global:BlenderBoxSetupPayloadStream = $stream
+& ([ScriptBlock]::Create($script))`
 
 type SetupResult struct {
 	SchemaVersion int    `json:"schema_version"`
@@ -54,9 +77,13 @@ func Setup(ctx context.Context, ssh SSH, selected target.Target, source string, 
 		"-NoProfile",
 		"-NonInteractive",
 		"-EncodedCommand",
-		encodePowerShell(script),
+		encodePowerShell(setupBootstrap),
 	}
-	output, err := ssh.Run(ctx, selected.SSHAlias, arguments, contents)
+	input, err := setupFrame(script, contents)
+	if err != nil {
+		return SetupResult{}, err
+	}
+	output, err := ssh.Run(ctx, selected.SSHAlias, arguments, input)
 	if err != nil {
 		return SetupResult{}, fmt.Errorf("apply Windows setup: %w", err)
 	}
@@ -67,6 +94,19 @@ func Setup(ctx context.Context, ssh SSH, selected target.Target, source string, 
 		return SetupResult{}, fmt.Errorf("Windows setup returned an invalid contract")
 	}
 	return result, nil
+}
+
+func setupFrame(script string, binaryContents []byte) ([]byte, error) {
+	scriptContents := []byte(script)
+	if len(scriptContents) == 0 || len(scriptContents) > maxSetupScript {
+		return nil, fmt.Errorf("setup script exceeds its limit")
+	}
+	frame := make([]byte, 12+len(scriptContents)+len(binaryContents))
+	copy(frame[:8], "BBXSET01")
+	binary.LittleEndian.PutUint32(frame[8:12], uint32(len(scriptContents)))
+	copy(frame[12:], scriptContents)
+	copy(frame[12+len(scriptContents):], binaryContents)
+	return frame, nil
 }
 
 func readHostBinary(path string) ([]byte, error) {
@@ -146,7 +186,7 @@ try {
     Set-Acl -LiteralPath $root -AclObject (New-BlenderBoxDirectoryAcl)
     Set-Acl -LiteralPath $hostDirectory -AclObject (New-BlenderBoxDirectoryAcl)
     if ($daemonDirectory -ine $hostDirectory) { Set-Acl -LiteralPath $daemonDirectory -AclObject (New-BlenderBoxDirectoryAcl) }
-    $inputStream = [Console]::OpenStandardInput()
+    $inputStream = $global:BlenderBoxSetupPayloadStream
     $outputStream = [System.IO.File]::Open($temporary, [System.IO.FileMode]::CreateNew, [System.IO.FileAccess]::Write, [System.IO.FileShare]::None)
     try {
         $buffer = [byte[]]::new(65536)

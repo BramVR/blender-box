@@ -3,6 +3,7 @@ package windows
 import (
 	"context"
 	"crypto/sha256"
+	binaryencoding "encoding/binary"
 	"encoding/hex"
 	"os"
 	"path/filepath"
@@ -37,12 +38,32 @@ func TestSetupPlansWithoutSSHAndAppliesOneBoundedHostBinary(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if applied.Status != "applied" || !applied.Applied || len(fake.inputs) != 1 || string(fake.inputs[0]) != string(binary) {
-		t.Fatalf("apply = %+v, transferred = %q", applied, fake.inputs)
+	if applied.Status != "applied" || !applied.Applied || len(fake.inputs) != 1 {
+		t.Fatalf("apply = %+v, SSH calls = %d", applied, len(fake.inputs))
 	}
-	script := decodedAdapterScript(t, fake.arguments[0])
+	bootstrap := decodedAdapterScript(t, fake.arguments[0])
+	if len(fake.arguments[0][5]) >= 8_000 {
+		t.Fatalf("encoded bootstrap is too large for the Windows command boundary: %d bytes", len(fake.arguments[0][5]))
+	}
+	for _, required := range []string{"BBXSET01", "BlenderBoxSetupPayloadStream", "Read-Exact"} {
+		if !strings.Contains(bootstrap, required) {
+			t.Errorf("setup bootstrap missing %q", required)
+		}
+	}
+	framed := fake.inputs[0]
+	if len(framed) < 12 || string(framed[:8]) != "BBXSET01" {
+		t.Fatalf("invalid setup frame header")
+	}
+	scriptSize := int(binaryencoding.LittleEndian.Uint32(framed[8:12]))
+	if scriptSize <= 0 || 12+scriptSize > len(framed) {
+		t.Fatalf("invalid framed script size %d", scriptSize)
+	}
+	script := string(framed[12 : 12+scriptSize])
+	if got := framed[12+scriptSize:]; string(got) != string(binary) {
+		t.Fatalf("transferred binary = %q", got)
+	}
 	for _, required := range []string{
-		"OpenStandardInput",
+		"BlenderBoxSetupPayloadStream",
 		"SHA256",
 		"Register-ScheduledTask",
 		"New-ScheduledTaskPrincipal",
