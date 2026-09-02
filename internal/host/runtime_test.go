@@ -32,6 +32,27 @@ func TestRuntimeRejectsReadinessFromReplacementSession(t *testing.T) {
 	}
 }
 
+func TestRuntimeRecoversExactIdentityFromDaemonStatus(t *testing.T) {
+	sessionID := orchestrator.SessionID("bss_exact-recovery-session-identity-123456")
+	fake := &fakeProcessRunner{outputs: [][]byte{
+		[]byte(`{"schema_version":1,"status":"starting","session":{"session_id":"bss_exact-recovery-session-identity-123456"}}`),
+		[]byte(`{"schema_version":1,"status":"not-found","session":{"name":"blender-box-test"}}`),
+	}}
+	runtime := NewRuntime(fake)
+	request := DaemonRecover{Executable: `C:\Bin\blendersessiond.exe`, Name: "blender-box-test", Environment: map[string]string{"BLENDERSESSIOND_STATE_DIR": `C:\Run\daemon`}}
+	recovered, found, err := runtime.Recover(context.Background(), request)
+	if err != nil || !found || recovered != sessionID {
+		t.Fatalf("recovered = %q, found = %v, error = %v", recovered, found, err)
+	}
+	recovered, found, err = runtime.Recover(context.Background(), request)
+	if err != nil || found || recovered != "" {
+		t.Fatalf("missing recovery = %q, found = %v, error = %v", recovered, found, err)
+	}
+	for index := range fake.arguments {
+		assertArguments(t, fake.arguments[index], "status", "--name", "blender-box-test", "--json")
+	}
+}
+
 func (fake *fakeProcessRunner) Run(_ context.Context, executable string, arguments []string, environment map[string]string) ([]byte, error) {
 	fake.executables = append(fake.executables, executable)
 	fake.arguments = append(fake.arguments, append([]string(nil), arguments...))

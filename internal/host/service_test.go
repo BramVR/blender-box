@@ -41,6 +41,10 @@ func (daemon *waitingDaemon) Start(context.Context, DaemonStart) (orchestrator.S
 	return "bss_exact-waiting-session-identity-123456", nil
 }
 
+func (daemon *waitingDaemon) Recover(context.Context, DaemonRecover) (orchestrator.SessionID, bool, error) {
+	return "", false, nil
+}
+
 func (daemon *waitingDaemon) WaitReady(ctx context.Context, _ DaemonReady) error {
 	close(daemon.readyStarted)
 	select {
@@ -63,6 +67,10 @@ func (daemon *waitingDaemon) Stop(_ context.Context, request DaemonStop) error {
 
 func (daemon *stoppingDaemon) Start(context.Context, DaemonStart) (orchestrator.SessionID, error) {
 	return "bss_exact-stoppable-session-identity-123456", nil
+}
+
+func (daemon *stoppingDaemon) Recover(context.Context, DaemonRecover) (orchestrator.SessionID, bool, error) {
+	return "", false, nil
 }
 
 func (daemon *stoppingDaemon) WaitReady(context.Context, DaemonReady) error { return nil }
@@ -97,12 +105,17 @@ type fakeDaemon struct {
 	readies         []DaemonReady
 	calls           []DaemonCall
 	stops           []DaemonStop
+	recovered       orchestrator.SessionID
 	captureResponse json.RawMessage
 }
 
 func (fake *fakeDaemon) Start(_ context.Context, request DaemonStart) (orchestrator.SessionID, error) {
 	fake.starts = append(fake.starts, request)
 	return "bss_exact-host-session-identity-123456", nil
+}
+
+func (fake *fakeDaemon) Recover(_ context.Context, _ DaemonRecover) (orchestrator.SessionID, bool, error) {
+	return fake.recovered, fake.recovered != "", nil
 }
 
 func (fake *fakeDaemon) WaitReady(_ context.Context, request DaemonReady) error {
@@ -643,6 +656,26 @@ func TestSettleReconcilesSessionPublishedOnlyInHostLock(t *testing.T) {
 		t.Fatal(err)
 	}
 	if !cleanup.Known() || len(daemon.stops) != 1 || daemon.stops[0].SessionID != lock.SessionID {
+		t.Fatalf("cleanup = %+v, stops = %+v", cleanup, daemon.stops)
+	}
+}
+
+func TestSettleRecoversSessionStartedBeforeHostLockPublication(t *testing.T) {
+	root := t.TempDir()
+	now := time.Now().UTC()
+	daemon := &fakeDaemon{recovered: "bss_exact-recovered-session-identity-123456"}
+	service := NewService(Dependencies{Tasks: &fakeTaskLauncher{}, Daemon: daemon, Now: func() time.Time { return now }})
+	request := stageHostTestRun(t, service, root, now, false)
+	starting, err := service.Start(context.Background(), root, request)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	cleanup, err := service.Settle(context.Background(), root, SettleRequest{SchemaVersion: 1, Receipt: starting})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cleanup.Known() || len(daemon.stops) != 1 || daemon.stops[0].SessionID != daemon.recovered {
 		t.Fatalf("cleanup = %+v, stops = %+v", cleanup, daemon.stops)
 	}
 }

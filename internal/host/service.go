@@ -37,6 +37,7 @@ type TaskLauncher interface {
 
 type Daemon interface {
 	Start(context.Context, DaemonStart) (orchestrator.SessionID, error)
+	Recover(context.Context, DaemonRecover) (orchestrator.SessionID, bool, error)
 	WaitReady(context.Context, DaemonReady) error
 	Call(context.Context, DaemonCall) (json.RawMessage, error)
 	Stop(context.Context, DaemonStop) error
@@ -63,6 +64,12 @@ type DaemonReady struct {
 	Executable  string
 	Name        string
 	SessionID   orchestrator.SessionID
+	Environment map[string]string
+}
+
+type DaemonRecover struct {
+	Executable  string
+	Name        string
 	Environment map[string]string
 }
 
@@ -342,7 +349,7 @@ func (service *Service) Status(root string, request StatusRequest) (orchestrator
 			return orchestrator.RunReceipt{}, err
 		}
 		lock, lockErr := service.readLock(root)
-		if lockErr != nil || lock.SchemaVersion != 1 || lock.Claim.Validate() != nil || lock.Claim.RunID != request.RunID {
+		if lockErr != nil || lock.SchemaVersion != 1 || lock.Claim.Validate() != nil || lock.Claim.RunID != request.RunID || lock.SessionID != "" && lock.SessionID.Validate() != nil {
 			return orchestrator.RunReceipt{}, err
 		}
 		state := orchestrator.StateAccepted
@@ -638,6 +645,24 @@ func (service *Service) Settle(ctx context.Context, root string, request SettleR
 	if lock.SessionID != stored.SessionID {
 		return orchestrator.CleanupState{}, fmt.Errorf("settle authority does not match Host Lock")
 	}
+	if stored.SessionID == "" {
+		recovered, found, recoverErr := service.recoverUnpublishedSession(ctx, root, stored.Claim)
+		if recoverErr != nil {
+			return orchestrator.CleanupState{}, recoverErr
+		}
+		if found {
+			lock.SessionID = recovered
+			if err := writeJSONAtomic(lockPath(root), lock); err != nil {
+				return orchestrator.CleanupState{}, err
+			}
+			stored.SessionID = recovered
+			stored.State = orchestrator.StateCleanupFailed
+			stored.Error = "Recovered a Session whose Host Lock publication was interrupted"
+			if err := service.writeReceipt(root, stored); err != nil {
+				return orchestrator.CleanupState{}, err
+			}
+		}
+	}
 	if stored.SessionID != "" && !stored.Cleanup.SessionStopped {
 		var runRequest orchestrator.RunRequest
 		if err := readJSON(filepath.Join(runPath(root, stored.Claim.RunID), "request.json"), &runRequest, maxScenarioJSON); err != nil {
@@ -691,6 +716,29 @@ func (service *Service) Settle(ctx context.Context, root string, request SettleR
 	}
 	_ = os.Remove(filepath.Join(root, "pending-request.json"))
 	return stored.Cleanup, nil
+}
+
+func (service *Service) recoverUnpublishedSession(ctx context.Context, root string, claim orchestrator.LockClaim) (orchestrator.SessionID, bool, error) {
+	path := filepath.Join(runPath(root, claim.RunID), "request.json")
+	var request orchestrator.RunRequest
+	if err := readJSON(path, &request, maxScenarioJSON); err != nil {
+		if _, statErr := os.Lstat(path); os.IsNotExist(statErr) {
+			return "", false, nil
+		}
+		return "", false, err
+	}
+	if err := request.Validate(); err != nil || !request.Claim.Equal(claim) {
+		return "", false, fmt.Errorf("stored Run request does not match Host Lock")
+	}
+	if service.daemon == nil {
+		return "", false, fmt.Errorf("Session daemon is unavailable")
+	}
+	// blendersessiond records the opaque identity before opening its Windows launch gate.
+	return service.daemon.Recover(ctx, DaemonRecover{
+		Executable:  request.Body.SessionBrokerExecutable,
+		Name:        request.Body.SessionName,
+		Environment: runEnvironment(root, claim.RunID),
+	})
 }
 
 func (service *Service) recoverReleasedCleanup(root string, stored orchestrator.RunReceipt) (orchestrator.CleanupState, bool, error) {

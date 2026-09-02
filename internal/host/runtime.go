@@ -65,6 +65,35 @@ func (runtime *Runtime) Start(ctx context.Context, request DaemonStart) (orchest
 	return result.Session.SessionID, nil
 }
 
+func (runtime *Runtime) Recover(ctx context.Context, request DaemonRecover) (orchestrator.SessionID, bool, error) {
+	output, runErr := runtime.processes.Run(ctx, request.Executable, []string{
+		"status", "--name", request.Name, "--json",
+	}, request.Environment)
+	var result struct {
+		SchemaVersion int    `json:"schema_version"`
+		Status        string `json:"status"`
+		Session       struct {
+			SessionID orchestrator.SessionID `json:"session_id"`
+		} `json:"session"`
+	}
+	if err := decodeExtensibleJSON(output, &result, maxProcessOutput); err != nil {
+		if runErr != nil {
+			return "", false, runErr
+		}
+		return "", false, fmt.Errorf("blendersessiond recovery status returned invalid JSON")
+	}
+	if result.SchemaVersion != 1 {
+		return "", false, fmt.Errorf("blendersessiond recovery status returned an invalid contract")
+	}
+	if result.Status == "not-found" && result.Session.SessionID == "" {
+		return "", false, nil
+	}
+	if err := result.Session.SessionID.Validate(); err != nil {
+		return "", false, fmt.Errorf("blendersessiond recovery status returned an invalid Session identity")
+	}
+	return result.Session.SessionID, true, nil
+}
+
 func (runtime *Runtime) WaitReady(ctx context.Context, request DaemonReady) error {
 	if err := request.SessionID.Validate(); err != nil {
 		return err
