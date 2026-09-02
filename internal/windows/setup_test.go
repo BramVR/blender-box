@@ -40,8 +40,8 @@ func TestSetupPlansWithoutSSHAndAppliesOneBoundedHostBinary(t *testing.T) {
 	if applied.Status != "applied" || !applied.Applied || len(fake.inputs) != 2 || len(fake.uploads) != 2 {
 		t.Fatalf("apply = %+v, SSH calls = %d", applied, len(fake.inputs))
 	}
-	prepare := decodedAdapterScript(t, fake.arguments[0])
-	if !strings.Contains(prepare, "Set-Acl -LiteralPath $root") || !strings.Contains(prepare, "host-lock.json") || strings.Contains(prepare, "Register-ScheduledTask") {
+	prepare := string(fake.inputs[0])
+	if !strings.Contains(prepare, "Set-Acl -LiteralPath $root") || !strings.Contains(prepare, "host-lock.json") || !strings.Contains(prepare, "Assert-NoReparsePath") || !strings.Contains(prepare, "$operation.Lock(0, 1)") || strings.Contains(prepare, "Register-ScheduledTask") {
 		t.Fatalf("unexpected setup prepare script: %s", prepare)
 	}
 	for index, arguments := range fake.arguments {
@@ -49,10 +49,11 @@ func TestSetupPlansWithoutSSHAndAppliesOneBoundedHostBinary(t *testing.T) {
 			t.Fatalf("encoded setup command %d is too large for the Windows command boundary: %d bytes", index, len(arguments[5]))
 		}
 	}
-	for index, input := range fake.inputs {
-		if len(input) != 0 {
-			t.Fatalf("setup command %d used stdin for %d bytes", index, len(input))
-		}
+	if len(fake.inputs[0]) == 0 || len(fake.inputs[0]) > maxSetupScript {
+		t.Fatalf("setup guard stdin = %d bytes", len(fake.inputs[0]))
+	}
+	if len(fake.inputs[1]) != 0 {
+		t.Fatalf("setup finalize used stdin for %d bytes", len(fake.inputs[1]))
 	}
 	if fake.uploads[0].host != adapterTarget().SSHAlias || fake.uploads[0].source != path || !strings.HasPrefix(fake.uploads[0].destination, adapterTarget().WorkRoot+`\.setup-`) || !strings.HasSuffix(fake.uploads[0].destination, ".bin") || string(fake.uploads[0].contents) != string(binary) {
 		t.Fatalf("upload = %+v", fake.uploads[0])
@@ -87,6 +88,9 @@ func TestSetupPlansWithoutSSHAndAppliesOneBoundedHostBinary(t *testing.T) {
 		"Set-BlenderBoxStateTree",
 		"FileAttributes]::ReparsePoint",
 		"host-lock.json",
+		"Assert-NoReparsePath",
+		"$operation.Lock(0, 1)",
+		"$operation.Unlock(0, 1)",
 		"host run-request --state-root",
 		adapterTarget().HostExecutable,
 		adapterTarget().SessionBrokerExecutable,

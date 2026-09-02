@@ -63,7 +63,11 @@ func Setup(ctx context.Context, ssh SetupSSH, selected target.Target, source str
 		return SetupResult{}, err
 	}
 	defer os.Remove(localScript)
-	if _, err := ssh.Run(ctx, selected.SSHAlias, powerShellArguments(prepareSetupScript(selected)), nil); err != nil {
+	prepare := prepareSetupScript(selected)
+	if len(prepare) == 0 || len(prepare) > maxSetupScript {
+		return SetupResult{}, fmt.Errorf("setup guard script exceeds its limit")
+	}
+	if _, err := ssh.Run(ctx, selected.SSHAlias, powerShellInputArguments(), []byte(prepare)); err != nil {
 		return SetupResult{}, fmt.Errorf("prepare Windows setup: %w", err)
 	}
 	if err := ssh.Upload(ctx, selected.SSHAlias, source, stagedBinary); err != nil {
@@ -89,6 +93,10 @@ func Setup(ctx context.Context, ssh SetupSSH, selected target.Target, source str
 
 func powerShellArguments(script string) []string {
 	return []string{"powershell.exe", "-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand", encodePowerShell(script)}
+}
+
+func powerShellInputArguments() []string {
+	return powerShellArguments("[Console]::In.ReadToEnd() | Invoke-Expression")
 }
 
 func writeSetupScript(script string) (string, error) {
@@ -177,29 +185,107 @@ func readHostBinary(path string) ([]byte, error) {
 	return contents, nil
 }
 
+const setupOperationFunctions = `function Assert-NoReparsePath([string]$Path) {
+    $fullPath = [System.IO.Path]::GetFullPath($Path)
+    $volumeRoot = [System.IO.Path]::GetPathRoot($fullPath)
+    if ($volumeRoot -notmatch '^[A-Za-z]:\\$') { throw 'Setup paths must use a local drive.' }
+    $volume = @(Get-Volume -DriveLetter $volumeRoot.Substring(0, 1) -ErrorAction Stop)
+    if ($volume.Count -ne 1 -or [string]$volume[0].DriveType -ne 'Fixed') { throw 'Setup paths must use one fixed local volume.' }
+    $current = $volumeRoot
+    $relative = $fullPath.Substring($volumeRoot.Length)
+    foreach ($segment in $relative.Split([char[]]@('\'), [System.StringSplitOptions]::RemoveEmptyEntries)) {
+        $current = [System.IO.Path]::Combine($current, $segment)
+        if (-not (Test-Path -LiteralPath $current)) { break }
+        $item = Get-Item -Force -LiteralPath $current -ErrorAction Stop
+        if (([int64]$item.Attributes -band [int64][System.IO.FileAttributes]::ReparsePoint) -ne 0) { throw 'Setup path contains a reparse point.' }
+    }
+}
+function Enter-BlenderBoxOperation([string]$Path) {
+    $operation = [System.IO.File]::Open($Path, [System.IO.FileMode]::OpenOrCreate, [System.IO.FileAccess]::ReadWrite, [System.IO.FileShare]::ReadWrite)
+    $deadline = [DateTime]::UtcNow.AddSeconds(30)
+    while ($true) {
+        try {
+            $operation.Lock(0, 1)
+            return $operation
+        } catch [System.IO.IOException] {
+            if ([DateTime]::UtcNow -ge $deadline) {
+                $operation.Dispose()
+                throw 'Timed out waiting for the Blender Box host operation lock.'
+            }
+            Start-Sleep -Milliseconds 100
+        }
+    }
+}
+`
+
 func prepareSetupScript(selected target.Target) string {
-	return fmt.Sprintf(`$ErrorActionPreference = 'Stop'
+	header := fmt.Sprintf(`$ErrorActionPreference = 'Stop'
 $root = '%s'
 $daemonPath = '%s'
 $blenderPath = '%s'
+$hostPath = '%s'
+$hostDirectory = [System.IO.Path]::GetDirectoryName($hostPath)
+$daemonDirectory = [System.IO.Path]::GetDirectoryName($daemonPath)
 $interactiveUser = '%s'
 $lockPath = [System.IO.Path]::Combine($root, 'host-lock.json')
-if (Test-Path -LiteralPath $lockPath) { throw 'Cannot apply setup while a Host Lock exists.' }
-if (-not (Test-Path -LiteralPath $daemonPath -PathType Leaf)) { throw 'Declared blendersessiond executable is missing.' }
-if (-not (Test-Path -LiteralPath $blenderPath -PathType Leaf)) { throw 'Declared Blender executable is missing.' }
-$interactiveSid = ([System.Security.Principal.NTAccount]::new($interactiveUser)).Translate([System.Security.Principal.SecurityIdentifier])
-$controllerSid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User
-$inherit = [System.Security.AccessControl.InheritanceFlags]::ContainerInherit -bor [System.Security.AccessControl.InheritanceFlags]::ObjectInherit
-$none = [System.Security.AccessControl.PropagationFlags]::None
-$allow = [System.Security.AccessControl.AccessControlType]::Allow
-$acl = [System.Security.AccessControl.DirectorySecurity]::new()
-$acl.SetAccessRuleProtection($true, $false)
-$acl.SetOwner($interactiveSid)
-$acl.AddAccessRule([System.Security.AccessControl.FileSystemAccessRule]::new($interactiveSid, [System.Security.AccessControl.FileSystemRights]::Modify, $inherit, $none, $allow))
-if ($controllerSid -ne $interactiveSid) { $acl.AddAccessRule([System.Security.AccessControl.FileSystemAccessRule]::new($controllerSid, [System.Security.AccessControl.FileSystemRights]::Modify, $inherit, $none, $allow)) }
-$acl.AddAccessRule([System.Security.AccessControl.FileSystemAccessRule]::new([System.Security.Principal.SecurityIdentifier]::new('S-1-5-18'), [System.Security.AccessControl.FileSystemRights]::FullControl, $inherit, $none, $allow))
-$acl.AddAccessRule([System.Security.AccessControl.FileSystemAccessRule]::new([System.Security.Principal.SecurityIdentifier]::new('S-1-5-32-544'), [System.Security.AccessControl.FileSystemRights]::FullControl, $inherit, $none, $allow))
-Set-Acl -LiteralPath $root -AclObject $acl`, selected.WorkRoot, selected.SessionBrokerExecutable, selected.BlenderExecutable, selected.InteractiveUser)
+$operationPath = [System.IO.Path]::Combine($root, '.operation.lock')
+`, selected.WorkRoot, selected.SessionBrokerExecutable, selected.BlenderExecutable, selected.HostExecutable, selected.InteractiveUser)
+	return header + setupOperationFunctions + `Assert-NoReparsePath $root
+Assert-NoReparsePath $hostDirectory
+Assert-NoReparsePath $daemonDirectory
+Assert-NoReparsePath $daemonPath
+Assert-NoReparsePath $blenderPath
+Assert-NoReparsePath $operationPath
+$operation = Enter-BlenderBoxOperation $operationPath
+try {
+    Assert-NoReparsePath $root
+    Assert-NoReparsePath $hostDirectory
+    Assert-NoReparsePath $daemonDirectory
+    Assert-NoReparsePath $daemonPath
+    Assert-NoReparsePath $blenderPath
+    Assert-NoReparsePath $operationPath
+    if (Test-Path -LiteralPath $lockPath) { throw 'Cannot apply setup while a Host Lock exists.' }
+    if (-not (Test-Path -LiteralPath $daemonPath -PathType Leaf)) { throw 'Declared blendersessiond executable is missing.' }
+    if (-not (Test-Path -LiteralPath $blenderPath -PathType Leaf)) { throw 'Declared Blender executable is missing.' }
+    $interactiveSid = ([System.Security.Principal.NTAccount]::new($interactiveUser)).Translate([System.Security.Principal.SecurityIdentifier])
+    $controllerSid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User
+    $inherit = [System.Security.AccessControl.InheritanceFlags]::ContainerInherit -bor [System.Security.AccessControl.InheritanceFlags]::ObjectInherit
+    $none = [System.Security.AccessControl.PropagationFlags]::None
+    $allow = [System.Security.AccessControl.AccessControlType]::Allow
+    $acl = [System.Security.AccessControl.DirectorySecurity]::new()
+    $acl.SetAccessRuleProtection($true, $false)
+    $acl.SetOwner($interactiveSid)
+    $acl.AddAccessRule([System.Security.AccessControl.FileSystemAccessRule]::new($interactiveSid, [System.Security.AccessControl.FileSystemRights]::Modify, $inherit, $none, $allow))
+    if ($controllerSid -ne $interactiveSid) { $acl.AddAccessRule([System.Security.AccessControl.FileSystemAccessRule]::new($controllerSid, [System.Security.AccessControl.FileSystemRights]::Modify, $inherit, $none, $allow)) }
+    $acl.AddAccessRule([System.Security.AccessControl.FileSystemAccessRule]::new([System.Security.Principal.SecurityIdentifier]::new('S-1-5-18'), [System.Security.AccessControl.FileSystemRights]::FullControl, $inherit, $none, $allow))
+    $acl.AddAccessRule([System.Security.AccessControl.FileSystemAccessRule]::new([System.Security.Principal.SecurityIdentifier]::new('S-1-5-32-544'), [System.Security.AccessControl.FileSystemRights]::FullControl, $inherit, $none, $allow))
+    Set-Acl -LiteralPath $root -AclObject $acl
+    New-Item -ItemType Directory -Force -Path $hostDirectory | Out-Null
+    Assert-NoReparsePath $hostDirectory
+    Set-Acl -LiteralPath $hostDirectory -AclObject $acl
+    if ($daemonDirectory -ine $hostDirectory) { Set-Acl -LiteralPath $daemonDirectory -AclObject $acl }
+
+    $stateFileAcl = [System.Security.AccessControl.FileSecurity]::new()
+    $stateFileAcl.SetAccessRuleProtection($true, $false)
+    $stateFileAcl.SetOwner($interactiveSid)
+    $stateFileAcl.AddAccessRule([System.Security.AccessControl.FileSystemAccessRule]::new($interactiveSid, [System.Security.AccessControl.FileSystemRights]::Modify, [System.Security.AccessControl.InheritanceFlags]::None, $none, $allow))
+    if ($controllerSid -ne $interactiveSid) { $stateFileAcl.AddAccessRule([System.Security.AccessControl.FileSystemAccessRule]::new($controllerSid, [System.Security.AccessControl.FileSystemRights]::Modify, [System.Security.AccessControl.InheritanceFlags]::None, $none, $allow)) }
+    $stateFileAcl.AddAccessRule([System.Security.AccessControl.FileSystemAccessRule]::new([System.Security.Principal.SecurityIdentifier]::new('S-1-5-18'), [System.Security.AccessControl.FileSystemRights]::FullControl, [System.Security.AccessControl.InheritanceFlags]::None, $none, $allow))
+    $stateFileAcl.AddAccessRule([System.Security.AccessControl.FileSystemAccessRule]::new([System.Security.Principal.SecurityIdentifier]::new('S-1-5-32-544'), [System.Security.AccessControl.FileSystemRights]::FullControl, [System.Security.AccessControl.InheritanceFlags]::None, $none, $allow))
+    Set-Acl -LiteralPath $operationPath -AclObject $stateFileAcl
+
+    $fileAcl = [System.Security.AccessControl.FileSecurity]::new()
+    $fileAcl.SetAccessRuleProtection($true, $false)
+    $fileAcl.SetOwner($interactiveSid)
+    $fileAcl.AddAccessRule([System.Security.AccessControl.FileSystemAccessRule]::new($interactiveSid, [System.Security.AccessControl.FileSystemRights]::ReadAndExecute, [System.Security.AccessControl.InheritanceFlags]::None, $none, $allow))
+    if ($controllerSid -ne $interactiveSid) { $fileAcl.AddAccessRule([System.Security.AccessControl.FileSystemAccessRule]::new($controllerSid, [System.Security.AccessControl.FileSystemRights]::ReadAndExecute, [System.Security.AccessControl.InheritanceFlags]::None, $none, $allow)) }
+    $fileAcl.AddAccessRule([System.Security.AccessControl.FileSystemAccessRule]::new([System.Security.Principal.SecurityIdentifier]::new('S-1-5-18'), [System.Security.AccessControl.FileSystemRights]::FullControl, [System.Security.AccessControl.InheritanceFlags]::None, $none, $allow))
+    $fileAcl.AddAccessRule([System.Security.AccessControl.FileSystemAccessRule]::new([System.Security.Principal.SecurityIdentifier]::new('S-1-5-32-544'), [System.Security.AccessControl.FileSystemRights]::FullControl, [System.Security.AccessControl.InheritanceFlags]::None, $none, $allow))
+    Set-Acl -LiteralPath $daemonPath -AclObject $fileAcl
+    if (Test-Path -LiteralPath $hostPath -PathType Leaf) { Set-Acl -LiteralPath $hostPath -AclObject $fileAcl }
+} finally {
+    try { $operation.Unlock(0, 1) } finally { $operation.Dispose() }
+}`
 }
 
 func setupScript(selected target.Target, plan SetupResult, stagedBinary string) string {
@@ -211,6 +297,8 @@ $root = '%s'
 $hostPath = '%s'
 $daemonPath = '%s'
 $blenderPath = '%s'
+$hostDirectory = [System.IO.Path]::GetDirectoryName($hostPath)
+$daemonDirectory = [System.IO.Path]::GetDirectoryName($daemonPath)
 $interactiveUser = '%s'
 $taskName = '%s'
 $expectedArguments = '%s'
@@ -220,6 +308,8 @@ $stagedBinary = '%s'
 $temporary = $hostPath + '.setup-' + [Guid]::NewGuid().ToString('N')
 $backup = $hostPath + '.setup-backup-' + [Guid]::NewGuid().ToString('N')
 $lockPath = [System.IO.Path]::Combine($root, 'host-lock.json')
+$operationPath = [System.IO.Path]::Combine($root, '.operation.lock')
+%s
 function New-BlenderBoxDirectoryAcl {
     $inherit = [System.Security.AccessControl.InheritanceFlags]::ContainerInherit -bor [System.Security.AccessControl.InheritanceFlags]::ObjectInherit
     $none = [System.Security.AccessControl.PropagationFlags]::None
@@ -287,12 +377,27 @@ function New-BlenderBoxFileAcl {
     $acl.AddAccessRule([System.Security.AccessControl.FileSystemAccessRule]::new([System.Security.Principal.SecurityIdentifier]::new('S-1-5-32-544'), [System.Security.AccessControl.FileSystemRights]::FullControl, $noneInheritance, $nonePropagation, $allow))
     return $acl
 }
+$operation = $null
 try {
+    Assert-NoReparsePath $root
+    Assert-NoReparsePath $hostDirectory
+    Assert-NoReparsePath $daemonDirectory
+    Assert-NoReparsePath $daemonPath
+    Assert-NoReparsePath $blenderPath
+    Assert-NoReparsePath $stagedBinary
+    Assert-NoReparsePath $operationPath
+    $operation = Enter-BlenderBoxOperation $operationPath
+    Assert-NoReparsePath $root
+    Assert-NoReparsePath $hostDirectory
+    Assert-NoReparsePath $daemonDirectory
+    Assert-NoReparsePath $daemonPath
+    Assert-NoReparsePath $blenderPath
+    Assert-NoReparsePath $stagedBinary
+    Assert-NoReparsePath $operationPath
     if (Test-Path -LiteralPath $lockPath) { throw 'Cannot apply setup while a Host Lock exists.' }
     New-Item -ItemType Directory -Force -Path $root | Out-Null
-    $hostDirectory = [System.IO.Path]::GetDirectoryName($hostPath)
-    $daemonDirectory = [System.IO.Path]::GetDirectoryName($daemonPath)
     New-Item -ItemType Directory -Force -Path $hostDirectory | Out-Null
+    Assert-NoReparsePath $hostDirectory
     if (-not (Test-Path -LiteralPath $daemonPath -PathType Leaf)) { throw 'Declared blendersessiond executable is missing.' }
     if (-not (Test-Path -LiteralPath $blenderPath -PathType Leaf)) { throw 'Declared Blender executable is missing.' }
     $interactiveSid = ([System.Security.Principal.NTAccount]::new($interactiveUser)).Translate([System.Security.Principal.SecurityIdentifier])
@@ -300,6 +405,7 @@ try {
     Set-Acl -LiteralPath $root -AclObject (New-BlenderBoxDirectoryAcl)
     Set-BlenderBoxStateTree ([System.IO.Path]::Combine($root, 'runs'))
     Set-BlenderBoxStateTree ([System.IO.Path]::Combine($root, 'receipts'))
+    Set-Acl -LiteralPath $operationPath -AclObject (New-BlenderBoxStateFileAcl)
     Set-Acl -LiteralPath $hostDirectory -AclObject (New-BlenderBoxDirectoryAcl)
     if ($daemonDirectory -ine $hostDirectory) { Set-Acl -LiteralPath $daemonDirectory -AclObject (New-BlenderBoxDirectoryAcl) }
     if ((Get-Item -LiteralPath $stagedBinary).Length -ne $expectedSize) { throw 'Host binary size changed in transfer.' }
@@ -350,6 +456,7 @@ try {
     if (Test-Path -LiteralPath $temporary) { Remove-Item -Force -LiteralPath $temporary }
     if (Test-Path -LiteralPath $backup) { Remove-Item -Force -LiteralPath $backup }
     if (Test-Path -LiteralPath $stagedBinary) { Remove-Item -Force -LiteralPath $stagedBinary }
+    if ($null -ne $operation) { try { $operation.Unlock(0, 1) } finally { $operation.Dispose() } }
 }
-`, selected.WorkRoot, selected.HostExecutable, selected.SessionBrokerExecutable, selected.BlenderExecutable, selected.InteractiveUser, selected.TaskName, taskArguments, plan.HostSize, plan.HostSHA256, stagedBinary)
+`, selected.WorkRoot, selected.HostExecutable, selected.SessionBrokerExecutable, selected.BlenderExecutable, selected.InteractiveUser, selected.TaskName, taskArguments, plan.HostSize, plan.HostSHA256, stagedBinary, setupOperationFunctions)
 }
