@@ -209,6 +209,24 @@ func TestFileInfoStableDetectsSameSizeChange(t *testing.T) {
 	}
 }
 
+func TestLoadRejectsWindowsUnicodeDestinationCollision(t *testing.T) {
+	root := t.TempDir()
+	for _, name := range []string{"first.py", "second.py"} {
+		if err := os.WriteFile(filepath.Join(root, name), []byte("pass\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	document := `{"schema_version":1,"files":[{"source":"first.py","destination":"S.py"},{"source":"second.py","destination":"ſ.py"}],"scenario":{"script":"S.py"}}`
+	path := filepath.Join(root, "payload.json")
+	if err := os.WriteFile(path, []byte(document), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, err := Load(path)
+	if err == nil || !strings.Contains(err.Error(), "duplicate destination") {
+		t.Fatalf("error = %v", err)
+	}
+}
+
 func writeScenario(t *testing.T, root string) {
 	t.Helper()
 	if err := os.WriteFile(filepath.Join(root, "scenario.py"), []byte("pass\n"), 0o600); err != nil {

@@ -410,7 +410,7 @@ func (runner *Runner) collectEvidence(ctx context.Context, intent RunIntent, rec
 		if err := validateEvidenceFile(file); err != nil {
 			return fmt.Errorf("evidence %q: %w", file.Path, err)
 		}
-		key := strings.ToLower(file.Path)
+		key := safepath.WindowsKey(file.Path)
 		if _, exists := seen[key]; exists {
 			return fmt.Errorf("evidence %q: duplicate path", file.Path)
 		}

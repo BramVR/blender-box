@@ -7,6 +7,11 @@ import (
 	"unicode/utf16"
 )
 
+// WindowsKey returns the case-insensitive filename identity used for collision checks.
+func WindowsKey(value string) string {
+	return strings.ToUpper(value)
+}
+
 // ValidateWindowsRelative enforces one portable relative-path grammar for host transfer.
 func ValidateWindowsRelative(label, value string) error {
 	if value == "" || strings.Contains(value, `\`) || strings.HasPrefix(value, "/") || strings.ContainsAny(value, `<>:"|?*`) {

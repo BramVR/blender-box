@@ -117,7 +117,7 @@ func Load(path string) (Payload, error) {
 		if err := safepath.ValidateWindowsRelative("destination", declaredFile.Destination); err != nil {
 			return Payload{}, err
 		}
-		destinationKey := strings.ToLower(declaredFile.Destination)
+		destinationKey := safepath.WindowsKey(declaredFile.Destination)
 		if _, exists := destinations[destinationKey]; exists {
 			return Payload{}, fmt.Errorf("duplicate destination %q", declaredFile.Destination)
 		}
@@ -141,7 +141,7 @@ func Load(path string) (Payload, error) {
 			contents:    contents,
 		})
 	}
-	if _, exists := destinations[strings.ToLower(declared.Scenario.Script)]; !exists {
+	if _, exists := destinations[safepath.WindowsKey(declared.Scenario.Script)]; !exists {
 		return Payload{}, fmt.Errorf("scenario script %q is not a declared destination", declared.Scenario.Script)
 	}
 	if err := result.Validate(); err != nil {
@@ -173,7 +173,7 @@ func (payload Payload) Validate() error {
 		if err := safepath.ValidateWindowsRelative("destination", file.Destination); err != nil {
 			return err
 		}
-		key := strings.ToLower(file.Destination)
+		key := safepath.WindowsKey(file.Destination)
 		if _, exists := destinations[key]; exists {
 			return fmt.Errorf("duplicate destination %q", file.Destination)
 		}
@@ -193,7 +193,7 @@ func (payload Payload) Validate() error {
 			return fmt.Errorf("payload exceeds %d bytes", maxTotalBytes)
 		}
 	}
-	if _, exists := destinations[strings.ToLower(payload.Scenario.Script)]; !exists {
+	if _, exists := destinations[safepath.WindowsKey(payload.Scenario.Script)]; !exists {
 		return fmt.Errorf("scenario script %q is not a declared destination", payload.Scenario.Script)
 	}
 	return nil

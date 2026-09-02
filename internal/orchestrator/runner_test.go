@@ -409,6 +409,29 @@ func TestDuplicateEvidencePathsFailBeforeFetch(t *testing.T) {
 	}
 }
 
+type unicodeCollisionEvidenceHost struct {
+	duplicateEvidenceHost
+}
+
+func (host *unicodeCollisionEvidenceHost) Observe(ctx context.Context, target target.Target, runID RunID) (RunReceipt, error) {
+	receipt, err := host.fakeHost.Observe(ctx, target, runID)
+	collision := receipt.Evidence.Files[0]
+	collision.Path = "ſcenario-result.json"
+	receipt.Evidence.Files = append(receipt.Evidence.Files, collision)
+	return receipt, err
+}
+
+func TestWindowsUnicodeEvidenceCollisionFailsBeforeFetch(t *testing.T) {
+	host := &unicodeCollisionEvidenceHost{duplicateEvidenceHost: duplicateEvidenceHost{fakeHost: fakeHost{evidence: testEvidence()}}}
+	_, err := New(host).Run(context.Background(), testIntent(t))
+	if err == nil || !strings.Contains(err.Error(), "duplicate path") {
+		t.Fatalf("error = %v", err)
+	}
+	if host.fetchCalls != 0 {
+		t.Fatalf("fetched %d files before rejecting manifest", host.fetchCalls)
+	}
+}
+
 func TestEvidencePathsUseWindowsSafePortableGrammar(t *testing.T) {
 	for _, path := range []string{"C:/temp/result.json", "CON.png", "nested/trailing. "} {
 		t.Run(path, func(t *testing.T) {

@@ -38,3 +38,9 @@ func TestValidateWindowsRelativeRejectsOtherDevicesAndOverlongComponents(t *test
 		t.Fatalf("240 UTF-16 code-unit relative path rejected: %v", err)
 	}
 }
+
+func TestWindowsKeyUsesUppercaseUnicodeIdentity(t *testing.T) {
+	if WindowsKey("S.py") != WindowsKey("ſ.py") {
+		t.Fatal("Windows-colliding names produced different keys")
+	}
+}
