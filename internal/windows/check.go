@@ -64,7 +64,7 @@ function Test-ConservativePathAccess([string]$Path, [string]$PrincipalSid, [Syst
     }
     return ($denyMask -band $requiredMask) -eq 0 -and ($allowMask -band $requiredMask) -eq $requiredMask
 }
-function Test-TrustedWriters([string]$Path, [string]$PrincipalSid, [string]$ControllerSid, [bool]$ProtectChildren) {
+function Test-TrustedWriters([string]$Path, [string]$PrincipalSid, [string]$ControllerSid, [bool]$ProtectChildren, [bool]$AllowControllerOwner) {
     if (-not (Test-Path -LiteralPath $Path -ErrorAction SilentlyContinue)) { return $false }
     $trustedOwners = @(
         $PrincipalSid,
@@ -72,6 +72,7 @@ function Test-TrustedWriters([string]$Path, [string]$PrincipalSid, [string]$Cont
         'S-1-5-32-544',
         'S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464'
     )
+    if ($AllowControllerOwner) { $trustedOwners += $ControllerSid }
     $trustedWriters = @($trustedOwners) + @($ControllerSid)
     if ($ProtectChildren) { $trustedWriters += 'S-1-3-0' }
     try { $acl = Get-Acl -LiteralPath $Path -ErrorAction Stop } catch { return $false }
@@ -176,14 +177,14 @@ function Test-NoReparsePoints([string]$Path) {
     }
     return $false
 }
-function Test-SafePath([string]$Path, [string]$PrincipalSid, [string]$ControllerSid, [System.Security.AccessControl.FileSystemRights]$RequiredRights, [bool]$RequireDirectAllow, [bool]$RequireSealedParent, [bool]$ProtectChildren) {
+function Test-SafePath([string]$Path, [string]$PrincipalSid, [string]$ControllerSid, [System.Security.AccessControl.FileSystemRights]$RequiredRights, [bool]$RequireDirectAllow, [bool]$RequireSealedParent, [bool]$ProtectChildren, [bool]$AllowControllerOwner) {
     if (-not (Test-NoReparsePoints $Path)) { return $false }
     if (-not (Test-ConservativePathAccess $Path $PrincipalSid $RequiredRights $RequireDirectAllow)) { return $false }
-    if (-not (Test-TrustedWriters $Path $PrincipalSid $ControllerSid $ProtectChildren)) { return $false }
+    if (-not (Test-TrustedWriters $Path $PrincipalSid $ControllerSid $ProtectChildren $AllowControllerOwner)) { return $false }
     $parent = [System.IO.Path]::GetDirectoryName($Path)
     if ($null -eq $parent) { return $false }
     if ($RequireSealedParent) {
-        if (-not (Test-TrustedWriters $parent $PrincipalSid $ControllerSid $true)) { return $false }
+        if (-not (Test-TrustedWriters $parent $PrincipalSid $ControllerSid $true $AllowControllerOwner)) { return $false }
     } elseif (-not (Test-TrustedAncestor $parent $PrincipalSid $ControllerSid)) {
         return $false
     }
@@ -209,14 +210,14 @@ function Test-SafeStateTree([string]$Path, [string]$PrincipalSid, [string]$Contr
     while ($pending.Count -gt 0) {
         $directory = $pending.Pop()
         if (([int64]$directory.Attributes -band [int64][System.IO.FileAttributes]::ReparsePoint) -ne 0) { return $false }
-        if (-not (Test-SafePath $directory.FullName $PrincipalSid $ControllerSid $modify $true $true $true)) { return $false }
+        if (-not (Test-SafePath $directory.FullName $PrincipalSid $ControllerSid $modify $false $true $true $true)) { return $false }
         try { $children = @($directory.EnumerateFileSystemInfos()) } catch { return $false }
         foreach ($child in $children) {
             if (([int64]$child.Attributes -band [int64][System.IO.FileAttributes]::ReparsePoint) -ne 0) { return $false }
             $isDirectory = ([int64]$child.Attributes -band [int64][System.IO.FileAttributes]::Directory) -ne 0
             if ($isDirectory) {
                 $pending.Push($child)
-            } elseif (-not (Test-SafePath $child.FullName $PrincipalSid $ControllerSid $modify $true $true $false)) {
+            } elseif (-not (Test-SafePath $child.FullName $PrincipalSid $ControllerSid $modify $false $true $false $true)) {
                 return $false
             }
         }
@@ -248,11 +249,11 @@ $modify = [System.Security.AccessControl.FileSystemRights]::Modify
 $blenderOK = Test-Path -LiteralPath $blenderPath -PathType Leaf -ErrorAction SilentlyContinue
 $daemonOK = Test-Path -LiteralPath $daemonPath -PathType Leaf -ErrorAction SilentlyContinue
 $hostOK = Test-Path -LiteralPath $hostPath -PathType Leaf -ErrorAction SilentlyContinue
-Add-Check 'blender.executable' ($blenderOK -and (Test-SafePath $blenderPath $expectedSid $sshSid $readExecute $false $true $false)) $true $blenderPath 'existing executable with safe readers, owner, and writers' 'The configured Blender executable and parent must reject untrusted writers.'
-Add-Check 'daemon.executable' ($daemonOK -and (Test-SafePath $daemonPath $expectedSid $sshSid $readExecute $true $true $false)) $true $daemonPath 'existing executable with explicit task-principal access and trusted writers' 'The staged session broker and parent must carry the setup ACL.'
-Add-Check 'host.executable' ($hostOK -and (Test-SafePath $hostPath $expectedSid $sshSid $readExecute $true $true $false)) $true $hostPath 'existing executable with explicit task-principal access and trusted writers' 'The staged Blender Box host binary and parent must carry the setup ACL.'
+Add-Check 'blender.executable' ($blenderOK -and (Test-SafePath $blenderPath $expectedSid $sshSid $readExecute $false $true $false $false)) $true $blenderPath 'existing executable with safe readers, owner, and writers' 'The configured Blender executable and parent must reject untrusted writers.'
+Add-Check 'daemon.executable' ($daemonOK -and (Test-SafePath $daemonPath $expectedSid $sshSid $readExecute $true $true $false $false)) $true $daemonPath 'existing executable with explicit task-principal access and trusted writers' 'The staged session broker and parent must carry the setup ACL.'
+Add-Check 'host.executable' ($hostOK -and (Test-SafePath $hostPath $expectedSid $sshSid $readExecute $true $true $false $false)) $true $hostPath 'existing executable with explicit task-principal access and trusted writers' 'The staged Blender Box host binary and parent must carry the setup ACL.'
 $rootExists = Test-Path -LiteralPath ([string]$config.work_root) -PathType Container -ErrorAction SilentlyContinue
-Add-Check 'work-root.access' ($rootExists -and (Test-SafePath ([string]$config.work_root) $expectedSid $sshSid $modify $true $false $true)) $true ([string]$config.work_root) 'existing directory with explicit task-principal access and trusted writers' 'The operator-managed work root and inherited child ACL must carry the setup authority and have trusted ancestors.'
+Add-Check 'work-root.access' ($rootExists -and (Test-SafePath ([string]$config.work_root) $expectedSid $sshSid $modify $true $false $true $false)) $true ([string]$config.work_root) 'existing directory with explicit task-principal access and trusted writers' 'The operator-managed work root and inherited child ACL must carry the setup authority and have trusted ancestors.'
 $stateTreeOK = $rootExists -and (Test-SafeStateTree ([System.IO.Path]::Combine([string]$config.work_root, 'runs')) $expectedSid $sshSid) -and (Test-SafeStateTree ([System.IO.Path]::Combine([string]$config.work_root, 'receipts')) $expectedSid $sshSid)
 Add-Check 'work-root.state-tree' $stateTreeOK $true $stateTreeOK $true 'Existing Run and receipt trees must contain no reparse points and only declared writers.'
 $task = Get-ScheduledTask -TaskPath '\' -TaskName ([string]$config.task_name) -ErrorAction SilentlyContinue

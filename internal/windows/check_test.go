@@ -90,3 +90,11 @@ func TestCheckAcceptsCompleteFailedEvidence(t *testing.T) {
 		t.Fatalf("Windows check deadline window = %s, want a bounded cold-start budget", fake.deadlineWindow)
 	}
 }
+
+func TestCheckStateTreeAcceptsControllerOwnedInheritedRuntimeState(t *testing.T) {
+	if !strings.Contains(checkScript, "[bool]$AllowControllerOwner") ||
+		!strings.Contains(checkScript, "if ($AllowControllerOwner) { $trustedOwners += $ControllerSid }") ||
+		!strings.Contains(checkScript, "$modify $false $true $true $true") {
+		t.Fatal("state-tree inspection does not accept runtime state owned by the declared controller with inherited task access")
+	}
+}
