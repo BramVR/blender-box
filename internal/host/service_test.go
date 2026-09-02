@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -330,6 +331,65 @@ func TestSettleReleasesExactPartialAcquireWithoutReceipt(t *testing.T) {
 	}
 	if _, err := os.Stat(lockPath(root)); !os.IsNotExist(err) {
 		t.Fatalf("Host Lock remains: %v", err)
+	}
+}
+
+func TestSettleRecoversPartialRunRootCleanupWithoutRepeatingStop(t *testing.T) {
+	root := t.TempDir()
+	now := time.Now().UTC()
+	daemon := &fakeDaemon{}
+	service := NewService(Dependencies{Tasks: &fakeTaskLauncher{}, Daemon: daemon, Now: func() time.Time { return now }})
+	request := stageHostTestRun(t, service, root, now, false)
+	if _, err := service.Start(context.Background(), root, request); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.ExecutePending(context.Background(), root); err != nil {
+		t.Fatal(err)
+	}
+	receipt, err := service.Status(root, StatusRequest{SchemaVersion: 1, RunID: request.Claim.RunID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	receipt.Cleanup.SessionStopped = true
+	if err := service.writeReceipt(root, receipt); err != nil {
+		t.Fatal(err)
+	}
+	runRoot := runPath(root, request.Claim.RunID)
+	if err := os.Remove(filepath.Join(runRoot, "ownership.json")); err != nil {
+		t.Fatal(err)
+	}
+
+	cleanup, err := service.Settle(context.Background(), root, SettleRequest{SchemaVersion: 1, Receipt: receipt})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cleanup.Known() || len(daemon.stops) != 0 {
+		t.Fatalf("cleanup = %+v, stops = %+v", cleanup, daemon.stops)
+	}
+}
+
+func TestRunRootCleanupPreservesOwnershipUntilOtherEntriesAreRemoved(t *testing.T) {
+	runRoot := t.TempDir()
+	ownership := filepath.Join(runRoot, "ownership.json")
+	if err := os.WriteFile(ownership, []byte("owned\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	blocked := filepath.Join(runRoot, "daemon")
+	if err := os.Mkdir(blocked, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	removeAll := func(path string) error {
+		if path == blocked {
+			return fmt.Errorf("sharing violation")
+		}
+		return os.RemoveAll(path)
+	}
+
+	if err := removeRunRootPreservingOwnership(runRoot, removeAll); err == nil {
+		t.Fatal("cleanup unexpectedly succeeded")
+	}
+	if _, err := os.Stat(ownership); err != nil {
+		t.Fatalf("ownership proof was removed before blocked entries: %v", err)
 	}
 }
 

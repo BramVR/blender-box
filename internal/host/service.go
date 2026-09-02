@@ -601,7 +601,7 @@ func (service *Service) Settle(ctx context.Context, root string, request SettleR
 	if lock.SessionID != stored.SessionID {
 		return orchestrator.CleanupState{}, fmt.Errorf("settle authority does not match Host Lock")
 	}
-	if stored.SessionID != "" {
+	if stored.SessionID != "" && !stored.Cleanup.SessionStopped {
 		var runRequest orchestrator.RunRequest
 		if err := readJSON(filepath.Join(runPath(root, stored.Claim.RunID), "request.json"), &runRequest, maxScenarioJSON); err != nil {
 			return orchestrator.CleanupState{}, err
@@ -624,11 +624,16 @@ func (service *Service) Settle(ctx context.Context, root string, request SettleR
 	}
 	runRoot := runPath(root, stored.Claim.RunID)
 	if _, err := os.Lstat(runRoot); err == nil {
+		ownershipPath := filepath.Join(runRoot, "ownership.json")
 		var ownership lockRecord
-		if err := readJSON(filepath.Join(runRoot, "ownership.json"), &ownership, maxScenarioJSON); err != nil || !ownership.Claim.Equal(stored.Claim) || ownership.SessionID != "" {
+		if err := readJSON(ownershipPath, &ownership, maxScenarioJSON); err != nil {
+			if _, statErr := os.Lstat(ownershipPath); !stored.Cleanup.SessionStopped || !os.IsNotExist(statErr) {
+				return orchestrator.CleanupState{}, fmt.Errorf("Run root ownership does not match")
+			}
+		} else if !ownership.Claim.Equal(stored.Claim) || ownership.SessionID != "" {
 			return orchestrator.CleanupState{}, fmt.Errorf("Run root ownership does not match")
 		}
-		if err := os.RemoveAll(runRoot); err != nil {
+		if err := removeRunRootPreservingOwnership(runRoot, os.RemoveAll); err != nil {
 			return orchestrator.CleanupState{}, err
 		}
 	} else if !os.IsNotExist(err) {
@@ -649,6 +654,26 @@ func (service *Service) Settle(ctx context.Context, root string, request SettleR
 	}
 	_ = os.Remove(filepath.Join(root, "pending-request.json"))
 	return stored.Cleanup, nil
+}
+
+func removeRunRootPreservingOwnership(runRoot string, removeAll func(string) error) error {
+	entries, err := os.ReadDir(runRoot)
+	if err != nil {
+		return err
+	}
+	for _, entry := range entries {
+		if strings.EqualFold(entry.Name(), "ownership.json") {
+			continue
+		}
+		if err := removeAll(filepath.Join(runRoot, entry.Name())); err != nil {
+			return err
+		}
+	}
+	ownershipPath := filepath.Join(runRoot, "ownership.json")
+	if err := os.Remove(ownershipPath); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	return os.Remove(runRoot)
 }
 
 func (service *Service) callScenario(ctx context.Context, root string, request orchestrator.RunRequest, sessionID orchestrator.SessionID, environment map[string]string) ([]byte, error) {
