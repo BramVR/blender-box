@@ -52,13 +52,13 @@ type RunIntent struct {
 }
 
 type HostAdapter interface {
-    Inspect(context.Context, Target) (HostInspection, error)
-    Acquire(context.Context, LockClaim) (HostLease, error)
-    Stage(context.Context, HostLease, Payload) (StagedPayload, error)
-    Start(context.Context, HostLease, RunRequest) (RunReceipt, error)
-    Observe(context.Context, HostLease) (RunReceipt, error)
-    Fetch(context.Context, HostLease, EvidenceManifest) error
-    Settle(context.Context, HostLease, Settlement) (CleanupState, error)
+    Inspect(context.Context, Target) error
+    Acquire(context.Context, Target, LockClaim) error
+    Stage(context.Context, Target, LockClaim, Payload) error
+    Start(context.Context, Target, RunRequest) (RunReceipt, error)
+    Observe(context.Context, Target, RunID) (RunReceipt, error)
+    Fetch(context.Context, Target, RunReceipt, EvidenceFile) ([]byte, error)
+    Settle(context.Context, Target, RunReceipt) (CleanupState, error)
 }
 ```
 
@@ -73,7 +73,7 @@ type LockClaim struct {
     RequestID     RequestID
     ControllerID  string
     Deadline      time.Time
-    RequestSHA256 SHA256
+    RequestHash   SHA256
     TaskName      string
 }
 
@@ -129,4 +129,6 @@ A Python-only client and host helper would make the first code quick to write, b
 
 The first landed seam is `windows check --target <file> --json`. One Go binary serves both the client and the future static task entry point; Python remains inside Blender-owned Scenario scripts. The check streams a bounded read-only PowerShell program over SSH, resolves the configured console user to an SID, and validates declared paths and the root Scheduled Task without relying on the SSH user's `PATH`.
 
-The remaining `run`, `status`, and `stop` commands must enter through the `Runner` boundary above. They must not expose host adapter phases as public CLI switches.
+The Run contract and deterministic orchestration core are implemented behind `Runner`. A strict Payload loader computes transfer size and SHA-256 locally, rejects unsafe paths and symlinks, and enforces file and aggregate bounds. The integrated fake-host test proves the full ordering from inspection and Host Lock acquisition through exact Session receipt, hash-verified evidence, and known settlement without exposing adapter phases in the CLI.
+
+The remaining `run`, `status`, and `stop` commands and Windows adapter must enter through the `Runner` boundary above. They must not expose host adapter phases as public CLI switches.
