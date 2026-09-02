@@ -44,6 +44,25 @@ type fakeProcessRunner struct {
 	environments []map[string]string
 }
 
+func TestRuntimeTypesDaemonReadTimeoutAsDeadlineExceeded(t *testing.T) {
+	fake := &fakeProcessRunner{
+		outputs: [][]byte{[]byte(`{"schema_version":1,"status":"error","command":"call","reason":"timeout","message":"Timed out waiting for Blender"}`)},
+		errors:  []error{errors.New("exit status 1")},
+	}
+
+	_, err := NewRuntime(fake).Call(context.Background(), DaemonCall{
+		Executable:         `C:\Bin\blendersessiond.exe`,
+		Name:               "blender-box-test",
+		SessionID:          "bss_exact-runtime-session-identity-123456",
+		Command:            "execute_code",
+		Parameters:         json.RawMessage(`{"code":"pass"}`),
+		ReadTimeoutSeconds: 600,
+	})
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("Call() error = %v, want deadline exceeded", err)
+	}
+}
+
 func TestRuntimeTreatsExactStoppedSessionAbsenceAsIdempotent(t *testing.T) {
 	fake := &fakeProcessRunner{
 		outputs: [][]byte{[]byte(`{"schema_version":1,"status":"not-found","session":{"name":"blender-box-test","status":"not-found"}}`)},

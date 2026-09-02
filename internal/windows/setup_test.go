@@ -197,7 +197,7 @@ func TestSetupRequiresCompatibleSessionBrokerBeforeTaskRegistration(t *testing.T
 		for _, required := range []string{
 			"function Assert-CompatibleSessionBroker",
 			"function Invoke-SessionBrokerProbe",
-			"'capabilities', '--require', 'blender-box-v1'",
+			"'capabilities', '--require', 'blender-box-v1', '--require-capability', 'typed-call-error-reason'",
 			"Start-Process -FilePath $Path",
 			"-RedirectStandardOutput 'NUL'",
 			"-RedirectStandardError '\\\\.\\NUL'",

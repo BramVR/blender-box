@@ -142,6 +142,7 @@ type fakeDaemon struct {
 	stops            []DaemonStop
 	recovered        orchestrator.SessionID
 	captureResponse  json.RawMessage
+	callError        error
 	scenarioResponse json.RawMessage
 }
 
@@ -225,6 +226,9 @@ func (fake *fakeDaemon) WaitReady(_ context.Context, request DaemonReady) error 
 
 func (fake *fakeDaemon) Call(_ context.Context, request DaemonCall) (json.RawMessage, error) {
 	fake.calls = append(fake.calls, request)
+	if fake.callError != nil {
+		return nil, fake.callError
+	}
 	if request.Command == "execute_code" {
 		if fake.scenarioResponse != nil {
 			return fake.scenarioResponse, nil
@@ -256,6 +260,24 @@ func (fake *fakeDaemon) Call(_ context.Context, request DaemonCall) (json.RawMes
 	}
 	response, _ := json.Marshal(map[string]any{"success": true, "method": "offscreen", "width": 800, "height": 600, "filepath": parameters.Filepath})
 	return response, nil
+}
+
+func TestScenarioReadTimeoutPersistsTimedOutReceipt(t *testing.T) {
+	root := t.TempDir()
+	now := time.Now().UTC()
+	daemon := &fakeDaemon{callError: context.DeadlineExceeded}
+	service := NewService(Dependencies{Tasks: &fakeTaskLauncher{}, Daemon: daemon, Now: func() time.Time { return now }})
+	request := stageHostTestRun(t, service, root, now, false)
+	if _, err := service.Start(context.Background(), root, request); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.ExecutePending(context.Background(), root); err == nil {
+		t.Fatal("ExecutePending() unexpectedly passed daemon read timeout")
+	}
+	receipt, err := service.Status(root, StatusRequest{SchemaVersion: 1, RunID: request.Claim.RunID})
+	if err != nil || receipt.State != orchestrator.StateTimedOut || receipt.SessionID == "" {
+		t.Fatalf("read-timeout receipt = %+v, error = %v", receipt, err)
+	}
 }
 
 func TestScenarioCallAcceptsMaximumResultAfterOuterJSONEscaping(t *testing.T) {

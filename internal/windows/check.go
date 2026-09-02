@@ -33,7 +33,7 @@ function Normalize-Path([string]$Path) {
 }
 ` + sessionBrokerProbeFunctions + `
 function Test-SessionBrokerContract([string]$Path) {
-    $result = Invoke-SessionBrokerProbe $Path @('capabilities', '--require', 'blender-box-v1')
+    $result = Invoke-SessionBrokerProbe $Path @('capabilities', '--require', 'blender-box-v1', '--require-capability', 'typed-call-error-reason')
     return $null -ne $result -and [int]$result -eq 0
 }
 function Expand-FileSystemMask([int64]$Mask) {

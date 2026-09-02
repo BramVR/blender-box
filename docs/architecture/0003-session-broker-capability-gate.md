@@ -24,7 +24,7 @@ Design C gives `blendersessiond` one versioned capability command with a require
 
 ## Decision
 
-Slice 0 uses Design C. After proving the daemon path is trusted, `windows check` runs `blendersessiond capabilities --require blender-box-v1`. That contract means the daemon returns opaque Session identities, requires them for call and stop, and accepts bounded call read timeouts. Explicit setup applies the daemon ACL, runs the same probe, and registers the Scheduled Task only after it passes.
+Slice 0 uses Design C. After proving the daemon path is trusted, `windows check` runs `blendersessiond capabilities --require blender-box-v1 --require-capability typed-call-error-reason`. That contract means the daemon returns opaque Session identities, requires them for call and stop, accepts bounded call read timeouts, and types a read-timeout failure independently of process exit prose. Explicit setup applies the daemon ACL, runs the same probe, and registers the Scheduled Task only after it passes.
 
 The probe has a ten-second process deadline and gives stdout and stderr distinct spellings of the Windows null device, so output never enters PowerShell or client memory. It touches the process handle before waiting because Windows PowerShell otherwise may not retain the exit code for a redirected `Start-Process`. Failure is readiness failure; it never falls back to an unfenced call or stop.
 

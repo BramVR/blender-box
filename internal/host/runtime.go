@@ -174,6 +174,17 @@ func (runtime *Runtime) Call(ctx context.Context, request DaemonCall) (json.RawM
 		"--json",
 	}, request.Environment)
 	if err != nil {
+		var failure struct {
+			SchemaVersion int    `json:"schema_version"`
+			Status        string `json:"status"`
+			Command       string `json:"command"`
+			Reason        string `json:"reason"`
+		}
+		if decodeExtensibleJSON(output, &failure, maxProcessOutput) == nil &&
+			failure.SchemaVersion == 1 && failure.Status == "error" &&
+			failure.Command == "call" && failure.Reason == "timeout" {
+			return nil, fmt.Errorf("blendersessiond call read timeout: %w", context.DeadlineExceeded)
+		}
 		return nil, err
 	}
 	var contract any

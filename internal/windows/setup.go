@@ -213,7 +213,7 @@ function Assert-RegularFileOrMissing([string]$Path) {
     }
 }
 function Assert-CompatibleSessionBroker([string]$Path) {
-    $result = Invoke-SessionBrokerProbe $Path @('capabilities', '--require', 'blender-box-v1')
+    $result = Invoke-SessionBrokerProbe $Path @('capabilities', '--require', 'blender-box-v1', '--require-capability', 'typed-call-error-reason')
     if ($null -eq $result -or [int]$result -ne 0) { throw 'Declared blendersessiond does not support the required Blender Box contract.' }
 }
 function Expand-BlenderBoxFileSystemMask([int64]$Mask) {
