@@ -10,6 +10,7 @@ func TestWorkRootRejectsTrailingSeparator(t *testing.T) {
 	value := Target{
 		SchemaVersion:           1,
 		SSHAlias:                "windows-test",
+		SSHUser:                 "test-user",
 		WorkRoot:                `C:\BlenderBoxTest\`,
 		InteractiveUser:         "test-user",
 		TaskName:                "BlenderBoxTest",
@@ -27,6 +28,7 @@ func TestTargetRejectsNonCanonicalWindowsPaths(t *testing.T) {
 	base := Target{
 		SchemaVersion:           1,
 		SSHAlias:                "windows-test",
+		SSHUser:                 "test-user",
 		WorkRoot:                `C:\BlenderBoxTest`,
 		InteractiveUser:         "test-user",
 		TaskName:                "BlenderBoxTest",
@@ -60,6 +62,7 @@ func TestLoadRejectsTrailingJSONValue(t *testing.T) {
 	content := `{
   "schema_version": 1,
   "ssh_alias": "windows-test",
+  "ssh_user": "test-user",
   "work_root": "C:\\BlenderBoxTest",
   "interactive_user": "test-user",
   "task_name": "BlenderBoxTest",

@@ -18,6 +18,7 @@ Create a non-secret target file with absolute Windows paths and a safe SSH confi
 {
   "schema_version": 1,
   "ssh_alias": "owned-windows-host",
+  "ssh_user": "HOST\\controller",
   "work_root": "C:\\BlenderBox",
   "interactive_user": "HOST\\operator",
   "task_name": "BlenderBoxHost",
@@ -33,7 +34,7 @@ Then run:
 go run ./cmd/blender-box windows check --target target.json --json
 ```
 
-The command streams one bounded, read-only PowerShell inspection over SSH and returns versioned UTF-8 JSON. It verifies the console-user SID, declared executable and work-root access, trusted path authorities through the volume root, and the complete root Scheduled Task action, principal, settings, and security descriptor. Access inspection treats every applicable-rights deny ACE conservatively because an SSH check does not own the interactive task token; operator-managed setup paths should not use deny ACEs. A failed requirement returns `status: "fail"`; malformed or oversized transport output is an error.
+The command streams one bounded, read-only PowerShell inspection over SSH and returns versioned UTF-8 JSON. It verifies the SSH and console-user SIDs, declared executable and work-root access, trusted path authorities through the volume root, and the complete root Scheduled Task action, principal, settings, and security descriptor. The task DACL must grant the declared SSH user direct launch authority; the SSH and interactive users may be the same account. Access inspection treats every applicable-rights deny ACE conservatively because an SSH check does not own the interactive task token; operator-managed setup paths should not use deny ACEs. A failed requirement returns `status: "fail"`; malformed or oversized transport output is an error.
 
 ## Proposed boundary
 

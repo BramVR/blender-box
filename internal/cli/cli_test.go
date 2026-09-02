@@ -36,6 +36,7 @@ func TestWindowsCheckPrintsVersionedJSONWithoutRemoteWrites(t *testing.T) {
 	targetJSON := `{
   "schema_version": 1,
   "ssh_alias": "windows-test",
+  "ssh_user": "test-user",
   "work_root": "C:\\BlenderBoxTest",
   "interactive_user": "test-user",
   "task_name": "BlenderBoxTest",
@@ -47,10 +48,11 @@ func TestWindowsCheckPrintsVersionedJSONWithoutRemoteWrites(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	checks := make([]map[string]any, 0, 7)
+	checks := make([]map[string]any, 0, 8)
 	for _, id := range []string{
 		"host.windows",
 		"host.console-user",
+		"host.ssh-user",
 		"blender.executable",
 		"daemon.executable",
 		"host.executable",
@@ -145,6 +147,8 @@ func TestWindowsCheckPrintsVersionedJSONWithoutRemoteWrites(t *testing.T) {
 	}
 	for _, required := range []string{
 		"securityidentifier",
+		"windowsidentity]::getcurrent()",
+		"controllercanexecute",
 		"utf8encoding]::new($false)",
 		"rawsecuritydescriptor",
 		"getsecuritydescriptor(7)",

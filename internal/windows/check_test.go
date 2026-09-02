@@ -24,6 +24,7 @@ func TestCheckRejectsMalformedOrContradictoryEvidence(t *testing.T) {
 	validChecks := `[
 {"id":"host.windows","passed":true,"required":true},
 {"id":"host.console-user","passed":true,"required":true},
+{"id":"host.ssh-user","passed":true,"required":true},
 {"id":"blender.executable","passed":true,"required":true},
 {"id":"daemon.executable","passed":true,"required":true},
 {"id":"host.executable","passed":true,"required":true},
@@ -39,6 +40,7 @@ func TestCheckRejectsMalformedOrContradictoryEvidence(t *testing.T) {
 		"pass with failed check": `{"schema_version":1,"status":"pass","checks":[
 {"id":"host.windows","passed":false,"required":true},
 {"id":"host.console-user","passed":true,"required":true},
+{"id":"host.ssh-user","passed":true,"required":true},
 {"id":"blender.executable","passed":true,"required":true},
 {"id":"daemon.executable","passed":true,"required":true},
 {"id":"host.executable","passed":true,"required":true},
@@ -61,6 +63,7 @@ func TestCheckAcceptsCompleteFailedEvidence(t *testing.T) {
 	output := `{"schema_version":1,"status":"fail","checks":[
 {"id":"host.windows","passed":true,"required":true},
 {"id":"host.console-user","passed":true,"required":true},
+{"id":"host.ssh-user","passed":true,"required":true},
 {"id":"blender.executable","passed":false,"required":true},
 {"id":"daemon.executable","passed":false,"required":true},
 {"id":"host.executable","passed":false,"required":true},
@@ -72,7 +75,7 @@ func TestCheckAcceptsCompleteFailedEvidence(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Status != "fail" || len(result.Checks) != 7 {
+	if result.Status != "fail" || len(result.Checks) != 8 {
 		t.Fatalf("unexpected result: %+v", result)
 	}
 	if !fake.hadDeadline {

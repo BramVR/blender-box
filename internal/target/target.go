@@ -22,6 +22,7 @@ var (
 type Target struct {
 	SchemaVersion           int    `json:"schema_version"`
 	SSHAlias                string `json:"ssh_alias"`
+	SSHUser                 string `json:"ssh_user"`
 	WorkRoot                string `json:"work_root"`
 	InteractiveUser         string `json:"interactive_user"`
 	TaskName                string `json:"task_name"`
@@ -59,6 +60,9 @@ func (value Target) Validate() error {
 	}
 	if !sshAliasPattern.MatchString(value.SSHAlias) {
 		return fmt.Errorf("target ssh_alias is unsafe")
+	}
+	if !userPattern.MatchString(value.SSHUser) {
+		return fmt.Errorf("target ssh_user is unsafe")
 	}
 	if !isCanonicalWindowsPath(value.WorkRoot) {
 		return fmt.Errorf("target work_root must be an absolute safe Windows path")

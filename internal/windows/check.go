@@ -90,7 +90,7 @@ function Test-TrustedAncestor([string]$Path, [string]$PrincipalSid) {
     }
     return $true
 }
-function Test-TrustedTaskAuthorities([string]$Sddl, [string]$PrincipalSid) {
+function Test-TrustedTaskAuthorities([string]$Sddl, [string]$PrincipalSid, [string]$ControllerSid) {
     if ([string]::IsNullOrWhiteSpace($Sddl)) { return $false }
     try {
         $descriptor = [System.Security.AccessControl.RawSecurityDescriptor]::new($Sddl)
@@ -99,6 +99,7 @@ function Test-TrustedTaskAuthorities([string]$Sddl, [string]$PrincipalSid) {
     }
     $trustedWriters = @(
         $PrincipalSid,
+        $ControllerSid,
         'S-1-5-18',
         'S-1-5-32-544',
         'S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464'
@@ -110,13 +111,17 @@ function Test-TrustedTaskAuthorities([string]$Sddl, [string]$PrincipalSid) {
     [int64]$taskWrite = 0x00000116
     [int64]$taskExecute = 0x00000020
     [int64]$taskAuthorityMask = $genericAll -bor $genericWrite -bor $genericExecute -bor 0x00010000 -bor 0x00040000 -bor 0x00080000 -bor $taskWrite -bor $taskExecute
+    $controllerCanExecute = $false
     foreach ($ace in $descriptor.DiscretionaryAcl) {
         if (([int]$ace.AceFlags -band [int][System.Security.AccessControl.AceFlags]::InheritOnly) -ne 0) { continue }
+        if ($null -eq $ace.SecurityIdentifier) { continue }
+        $aceMask = [int64]$ace.AccessMask
+        if ($ace.AceQualifier -eq [System.Security.AccessControl.AceQualifier]::AccessDenied -and ($aceMask -band ($genericAll -bor $genericExecute -bor $taskExecute)) -ne 0) { return $false }
         if ($ace.AceQualifier -ne [System.Security.AccessControl.AceQualifier]::AccessAllowed) { continue }
-        if ($null -eq $ace.SecurityIdentifier -or $trustedWriters -contains $ace.SecurityIdentifier.Value) { continue }
-        if (([int64]$ace.AccessMask -band $taskAuthorityMask) -ne 0) { return $false }
+        if ($ace.SecurityIdentifier.Value -eq $ControllerSid -and ($aceMask -band ($genericAll -bor $genericExecute -bor $taskExecute)) -ne 0) { $controllerCanExecute = $true }
+        if ($trustedWriters -notcontains $ace.SecurityIdentifier.Value -and ($aceMask -band $taskAuthorityMask) -ne 0) { return $false }
     }
-    return $true
+    return $controllerCanExecute
 }
 function Test-LocalVolumeRoot([string]$Root) {
     if ($Root -notmatch '^[A-Za-z]:\\$') { return $false }
@@ -173,6 +178,12 @@ $expectedUser = [string]$config.interactive_user
 $expectedSid = Resolve-Sid $expectedUser
 $consoleSid = Resolve-Sid $consoleUser
 Add-Check 'host.console-user' ($null -ne $expectedSid -and $consoleSid -eq $expectedSid) $true ([ordered]@{identity=$consoleUser; sid=$consoleSid}) ([ordered]@{identity=$expectedUser; sid=$expectedSid}) 'Configured interactive user SID must own the console session.'
+$sshIdentity = [System.Security.Principal.WindowsIdentity]::GetCurrent()
+$sshUser = [string]$sshIdentity.Name
+$sshSid = [string]$sshIdentity.User.Value
+$expectedSSHUser = [string]$config.ssh_user
+$expectedSSHSid = Resolve-Sid $expectedSSHUser
+Add-Check 'host.ssh-user' ($null -ne $expectedSSHSid -and $sshSid -eq $expectedSSHSid) $true ([ordered]@{identity=$sshUser; sid=$sshSid}) ([ordered]@{identity=$expectedSSHUser; sid=$expectedSSHSid}) 'The SSH process SID must match the declared controller identity.'
 $blenderPath = [string]$config.blender_executable
 $daemonPath = [string]$config.session_broker_executable
 $hostPath = [string]$config.host_executable
@@ -230,12 +241,12 @@ if ($null -ne $task) {
     } catch {
         $taskSddl = $null
     }
-    $taskAclOK = Test-TrustedTaskAuthorities $taskSddl $expectedSid
+    $taskAclOK = Test-TrustedTaskAuthorities $taskSddl $expectedSid $expectedSSHSid
     $taskActual['task_acl_trusted'] = $taskAclOK
     $taskSettingsOK = [string]$task.Settings.MultipleInstances -eq 'IgnoreNew' -and [string]$task.Settings.ExecutionTimeLimit -in @('PT0S', '00:00:00', '0') -and [bool]$task.Settings.AllowDemandStart -and [bool]$task.Settings.AllowHardTerminate -and -not ([bool]$task.Settings.DisallowStartIfOnBatteries) -and -not ([bool]$task.Settings.StopIfGoingOnBatteries) -and -not ([bool]$task.Settings.RunOnlyIfIdle) -and -not ([bool]$task.Settings.RunOnlyIfNetworkAvailable) -and [int]$task.Settings.RestartCount -eq 0 -and -not ([bool]$task.Settings.Volatile) -and [bool]$task.Settings.Enabled
     $taskOK = $null -ne $expectedSid -and $taskSid -eq $expectedSid -and [string]$task.Principal.LogonType -eq 'Interactive' -and [string]$task.Principal.RunLevel -eq 'Limited' -and $actions.Count -eq 1 -and $triggers.Count -eq 0 -and $taskSettingsOK -and $null -ne $actualExecute -and $actualExecute -ieq $expectedExecute -and [string]$actions[0].Arguments -ceq [string]$config.expected_task_arguments -and $null -ne $actualWorkingDirectory -and $actualWorkingDirectory -ieq $expectedWorkingDirectory -and $taskAclOK
 }
-Add-Check 'task.interactive' $taskOK $true $taskActual ([ordered]@{user=$expectedUser; sid=$expectedSid; execute=$hostPath; arguments=[string]$config.expected_task_arguments; working_directory=[System.IO.Path]::GetDirectoryName($hostPath); logon_type='Interactive'; run_level='Limited'; triggers=0; multiple_instances='IgnoreNew'; execution_time_limit='PT0S'; allow_demand_start=$true; allow_hard_terminate=$true; disallow_start_if_on_batteries=$false; stop_if_going_on_batteries=$false; run_only_if_idle=$false; run_only_if_network_available=$false; restart_count=0; volatile=$false}) 'The static task must match the complete Blender Box action and principal contract.'
+Add-Check 'task.interactive' $taskOK $true $taskActual ([ordered]@{user=$expectedUser; sid=$expectedSid; controller_sid=$expectedSSHSid; execute=$hostPath; arguments=[string]$config.expected_task_arguments; working_directory=[System.IO.Path]::GetDirectoryName($hostPath); logon_type='Interactive'; run_level='Limited'; triggers=0; multiple_instances='IgnoreNew'; execution_time_limit='PT0S'; allow_demand_start=$true; allow_hard_terminate=$true; disallow_start_if_on_batteries=$false; stop_if_going_on_batteries=$false; run_only_if_idle=$false; run_only_if_network_available=$false; restart_count=0; volatile=$false}) 'The static task must match the complete Blender Box action, principal, and controller contract.'
 $requiredFailed = @($checks | Where-Object { $_.required -and -not $_.passed }).Count
 [ordered]@{schema_version=1; status=$(if ($requiredFailed -eq 0) {'pass'} else {'fail'}); checks=$checks} | ConvertTo-Json -Compress -Depth 8
 `
@@ -313,6 +324,7 @@ func validCheckResult(result CheckResult) bool {
 	requiredIDs := map[string]bool{
 		"host.windows":       false,
 		"host.console-user":  false,
+		"host.ssh-user":      false,
 		"blender.executable": false,
 		"daemon.executable":  false,
 		"host.executable":    false,
