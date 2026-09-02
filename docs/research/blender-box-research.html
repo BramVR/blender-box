@@ -658,6 +658,7 @@ hosts:
     transport: ssh
     ssh:
       host: blender-win
+      user: &lt;windows-ssh-user&gt;
     workRoot: "&lt;operator-managed-work-root&gt;"
     interactive:
       user: "&lt;logged-in-windows-user&gt;"
@@ -735,7 +736,7 @@ blender-box stop bbx_...</code></pre>
       <div class="grid two mt-14">
         <article class="card blue">
           <h3>Read-only Windows check</h3>
-          <p>The implemented first check streams one bounded read-only inspection over SSH. It verifies Windows identity, the logged-in console-user SID, declared executable and work-root access, trusted path authorities, and the complete root task action, principal, settings, and security descriptor. Blender and daemon versions, stale Host Locks, and unexpected listeners remain later preflight work.</p>
+          <p>The implemented first check streams one bounded read-only inspection over SSH. It verifies the declared SSH controller and logged-in console-user SIDs, declared executable and work-root access, trusted physical path authorities, and the complete root task action, principal, controller launch authority, settings, and security descriptor. Blender and daemon versions, stale Host Locks, and unexpected listeners remain later preflight work.</p>
         </article>
         <article class="card orange">
           <h3>Explicit setup apply</h3>
