@@ -276,9 +276,10 @@ $hostPath = '%s'
 $hostDirectory = [System.IO.Path]::GetDirectoryName($hostPath)
 $daemonDirectory = [System.IO.Path]::GetDirectoryName($daemonPath)
 $interactiveUser = '%s'
+$expectedControllerUser = '%s'
 $lockPath = [System.IO.Path]::Combine($root, 'host-lock.json')
 $operationPath = [System.IO.Path]::Combine($root, '.operation.lock')
-`, selected.WorkRoot, selected.SessionBrokerExecutable, selected.BlenderExecutable, selected.HostExecutable, selected.InteractiveUser)
+`, selected.WorkRoot, selected.SessionBrokerExecutable, selected.BlenderExecutable, selected.HostExecutable, selected.InteractiveUser, selected.SSHUser)
 	return header + setupOperationFunctions + `if (-not (Test-Path -LiteralPath $root -PathType Container)) { throw 'Declared work root is missing; provision blendersessiond inside it first.' }
 Assert-NoReparsePath $root
 Assert-NoReparsePath $hostDirectory
@@ -286,6 +287,9 @@ Assert-NoReparsePath $daemonDirectory
 Assert-NoReparsePath $daemonPath
 Assert-NoReparsePath $blenderPath
 Assert-NoReparsePath $operationPath
+$expectedControllerSid = ([System.Security.Principal.NTAccount]::new($expectedControllerUser)).Translate([System.Security.Principal.SecurityIdentifier])
+$authenticatedControllerSid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User
+if ($authenticatedControllerSid -ne $expectedControllerSid) { throw 'Configured SSH user does not match the authenticated controller SID.' }
 $operation = Enter-BlenderBoxOperation $operationPath
 try {
     Assert-NoReparsePath $root
@@ -298,7 +302,7 @@ try {
     if (-not (Test-Path -LiteralPath $daemonPath -PathType Leaf)) { throw 'Declared blendersessiond executable is missing.' }
     if (-not (Test-Path -LiteralPath $blenderPath -PathType Leaf)) { throw 'Declared Blender executable is missing.' }
     $interactiveSid = ([System.Security.Principal.NTAccount]::new($interactiveUser)).Translate([System.Security.Principal.SecurityIdentifier])
-    $controllerSid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User
+    $controllerSid = $authenticatedControllerSid
     Assert-TrustedAncestors $root $interactiveSid $controllerSid
     $inherit = [System.Security.AccessControl.InheritanceFlags]::ContainerInherit -bor [System.Security.AccessControl.InheritanceFlags]::ObjectInherit
     $none = [System.Security.AccessControl.PropagationFlags]::None
@@ -349,6 +353,7 @@ $blenderPath = '%s'
 $hostDirectory = [System.IO.Path]::GetDirectoryName($hostPath)
 $daemonDirectory = [System.IO.Path]::GetDirectoryName($daemonPath)
 $interactiveUser = '%s'
+$expectedControllerUser = '%s'
 $taskName = '%s'
 $expectedArguments = '%s'
 $expectedSize = [int64]%d
@@ -421,6 +426,9 @@ function New-BlenderBoxFileAcl {
     $acl.AddAccessRule([System.Security.AccessControl.FileSystemAccessRule]::new([System.Security.Principal.SecurityIdentifier]::new('S-1-5-32-544'), [System.Security.AccessControl.FileSystemRights]::FullControl, $noneInheritance, $nonePropagation, $allow))
     return $acl
 }
+$expectedControllerSid = ([System.Security.Principal.NTAccount]::new($expectedControllerUser)).Translate([System.Security.Principal.SecurityIdentifier])
+$authenticatedControllerSid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User
+if ($authenticatedControllerSid -ne $expectedControllerSid) { throw 'Configured SSH user does not match the authenticated controller SID.' }
 $operation = $null
 try {
     Assert-NoReparsePath $root
@@ -442,7 +450,7 @@ try {
     if (-not (Test-Path -LiteralPath $daemonPath -PathType Leaf)) { throw 'Declared blendersessiond executable is missing.' }
     if (-not (Test-Path -LiteralPath $blenderPath -PathType Leaf)) { throw 'Declared Blender executable is missing.' }
     $interactiveSid = ([System.Security.Principal.NTAccount]::new($interactiveUser)).Translate([System.Security.Principal.SecurityIdentifier])
-    $controllerSid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User
+    $controllerSid = $authenticatedControllerSid
     Assert-TrustedAncestors $root $interactiveSid $controllerSid
     Set-Acl -LiteralPath $root -AclObject (New-BlenderBoxDirectoryAcl)
     Set-BlenderBoxStateTree ([System.IO.Path]::Combine($root, 'runs'))
@@ -500,5 +508,5 @@ try {
     if (Test-Path -LiteralPath $stagedBinary) { Remove-Item -Force -LiteralPath $stagedBinary }
     if ($null -ne $operation) { try { $operation.Unlock(0, 1) } finally { $operation.Dispose() } }
 }
-`, selected.WorkRoot, selected.HostExecutable, selected.SessionBrokerExecutable, selected.BlenderExecutable, selected.InteractiveUser, selected.TaskName, taskArguments, plan.HostSize, plan.HostSHA256, stagedBinary, setupOperationFunctions)
+`, selected.WorkRoot, selected.HostExecutable, selected.SessionBrokerExecutable, selected.BlenderExecutable, selected.InteractiveUser, selected.SSHUser, selected.TaskName, taskArguments, plan.HostSize, plan.HostSHA256, stagedBinary, setupOperationFunctions)
 }
