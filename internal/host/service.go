@@ -133,8 +133,7 @@ func (service *Service) Acquire(ctx context.Context, root string, request Acquir
 	if err != nil {
 		return err
 	}
-	lock, err := os.OpenFile(lockPath(root), os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
-	created := err == nil
+	created, err := writeFileExclusive(lockPath(root), encoded)
 	if err != nil {
 		if !os.IsExist(err) {
 			return err
@@ -142,18 +141,6 @@ func (service *Service) Acquire(ctx context.Context, root string, request Acquir
 		existing, readErr := service.readLock(root)
 		if readErr != nil || !existing.Claim.Equal(request.Claim) || existing.SessionID != "" {
 			return fmt.Errorf("host is locked by another Run")
-		}
-	} else {
-		if _, writeErr := lock.Write(encoded); writeErr != nil {
-			lock.Close()
-			return writeErr
-		}
-		if syncErr := lock.Sync(); syncErr != nil {
-			lock.Close()
-			return syncErr
-		}
-		if closeErr := lock.Close(); closeErr != nil {
-			return closeErr
 		}
 	}
 	if !created {
@@ -349,8 +336,22 @@ func (service *Service) Status(root string, request StatusRequest) (orchestrator
 		return orchestrator.RunReceipt{}, fmt.Errorf("invalid status contract")
 	}
 	var receipt orchestrator.RunReceipt
-	if err := readJSON(receiptPath(root, request.RunID), &receipt, maxScenarioJSON); err != nil {
-		return orchestrator.RunReceipt{}, err
+	path := receiptPath(root, request.RunID)
+	if err := readJSON(path, &receipt, maxScenarioJSON); err != nil {
+		if _, statErr := os.Lstat(path); statErr == nil || !os.IsNotExist(statErr) {
+			return orchestrator.RunReceipt{}, err
+		}
+		lock, lockErr := service.readLock(root)
+		if lockErr != nil || lock.SchemaVersion != 1 || lock.Claim.Validate() != nil || lock.Claim.RunID != request.RunID {
+			return orchestrator.RunReceipt{}, err
+		}
+		state := orchestrator.StateAccepted
+		message := ""
+		if lock.SessionID != "" {
+			state = orchestrator.StateCleanupFailed
+			message = "Recovered a Session whose receipt publication was interrupted"
+		}
+		return orchestrator.RunReceipt{SchemaVersion: 1, Claim: lock.Claim, State: state, SessionID: lock.SessionID, Error: message}, nil
 	}
 	return receipt, nil
 }
@@ -622,6 +623,10 @@ func (service *Service) Settle(ctx context.Context, root string, request SettleR
 	}
 	lock, err := service.authorizeClaim(root, stored.Claim)
 	if err != nil {
+		cleanup, recovered, recoveryErr := service.recoverReleasedCleanup(root, stored)
+		if recovered || recoveryErr != nil {
+			return cleanup, recoveryErr
+		}
 		return orchestrator.CleanupState{}, fmt.Errorf("settle authority does not match Host Lock")
 	}
 	if stored.State == orchestrator.StateStarting && stored.SessionID == "" && lock.SessionID != "" {
@@ -686,6 +691,26 @@ func (service *Service) Settle(ctx context.Context, root string, request SettleR
 	}
 	_ = os.Remove(filepath.Join(root, "pending-request.json"))
 	return stored.Cleanup, nil
+}
+
+func (service *Service) recoverReleasedCleanup(root string, stored orchestrator.RunReceipt) (orchestrator.CleanupState, bool, error) {
+	if !stored.Cleanup.SessionStopped {
+		return orchestrator.CleanupState{}, false, nil
+	}
+	if _, err := os.Lstat(runPath(root, stored.Claim.RunID)); err == nil || !os.IsNotExist(err) {
+		return orchestrator.CleanupState{}, false, nil
+	}
+	if _, err := os.Lstat(lockPath(root)); err == nil || !os.IsNotExist(err) {
+		return orchestrator.CleanupState{}, false, nil
+	}
+	stored.Cleanup.PayloadRemoved = true
+	stored.Cleanup.RunRootRemoved = true
+	stored.Cleanup.LockReleased = true
+	if err := service.writeReceipt(root, stored); err != nil {
+		return orchestrator.CleanupState{}, true, err
+	}
+	_ = os.Remove(filepath.Join(root, "pending-request.json"))
+	return stored.Cleanup, true, nil
 }
 
 func removeRunRootWithRetry(ctx context.Context, runRoot string, removeAll func(string) error, retryable func(error) bool, interval time.Duration) error {
@@ -989,6 +1014,33 @@ func writeJSONAtomic(path string, value any) error {
 		return err
 	}
 	return replaceFile(name, path)
+}
+
+func writeFileExclusive(path string, contents []byte) (bool, error) {
+	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		return false, err
+	}
+	cleanup := func(cause error) error {
+		closeErr := file.Close()
+		removeErr := os.Remove(path)
+		return errors.Join(cause, closeErr, removeErr)
+	}
+	written, err := file.Write(contents)
+	if err != nil {
+		return true, cleanup(err)
+	}
+	if written != len(contents) {
+		return true, cleanup(io.ErrShortWrite)
+	}
+	if err := file.Sync(); err != nil {
+		return true, cleanup(err)
+	}
+	if err := file.Close(); err != nil {
+		removeErr := os.Remove(path)
+		return true, errors.Join(err, removeErr)
+	}
+	return true, nil
 }
 
 func readJSON(path string, value any, limit int64) error {

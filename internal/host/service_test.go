@@ -376,6 +376,52 @@ func TestSettleReleasesExactPartialAcquireWithoutReceipt(t *testing.T) {
 	}
 }
 
+func TestStatusRecoversExactPartialAcquireWithoutReceipt(t *testing.T) {
+	root := t.TempDir()
+	now := time.Now().UTC()
+	service := NewService(Dependencies{Now: func() time.Time { return now }})
+	claim := testHostClaim(now, "PARTIALSTATUS")
+	if err := writeJSONAtomic(lockPath(root), lockRecord{SchemaVersion: 1, Claim: claim}); err != nil {
+		t.Fatal(err)
+	}
+
+	receipt, err := service.Status(root, StatusRequest{SchemaVersion: 1, RunID: claim.RunID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if receipt.SchemaVersion != 1 || !receipt.Claim.Equal(claim) || receipt.State != orchestrator.StateAccepted || receipt.SessionID != "" {
+		t.Fatalf("recovered receipt = %+v", receipt)
+	}
+}
+
+func TestSettleRecoversAfterLockReleaseBeforeFinalReceipt(t *testing.T) {
+	root := t.TempDir()
+	now := time.Now().UTC()
+	service := NewService(Dependencies{Now: func() time.Time { return now }})
+	claim := testHostClaim(now, "FINALRECEIPT")
+	receipt := orchestrator.RunReceipt{
+		SchemaVersion: 1,
+		Claim:         claim,
+		State:         orchestrator.StateComplete,
+		Cleanup:       orchestrator.CleanupState{SessionStopped: true},
+	}
+	if err := service.writeReceipt(root, receipt); err != nil {
+		t.Fatal(err)
+	}
+
+	cleanup, err := service.Settle(context.Background(), root, SettleRequest{SchemaVersion: 1, Receipt: receipt})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cleanup.Known() {
+		t.Fatalf("cleanup = %+v", cleanup)
+	}
+	stored, err := service.Status(root, StatusRequest{SchemaVersion: 1, RunID: claim.RunID})
+	if err != nil || !stored.Cleanup.Known() {
+		t.Fatalf("stored receipt = %+v, error = %v", stored, err)
+	}
+}
+
 func TestSettleRecoversPartialRunRootCleanupWithoutRepeatingStop(t *testing.T) {
 	root := t.TempDir()
 	now := time.Now().UTC()
