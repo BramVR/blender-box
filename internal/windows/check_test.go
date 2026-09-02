@@ -122,6 +122,21 @@ func TestCheckRequiresSSHControllerAndInteractiveTaskToShareSID(t *testing.T) {
 	}
 }
 
+func TestCheckRequiresRegularSealedOperationAndLaunchLocks(t *testing.T) {
+	for _, required := range []string{
+		"$operationPath = [System.IO.Path]::Combine([string]$config.work_root, '.operation.lock')",
+		"$launchPath = [System.IO.Path]::Combine([string]$config.work_root, '.launch.lock')",
+		"Test-Path -LiteralPath $operationPath -PathType Leaf",
+		"Test-Path -LiteralPath $launchPath -PathType Leaf",
+		"Test-SafePath $operationPath $expectedSid $sshSid $fullControl $true $true $false $true",
+		"Test-SafePath $launchPath $expectedSid $sshSid $fullControl $true $true $false $true",
+	} {
+		if !strings.Contains(checkScript, required) {
+			t.Fatalf("inspection does not seal both host lock files: missing %q", required)
+		}
+	}
+}
+
 func TestCheckRequiresDeclaredControllerTaskManagementAuthority(t *testing.T) {
 	if !strings.Contains(checkScript, "$controllerCanManage") ||
 		!strings.Contains(checkScript, "($aceMask -band $genericAll) -eq $genericAll") ||

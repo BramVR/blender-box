@@ -287,6 +287,7 @@ $interactiveUser = %s
 $expectedControllerUser = %s
 $lockPath = [System.IO.Path]::Combine($root, 'host-lock.json')
 $operationPath = [System.IO.Path]::Combine($root, '.operation.lock')
+$launchPath = [System.IO.Path]::Combine($root, '.launch.lock')
 `, powerShellLiteral(selected.WorkRoot), powerShellLiteral(selected.SessionBrokerExecutable), powerShellLiteral(selected.BlenderExecutable), powerShellLiteral(selected.HostExecutable), powerShellLiteral(selected.InteractiveUser), powerShellLiteral(selected.SSHUser))
 	return header + setupOperationFunctions + `if (-not (Test-Path -LiteralPath $root -PathType Container)) { throw 'Declared work root is missing; provision blendersessiond inside it first.' }
 Assert-NoReparsePath $root
@@ -297,6 +298,8 @@ Assert-NoReparsePath $daemonDirectory
 Assert-NoReparsePath $daemonPath
 Assert-NoReparsePath $blenderPath
 Assert-NoReparsePath $operationPath
+Assert-NoReparsePath $launchPath
+Assert-RegularFileOrMissing $launchPath
 $expectedControllerSid = ([System.Security.Principal.NTAccount]::new($expectedControllerUser)).Translate([System.Security.Principal.SecurityIdentifier])
 $authenticatedControllerSid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User
 if ($authenticatedControllerSid -ne $expectedControllerSid) { throw 'Configured SSH user does not match the authenticated controller SID.' }
@@ -312,6 +315,8 @@ try {
     Assert-NoReparsePath $daemonPath
     Assert-NoReparsePath $blenderPath
     Assert-NoReparsePath $operationPath
+    Assert-NoReparsePath $launchPath
+    Assert-RegularFileOrMissing $launchPath
     if (Test-Path -LiteralPath $lockPath) { throw 'Cannot apply setup while a Host Lock exists.' }
     if (-not (Test-Path -LiteralPath $daemonPath -PathType Leaf)) { throw 'Declared blendersessiond executable is missing.' }
     if (-not (Test-Path -LiteralPath $blenderPath -PathType Leaf)) { throw 'Declared Blender executable is missing.' }
@@ -327,6 +332,9 @@ try {
     $rootAcl.AddAccessRule([System.Security.AccessControl.FileSystemAccessRule]::new([System.Security.Principal.SecurityIdentifier]::new('S-1-5-18'), [System.Security.AccessControl.FileSystemRights]::FullControl, $inherit, $none, $allow))
     $rootAcl.AddAccessRule([System.Security.AccessControl.FileSystemAccessRule]::new([System.Security.Principal.SecurityIdentifier]::new('S-1-5-32-544'), [System.Security.AccessControl.FileSystemRights]::FullControl, $inherit, $none, $allow))
     Set-Acl -LiteralPath $root -AclObject $rootAcl
+    $launch = [System.IO.File]::Open($launchPath, [System.IO.FileMode]::OpenOrCreate, [System.IO.FileAccess]::ReadWrite, [System.IO.FileShare]::ReadWrite)
+    $launch.Dispose()
+    Assert-NoReparsePath $launchPath
 
     $executableDirectoryAcl = [System.Security.AccessControl.DirectorySecurity]::new()
     $executableDirectoryAcl.SetAccessRuleProtection($true, $false)
@@ -344,6 +352,7 @@ try {
     $stateFileAcl.AddAccessRule([System.Security.AccessControl.FileSystemAccessRule]::new([System.Security.Principal.SecurityIdentifier]::new('S-1-5-18'), [System.Security.AccessControl.FileSystemRights]::FullControl, [System.Security.AccessControl.InheritanceFlags]::None, $none, $allow))
     $stateFileAcl.AddAccessRule([System.Security.AccessControl.FileSystemAccessRule]::new([System.Security.Principal.SecurityIdentifier]::new('S-1-5-32-544'), [System.Security.AccessControl.FileSystemRights]::FullControl, [System.Security.AccessControl.InheritanceFlags]::None, $none, $allow))
     Set-Acl -LiteralPath $operationPath -AclObject $stateFileAcl
+    Set-Acl -LiteralPath $launchPath -AclObject $stateFileAcl
 
     $fileAcl = [System.Security.AccessControl.FileSecurity]::new()
     $fileAcl.SetAccessRuleProtection($true, $false)
@@ -380,6 +389,7 @@ $temporary = $hostPath + '.setup-' + [Guid]::NewGuid().ToString('N')
 $backup = $hostPath + '.setup-backup-' + [Guid]::NewGuid().ToString('N')
 $lockPath = [System.IO.Path]::Combine($root, 'host-lock.json')
 $operationPath = [System.IO.Path]::Combine($root, '.operation.lock')
+$launchPath = [System.IO.Path]::Combine($root, '.launch.lock')
 %s
 function New-BlenderBoxRootAcl {
     $inherit = [System.Security.AccessControl.InheritanceFlags]::ContainerInherit -bor [System.Security.AccessControl.InheritanceFlags]::ObjectInherit
@@ -474,6 +484,8 @@ try {
     Assert-NoReparsePath $blenderPath
     Assert-NoReparsePath $stagedBinary
     Assert-NoReparsePath $operationPath
+    Assert-NoReparsePath $launchPath
+    Assert-RegularFileOrMissing $launchPath
     $operation = Enter-BlenderBoxOperation $operationPath
     Assert-NoReparsePath $root
     Assert-NoReparsePath $hostDirectory
@@ -484,12 +496,17 @@ try {
     Assert-NoReparsePath $blenderPath
     Assert-NoReparsePath $stagedBinary
     Assert-NoReparsePath $operationPath
+    Assert-NoReparsePath $launchPath
+    Assert-RegularFileOrMissing $launchPath
     if (Test-Path -LiteralPath $lockPath) { throw 'Cannot apply setup while a Host Lock exists.' }
     if (-not (Test-Path -LiteralPath $daemonPath -PathType Leaf)) { throw 'Declared blendersessiond executable is missing.' }
     if (-not (Test-Path -LiteralPath $blenderPath -PathType Leaf)) { throw 'Declared Blender executable is missing.' }
     $controllerSid = $authenticatedControllerSid
     Assert-TrustedAncestors $root $controllerSid
     Set-Acl -LiteralPath $root -AclObject (New-BlenderBoxRootAcl)
+    $launch = [System.IO.File]::Open($launchPath, [System.IO.FileMode]::OpenOrCreate, [System.IO.FileAccess]::ReadWrite, [System.IO.FileShare]::ReadWrite)
+    $launch.Dispose()
+    Assert-NoReparsePath $launchPath
     $runsPath = [System.IO.Path]::Combine($root, 'runs')
     $receiptsPath = [System.IO.Path]::Combine($root, 'receipts')
     Set-BlenderBoxDirectoryPath $root $runsPath (New-BlenderBoxStateDirectoryAcl)
@@ -497,6 +514,7 @@ try {
     Set-BlenderBoxStateTree $runsPath
     Set-BlenderBoxStateTree $receiptsPath
     Set-Acl -LiteralPath $operationPath -AclObject (New-BlenderBoxStateFileAcl)
+    Set-Acl -LiteralPath $launchPath -AclObject (New-BlenderBoxStateFileAcl)
     Set-BlenderBoxDirectoryPath $root $hostDirectory (New-BlenderBoxExecutableDirectoryAcl)
     Set-BlenderBoxDirectoryPath $root $daemonDirectory (New-BlenderBoxExecutableDirectoryAcl)
     if ((Get-Item -LiteralPath $stagedBinary).Length -ne $expectedSize) { throw 'Host binary size changed in transfer.' }

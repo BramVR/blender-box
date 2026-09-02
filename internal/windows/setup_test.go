@@ -138,6 +138,22 @@ func TestSetupRequiresControllerToOwnInteractiveTaskIdentityBeforeMutation(t *te
 	}
 }
 
+func TestSetupCreatesAndSealsBothHostLockFiles(t *testing.T) {
+	prepare := prepareSetupScript(adapterTarget())
+	apply := setupScript(adapterTarget(), SetupResult{HostSize: 1, HostSHA256: strings.Repeat("a", 64)}, `C:\BlenderBoxTest\.setup-host.bin`)
+	for name, script := range map[string]string{"prepare": prepare, "apply": apply} {
+		for _, required := range []string{
+			"$launchPath = [System.IO.Path]::Combine($root, '.launch.lock')",
+			"Assert-NoReparsePath $launchPath",
+			"Set-Acl -LiteralPath $launchPath -AclObject",
+		} {
+			if !strings.Contains(script, required) {
+				t.Fatalf("%s script does not seal launch lock: missing %q", name, required)
+			}
+		}
+	}
+}
+
 func TestSetupPreservesSingleIdentityUpdateAuthority(t *testing.T) {
 	selected := adapterTarget()
 	prepare := prepareSetupScript(selected)
