@@ -115,7 +115,7 @@ func TestAdapterCarriesTypedAuthorityAcrossEveryHostOperation(t *testing.T) {
 		t.Fatalf("cleanup = %+v", settled)
 	}
 
-	wantOperations := []string{"acquire", "stage", "start", "status", "status", "fetch", "settle"}
+	wantOperations := []string{"acquire", "stage", "start", "start", "status", "fetch", "settle"}
 	for index, want := range wantOperations {
 		script := decodedAdapterScript(t, fake.arguments[index])
 		if !strings.Contains(script, "'host' '"+want+"'") || !strings.Contains(script, selected.HostExecutable) || !strings.Contains(script, selected.WorkRoot) {

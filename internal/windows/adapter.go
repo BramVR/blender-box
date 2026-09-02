@@ -78,11 +78,11 @@ func (adapter *Adapter) Start(ctx context.Context, selected target.Target, reque
 			return orchestrator.RunReceipt{}, ctx.Err()
 		case <-timer.C:
 		}
-		observed, err := adapter.Observe(ctx, selected, request.Claim.RunID)
-		if err != nil {
+		var replayed orchestrator.RunReceipt
+		if err := adapter.invokeJSON(ctx, selected, "start", request, &replayed); err != nil {
 			return orchestrator.RunReceipt{}, err
 		}
-		receipt = observed
+		receipt = replayed
 	}
 	return receipt, nil
 }
