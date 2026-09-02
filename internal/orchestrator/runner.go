@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/BramVR/blender-box/internal/payload"
+	"github.com/BramVR/blender-box/internal/safepath"
 	"github.com/BramVR/blender-box/internal/target"
 )
 
@@ -22,6 +23,7 @@ const (
 	maxEvidenceFile  = 16 << 20
 	maxEvidenceTotal = 64 << 20
 	pollInterval     = 250 * time.Millisecond
+	defaultSettleTTL = 30 * time.Second
 )
 
 var (
@@ -149,11 +151,12 @@ type HostAdapter interface {
 }
 
 type Runner struct {
-	host HostAdapter
+	host              HostAdapter
+	settlementTimeout time.Duration
 }
 
 func New(host HostAdapter) *Runner {
-	return &Runner{host: host}
+	return &Runner{host: host, settlementTimeout: defaultSettleTTL}
 }
 
 func (runner *Runner) Run(ctx context.Context, intent RunIntent) (_ RunResult, resultErr error) {
@@ -161,10 +164,12 @@ func (runner *Runner) Run(ctx context.Context, intent RunIntent) (_ RunResult, r
 	if err != nil {
 		return RunResult{}, err
 	}
-	if err := runner.host.Inspect(ctx, intent.Target); err != nil {
+	runCtx, cancelRun := context.WithDeadline(ctx, intent.Deadline)
+	defer cancelRun()
+	if err := runner.host.Inspect(runCtx, intent.Target); err != nil {
 		return RunResult{}, fmt.Errorf("inspect host: %w", err)
 	}
-	if err := runner.host.Acquire(ctx, intent.Target, request.Claim); err != nil {
+	if err := runner.host.Acquire(runCtx, intent.Target, request.Claim); err != nil {
 		return RunResult{}, fmt.Errorf("acquire Host Lock: %w", err)
 	}
 
@@ -174,7 +179,7 @@ func (runner *Runner) Run(ctx context.Context, intent RunIntent) (_ RunResult, r
 		if settled {
 			return
 		}
-		cleanup, settleErr := runner.host.Settle(context.WithoutCancel(ctx), intent.Target, receipt)
+		cleanup, settleErr := runner.settle(ctx, intent.Target, receipt)
 		if settleErr != nil {
 			resultErr = errors.Join(resultErr, fmt.Errorf("settle Run: %w", settleErr))
 			return
@@ -184,45 +189,48 @@ func (runner *Runner) Run(ctx context.Context, intent RunIntent) (_ RunResult, r
 		}
 	}()
 
-	if err := runner.host.Stage(ctx, intent.Target, request.Claim, intent.Payload); err != nil {
+	if err := runner.host.Stage(runCtx, intent.Target, request.Claim, intent.Payload); err != nil {
 		return RunResult{}, fmt.Errorf("stage Run Payload: %w", err)
 	}
 	receipt.State = StateStaged
-	receipt, err = runner.host.Start(ctx, intent.Target, request)
+	startedReceipt, err := runner.host.Start(runCtx, intent.Target, request)
 	if err != nil {
 		return RunResult{}, fmt.Errorf("start Run: %w", err)
 	}
-	if err := validateReceipt(receipt, request.Claim, false); err != nil {
+	if err := validateReceipt(startedReceipt, request.Claim, "", receipt.State); err != nil {
 		return RunResult{}, fmt.Errorf("start receipt: %w", err)
 	}
+	receipt = startedReceipt
+	sessionID := receipt.SessionID
 
 	for !receipt.State.terminal() {
-		if err := waitForPoll(ctx, intent.Deadline); err != nil {
+		if err := waitForPoll(runCtx, intent.Deadline); err != nil {
 			return RunResult{}, err
 		}
-		receipt, err = runner.host.Observe(ctx, intent.Target, intent.RunID)
+		observedReceipt, err := runner.host.Observe(runCtx, intent.Target, intent.RunID)
 		if err != nil {
 			return RunResult{}, fmt.Errorf("observe Run: %w", err)
 		}
-		if err := validateReceipt(receipt, request.Claim, true); err != nil {
+		if err := validateReceipt(observedReceipt, request.Claim, sessionID, receipt.State); err != nil {
 			return RunResult{}, fmt.Errorf("observe receipt: %w", err)
 		}
+		receipt = observedReceipt
 	}
 	if receipt.State != StateComplete {
 		return RunResult{}, fmt.Errorf("Run ended in %s: %s", receipt.State, receipt.Error)
 	}
-	if err := runner.collectEvidence(ctx, intent, receipt); err != nil {
+	if err := runner.collectEvidence(runCtx, intent, receipt); err != nil {
 		return RunResult{}, err
 	}
 
-	cleanup, err := runner.host.Settle(context.WithoutCancel(ctx), intent.Target, receipt)
+	cleanup, err := runner.settle(ctx, intent.Target, receipt)
 	if err != nil {
 		return RunResult{}, fmt.Errorf("settle Run: %w", err)
 	}
-	settled = true
 	if !cleanup.Known() {
 		return RunResult{}, fmt.Errorf("settle Run: cleanup state is not known")
 	}
+	settled = true
 	return RunResult{
 		SchemaVersion: 1,
 		RunID:         intent.RunID,
@@ -246,6 +254,9 @@ func buildRequest(intent RunIntent) (RunRequest, error) {
 	}
 	if !intent.Deadline.After(time.Now()) {
 		return RunRequest{}, fmt.Errorf("deadline must be in the future")
+	}
+	if err := intent.Payload.Validate(); err != nil {
+		return RunRequest{}, fmt.Errorf("invalid Run Payload: %w", err)
 	}
 	body := RequestBody{
 		SchemaVersion:           1,
@@ -276,17 +287,75 @@ func sessionName(runID RunID) string {
 	return "blender-box-" + hex.EncodeToString(hash[:8])
 }
 
-func validateReceipt(receipt RunReceipt, claim LockClaim, requireSession bool) error {
-	if receipt.SchemaVersion != 0 && receipt.SchemaVersion != 1 {
+func validateReceipt(receipt RunReceipt, claim LockClaim, expectedSession SessionID, previousState RunState) error {
+	if receipt.SchemaVersion != 1 {
 		return fmt.Errorf("unsupported schema version %d", receipt.SchemaVersion)
 	}
 	if receipt.Claim != claim {
 		return fmt.Errorf("Host Lock claim changed")
 	}
-	if requireSession && !sessionIDPattern.MatchString(string(receipt.SessionID)) {
+	if !knownState(receipt.State) {
+		return fmt.Errorf("unknown Run state %q", receipt.State)
+	}
+	if !validTransition(previousState, receipt.State) {
+		return fmt.Errorf("invalid Run state transition %q to %q", previousState, receipt.State)
+	}
+	if !sessionIDPattern.MatchString(string(receipt.SessionID)) {
 		return fmt.Errorf("invalid Session identity")
 	}
+	if expectedSession != "" && receipt.SessionID != expectedSession {
+		return fmt.Errorf("Session identity changed")
+	}
 	return nil
+}
+
+func knownState(state RunState) bool {
+	_, exists := stateRank(state)
+	return exists
+}
+
+func stateRank(state RunState) (int, bool) {
+	switch state {
+	case StateAccepted:
+		return 0, true
+	case StateStaged:
+		return 1, true
+	case StateStarting:
+		return 2, true
+	case StateRunning:
+		return 3, true
+	case StateCalling:
+		return 4, true
+	case StateCollecting:
+		return 5, true
+	case StateSettling:
+		return 6, true
+	case StateComplete:
+		return 7, true
+	case StateFailed, StateTimedOut, StateCleanupFailed:
+		return 8, true
+	default:
+		return 0, false
+	}
+}
+
+func validTransition(previous, next RunState) bool {
+	previousRank, previousKnown := stateRank(previous)
+	nextRank, nextKnown := stateRank(next)
+	if !previousKnown || !nextKnown || previous.terminal() {
+		return false
+	}
+	return nextRank >= previousRank
+}
+
+func (runner *Runner) settle(parent context.Context, target target.Target, receipt RunReceipt) (CleanupState, error) {
+	timeout := runner.settlementTimeout
+	if timeout <= 0 {
+		timeout = defaultSettleTTL
+	}
+	settleCtx, cancel := context.WithTimeout(context.WithoutCancel(parent), timeout)
+	defer cancel()
+	return runner.host.Settle(settleCtx, target, receipt)
 }
 
 func waitForPoll(ctx context.Context, deadline time.Time) error {
@@ -318,14 +387,22 @@ func (runner *Runner) collectEvidence(ctx context.Context, intent RunIntent, rec
 		return fmt.Errorf("evidence: invalid file count %d", len(manifest.Files))
 	}
 	var total int64
+	seen := make(map[string]struct{}, len(manifest.Files))
 	for _, file := range manifest.Files {
 		if err := validateEvidenceFile(file); err != nil {
 			return fmt.Errorf("evidence %q: %w", file.Path, err)
 		}
+		key := strings.ToLower(file.Path)
+		if _, exists := seen[key]; exists {
+			return fmt.Errorf("evidence %q: duplicate path", file.Path)
+		}
+		seen[key] = struct{}{}
 		total += file.Size
 		if total > maxEvidenceTotal {
 			return fmt.Errorf("evidence exceeds total size limit")
 		}
+	}
+	for _, file := range manifest.Files {
 		content, err := runner.host.Fetch(ctx, intent.Target, receipt, file)
 		if err != nil {
 			return fmt.Errorf("fetch evidence %q: %w", file.Path, err)
@@ -345,12 +422,8 @@ func (runner *Runner) collectEvidence(ctx context.Context, intent RunIntent, rec
 }
 
 func validateEvidenceFile(file EvidenceFile) error {
-	if file.Path == "" || strings.Contains(file.Path, `\`) || filepath.IsAbs(file.Path) {
-		return fmt.Errorf("unsafe path")
-	}
-	clean := filepath.Clean(file.Path)
-	if clean != file.Path || clean == "." || clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
-		return fmt.Errorf("unsafe path")
+	if err := safepath.ValidateWindowsRelative("path", file.Path); err != nil {
+		return err
 	}
 	if file.Type == "" {
 		return fmt.Errorf("type is required")
@@ -368,8 +441,8 @@ func writeEvidence(root, relative string, content []byte) error {
 	if root == "" {
 		return fmt.Errorf("evidence directory is required")
 	}
-	destination := filepath.Join(root, relative)
-	if err := os.MkdirAll(filepath.Dir(destination), 0o755); err != nil {
+	destination, err := evidenceDestination(root, relative)
+	if err != nil {
 		return err
 	}
 	temporary, err := os.CreateTemp(filepath.Dir(destination), ".blender-box-evidence-*")
@@ -390,4 +463,51 @@ func writeEvidence(root, relative string, content []byte) error {
 		return err
 	}
 	return os.Rename(temporaryName, destination)
+}
+
+func evidenceDestination(root, relative string) (string, error) {
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		return "", err
+	}
+	rootInfo, err := os.Lstat(root)
+	if err != nil {
+		return "", err
+	}
+	if rootInfo.Mode()&os.ModeSymlink != 0 {
+		return "", fmt.Errorf("evidence root is a symlink")
+	}
+	if !rootInfo.IsDir() {
+		return "", fmt.Errorf("evidence root is not a directory")
+	}
+	current := root
+	components := strings.Split(filepath.ToSlash(filepath.Dir(relative)), "/")
+	for _, component := range components {
+		if component == "." || component == "" {
+			continue
+		}
+		current = filepath.Join(current, component)
+		info, err := os.Lstat(current)
+		if os.IsNotExist(err) {
+			if err := os.Mkdir(current, 0o755); err != nil {
+				return "", err
+			}
+			info, err = os.Lstat(current)
+		}
+		if err != nil {
+			return "", err
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			return "", fmt.Errorf("evidence parent %q is a symlink", component)
+		}
+		if !info.IsDir() {
+			return "", fmt.Errorf("evidence parent %q is not a directory", component)
+		}
+	}
+	destination := filepath.Join(current, filepath.Base(relative))
+	if info, err := os.Lstat(destination); err == nil && info.Mode()&os.ModeSymlink != 0 {
+		return "", fmt.Errorf("evidence destination is a symlink")
+	} else if err != nil && !os.IsNotExist(err) {
+		return "", err
+	}
+	return destination, nil
 }

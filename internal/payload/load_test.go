@@ -37,6 +37,18 @@ func TestLoadResolvesAndHashesDeclaredFiles(t *testing.T) {
 	if file.LocalPath != filepath.Join(root, "scenario.py") || file.Size != int64(len(script)) || file.SHA256 != fmt.Sprintf("%x", wantHash) {
 		t.Fatalf("loaded file = %+v", file)
 	}
+	if got := file.Contents(); string(got) != string(script) {
+		t.Fatalf("contents = %q", got)
+	}
+	if err := os.WriteFile(filepath.Join(root, "scenario.py"), []byte("changed after validation\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got := file.Contents(); string(got) != string(script) {
+		t.Fatalf("snapshot changed with source = %q", got)
+	}
+	if err := loaded.Validate(); err != nil {
+		t.Fatalf("validated snapshot no longer valid: %v", err)
+	}
 }
 
 func TestLoadRejectsUnsafeOrUnboundedPayloads(t *testing.T) {
@@ -80,6 +92,24 @@ func TestLoadRejectsUnsafeOrUnboundedPayloads(t *testing.T) {
 			prepare:   writeScenario,
 			wantError: "read timeout",
 		},
+		{
+			name:      "Windows volume path",
+			document:  `{"schema_version":1,"files":[{"source":"scenario.py","destination":"C:/temp/scenario.py"}],"scenario":{"script":"scenario.py"}}`,
+			prepare:   writeScenario,
+			wantError: "destination",
+		},
+		{
+			name:      "NTFS alternate stream",
+			document:  `{"schema_version":1,"files":[{"source":"scenario.py","destination":"scenario.py:stream"}],"scenario":{"script":"scenario.py:stream"}}`,
+			prepare:   writeScenario,
+			wantError: "scenario script",
+		},
+		{
+			name:      "Windows reserved name",
+			document:  `{"schema_version":1,"files":[{"source":"scenario.py","destination":"CON.py"}],"scenario":{"script":"CON.py"}}`,
+			prepare:   writeScenario,
+			wantError: "scenario script",
+		},
 	}
 
 	for _, test := range tests {
@@ -97,6 +127,23 @@ func TestLoadRejectsUnsafeOrUnboundedPayloads(t *testing.T) {
 				t.Fatalf("error = %v, want containing %q", err, test.wantError)
 			}
 		})
+	}
+}
+
+func TestValidateRejectsForgedPayload(t *testing.T) {
+	forged := Payload{
+		SchemaVersion: 1,
+		Files: []File{{
+			Source:      "scenario.py",
+			Destination: "scenario.py",
+			Size:        5,
+			SHA256:      strings.Repeat("0", 64),
+			LocalPath:   filepath.Join(t.TempDir(), "scenario.py"),
+		}},
+		Scenario: Scenario{Script: "scenario.py", ReadTimeoutSeconds: 180},
+	}
+	if err := forged.Validate(); err == nil || !strings.Contains(err.Error(), "validated contents") {
+		t.Fatalf("error = %v", err)
 	}
 }
 

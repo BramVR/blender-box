@@ -3,10 +3,13 @@ package orchestrator
 import (
 	"context"
 	"crypto/sha256"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
+	"strings"
 	"testing"
 	"time"
 
@@ -45,6 +48,7 @@ func (host *fakeHost) Start(_ context.Context, _ target.Target, request RunReque
 		return RunReceipt{}, fmt.Errorf("start claim changed")
 	}
 	host.receipt.State = StateRunning
+	host.receipt.SchemaVersion = 1
 	host.receipt.SessionID = "bss_exact-fake-session-identity-123456"
 	return host.receipt, nil
 }
@@ -105,14 +109,7 @@ func TestRunFromIntentToVerifiedEvidenceAndKnownCleanup(t *testing.T) {
 			SSHAlias:      "windows-test",
 			TaskName:      "BlenderBoxTest",
 		},
-		Payload: payload.Payload{
-			SchemaVersion: 1,
-			Scenario: payload.Scenario{
-				Script:             "scenario.py",
-				ReadTimeoutSeconds: 600,
-				CaptureViewport:    true,
-			},
-		},
+		Payload:     loadTestPayload(t),
 		EvidenceDir: evidenceDir,
 	}
 
@@ -151,6 +148,286 @@ func TestRunFromIntentToVerifiedEvidenceAndKnownCleanup(t *testing.T) {
 		if !reflect.DeepEqual(actual, content) {
 			t.Fatalf("evidence %s changed", name)
 		}
+	}
+}
+
+func TestValidateReceiptRequiresVersionStateAndPinnedSession(t *testing.T) {
+	claim := LockClaim{
+		SchemaVersion: 1,
+		RunID:         "bbx_01TESTRUNIDENTITY0000000000",
+		RequestID:     "req_01TESTREQUESTIDENTITY00000",
+		ControllerID:  "controller-test",
+		Deadline:      time.Now().Add(time.Hour).UTC(),
+		RequestHash:   strings.Repeat("0", 64),
+		TaskName:      "BlenderBoxTest",
+	}
+	valid := RunReceipt{
+		SchemaVersion: 1,
+		Claim:         claim,
+		State:         StateRunning,
+		SessionID:     "bss_exact-fake-session-identity-123456",
+	}
+	tests := []struct {
+		name    string
+		mutate  func(*RunReceipt)
+		wantErr string
+	}{
+		{"versionless", func(receipt *RunReceipt) { receipt.SchemaVersion = 0 }, "schema version"},
+		{"unknown state", func(receipt *RunReceipt) { receipt.State = "surprise" }, "Run state"},
+		{"missing Session identity", func(receipt *RunReceipt) { receipt.SessionID = "" }, "Session identity"},
+		{"changed Session identity", func(receipt *RunReceipt) { receipt.SessionID = "bss_other-valid-session-identity-123456" }, "Session identity changed"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			receipt := valid
+			test.mutate(&receipt)
+			err := validateReceipt(receipt, claim, valid.SessionID, StateRunning)
+			if err == nil || !strings.Contains(err.Error(), test.wantErr) {
+				t.Fatalf("error = %v, want containing %q", err, test.wantErr)
+			}
+		})
+	}
+}
+
+type startErrorHost struct {
+	fakeHost
+	settledClaim LockClaim
+}
+
+func (host *startErrorHost) Start(context.Context, target.Target, RunRequest) (RunReceipt, error) {
+	return RunReceipt{}, errors.New("connection dropped")
+}
+
+func (host *startErrorHost) Settle(_ context.Context, _ target.Target, receipt RunReceipt) (CleanupState, error) {
+	host.settledClaim = receipt.Claim
+	return CleanupState{SessionStopped: true, PayloadRemoved: true, RunRootRemoved: true, LockReleased: true}, nil
+}
+
+func TestStartErrorPreservesClaimForSettlement(t *testing.T) {
+	host := &startErrorHost{fakeHost: fakeHost{evidence: map[string][]byte{}}}
+	intent := testIntent(t)
+	_, err := New(host).Run(context.Background(), intent)
+	if err == nil || !strings.Contains(err.Error(), "start Run") {
+		t.Fatalf("error = %v", err)
+	}
+	if host.settledClaim.RunID != intent.RunID || host.settledClaim.RequestID != intent.RequestID || host.settledClaim.RequestHash == "" {
+		t.Fatalf("settlement lost authority: %+v", host.settledClaim)
+	}
+}
+
+func TestForgedPayloadFailsBeforeHostInspection(t *testing.T) {
+	host := &fakeHost{evidence: testEvidence()}
+	intent := testIntent(t)
+	intent.Payload = payload.Payload{
+		SchemaVersion: 1,
+		Files: []payload.File{{
+			Source:      "scenario.py",
+			Destination: "scenario.py",
+			Size:        1,
+			SHA256:      strings.Repeat("0", 64),
+		}},
+		Scenario: payload.Scenario{Script: "scenario.py", ReadTimeoutSeconds: 180},
+	}
+	_, err := New(host).Run(context.Background(), intent)
+	if err == nil || !strings.Contains(err.Error(), "invalid Run Payload") {
+		t.Fatalf("error = %v", err)
+	}
+	if len(host.operations) != 0 {
+		t.Fatalf("host operations = %v", host.operations)
+	}
+}
+
+type malformedStartHost struct {
+	startErrorHost
+}
+
+func (host *malformedStartHost) Start(ctx context.Context, target target.Target, request RunRequest) (RunReceipt, error) {
+	receipt, err := host.fakeHost.Start(ctx, target, request)
+	receipt.SessionID = ""
+	return receipt, err
+}
+
+func TestStartMustReturnExactSessionIdentity(t *testing.T) {
+	host := &malformedStartHost{startErrorHost: startErrorHost{fakeHost: fakeHost{evidence: testEvidence()}}}
+	_, err := New(host).Run(context.Background(), testIntent(t))
+	if err == nil || !strings.Contains(err.Error(), "start receipt: invalid Session identity") {
+		t.Fatalf("error = %v", err)
+	}
+	if host.settledClaim.RunID == "" {
+		t.Fatal("malformed Start receipt lost claim-only cleanup")
+	}
+}
+
+type driftingSessionHost struct {
+	fakeHost
+}
+
+func (host *driftingSessionHost) Observe(ctx context.Context, target target.Target, runID RunID) (RunReceipt, error) {
+	receipt, err := host.fakeHost.Observe(ctx, target, runID)
+	receipt.SessionID = "bss_other-valid-session-identity-123456"
+	return receipt, err
+}
+
+func TestObserveCannotReplaceSessionIdentity(t *testing.T) {
+	host := &driftingSessionHost{fakeHost: fakeHost{evidence: testEvidence()}}
+	_, err := New(host).Run(context.Background(), testIntent(t))
+	if err == nil || !strings.Contains(err.Error(), "Session identity changed") {
+		t.Fatalf("error = %v", err)
+	}
+}
+
+type blockingSettleHost struct {
+	fakeHost
+	settleCalls int
+}
+
+func (host *blockingSettleHost) Settle(ctx context.Context, _ target.Target, _ RunReceipt) (CleanupState, error) {
+	host.settleCalls++
+	<-ctx.Done()
+	return CleanupState{}, ctx.Err()
+}
+
+func TestSettlementHasIndependentBoundedDeadline(t *testing.T) {
+	host := &blockingSettleHost{fakeHost: fakeHost{evidence: testEvidence()}}
+	runner := New(host)
+	runner.settlementTimeout = 10 * time.Millisecond
+	started := time.Now()
+	_, err := runner.Run(context.Background(), testIntent(t))
+	if err == nil || !strings.Contains(err.Error(), "settle Run") {
+		t.Fatalf("error = %v", err)
+	}
+	if elapsed := time.Since(started); elapsed > 500*time.Millisecond {
+		t.Fatalf("settlement was not bounded: %s", elapsed)
+	}
+	if host.settleCalls != 2 {
+		t.Fatalf("settle calls = %d, want fallback retry", host.settleCalls)
+	}
+}
+
+type incompleteSettleHost struct {
+	fakeHost
+	settleCalls int
+}
+
+func (host *incompleteSettleHost) Settle(context.Context, target.Target, RunReceipt) (CleanupState, error) {
+	host.settleCalls++
+	if host.settleCalls == 1 {
+		return CleanupState{SessionStopped: true}, nil
+	}
+	return CleanupState{SessionStopped: true, PayloadRemoved: true, RunRootRemoved: true, LockReleased: true}, nil
+}
+
+func TestIncompleteSettlementGetsFallbackRetry(t *testing.T) {
+	host := &incompleteSettleHost{fakeHost: fakeHost{evidence: testEvidence()}}
+	_, err := New(host).Run(context.Background(), testIntent(t))
+	if err == nil || !strings.Contains(err.Error(), "cleanup state is not known") {
+		t.Fatalf("error = %v", err)
+	}
+	if host.settleCalls != 2 {
+		t.Fatalf("settle calls = %d, want 2", host.settleCalls)
+	}
+}
+
+type duplicateEvidenceHost struct {
+	fakeHost
+	fetchCalls int
+}
+
+func (host *duplicateEvidenceHost) Observe(ctx context.Context, target target.Target, runID RunID) (RunReceipt, error) {
+	receipt, err := host.fakeHost.Observe(ctx, target, runID)
+	receipt.Evidence.Files = append(receipt.Evidence.Files, receipt.Evidence.Files[0])
+	return receipt, err
+}
+
+func (host *duplicateEvidenceHost) Fetch(ctx context.Context, target target.Target, receipt RunReceipt, file EvidenceFile) ([]byte, error) {
+	host.fetchCalls++
+	return host.fakeHost.Fetch(ctx, target, receipt, file)
+}
+
+func TestDuplicateEvidencePathsFailBeforeFetch(t *testing.T) {
+	host := &duplicateEvidenceHost{fakeHost: fakeHost{evidence: testEvidence()}}
+	_, err := New(host).Run(context.Background(), testIntent(t))
+	if err == nil || !strings.Contains(err.Error(), "duplicate path") {
+		t.Fatalf("error = %v", err)
+	}
+	if host.fetchCalls != 0 {
+		t.Fatalf("fetched %d files before rejecting manifest", host.fetchCalls)
+	}
+}
+
+func TestEvidencePathsUseWindowsSafePortableGrammar(t *testing.T) {
+	for _, path := range []string{"C:/temp/result.json", "CON.png", "nested/trailing. "} {
+		t.Run(path, func(t *testing.T) {
+			err := validateEvidenceFile(EvidenceFile{
+				Path:   path,
+				Type:   "scenario-result",
+				Size:   0,
+				SHA256: strings.Repeat("0", 64),
+			})
+			if err == nil || !strings.Contains(err.Error(), "unsafe") {
+				t.Fatalf("error = %v", err)
+			}
+		})
+	}
+}
+
+func TestEvidenceWriteRejectsSymlinkedParent(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("creating an unprivileged symlink is not portable on Windows")
+	}
+	root := t.TempDir()
+	outside := t.TempDir()
+	if err := os.Symlink(outside, filepath.Join(root, "nested")); err != nil {
+		t.Fatal(err)
+	}
+	err := writeEvidence(root, "nested/result.json", []byte("evidence"))
+	if err == nil || !strings.Contains(err.Error(), "symlink") {
+		t.Fatalf("error = %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(outside, "result.json")); !os.IsNotExist(err) {
+		t.Fatalf("evidence escaped configured root: %v", err)
+	}
+}
+
+func testIntent(t *testing.T) RunIntent {
+	t.Helper()
+	return RunIntent{
+		RunID:        "bbx_01TESTRUNIDENTITY0000000000",
+		RequestID:    "req_01TESTREQUESTIDENTITY00000",
+		ControllerID: "controller-test",
+		Deadline:     time.Now().Add(time.Hour).UTC(),
+		Target: target.Target{
+			SchemaVersion: 1,
+			SSHAlias:      "windows-test",
+			TaskName:      "BlenderBoxTest",
+		},
+		Payload:     loadTestPayload(t),
+		EvidenceDir: filepath.Join(t.TempDir(), "evidence"),
+	}
+}
+
+func loadTestPayload(t *testing.T) payload.Payload {
+	t.Helper()
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "scenario.py"), []byte("print('slice 0')\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	document := `{"schema_version":1,"files":[{"source":"scenario.py","destination":"scenario.py"}],"scenario":{"script":"scenario.py","read_timeout_seconds":600,"capture_viewport":true}}`
+	path := filepath.Join(root, "payload.json")
+	if err := os.WriteFile(path, []byte(document), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := payload.Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return loaded
+}
+
+func testEvidence() map[string][]byte {
+	return map[string][]byte{
+		"scenario-result.json": []byte(`{"status":"pass"}`),
+		"viewport.png":         []byte("fake-png-evidence"),
 	}
 }
 

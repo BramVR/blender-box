@@ -9,6 +9,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/BramVR/blender-box/internal/safepath"
 )
 
 const (
@@ -34,6 +36,12 @@ type File struct {
 	Size        int64  `json:"size"`
 	SHA256      string `json:"sha256"`
 	LocalPath   string `json:"-"`
+	contents    []byte
+}
+
+// Contents returns a copy of the bytes validated by Load.
+func (file File) Contents() []byte {
+	return append([]byte(nil), file.contents...)
 }
 
 // Scenario declares the Blender script and bounded daemon call behavior.
@@ -81,7 +89,7 @@ func Load(path string) (Payload, error) {
 	if declared.Scenario.ReadTimeoutSeconds < 1 || declared.Scenario.ReadTimeoutSeconds > maxTimeout {
 		return Payload{}, fmt.Errorf("scenario read timeout must be within 1..%d seconds", maxTimeout)
 	}
-	if err := validatePortablePath("scenario script", declared.Scenario.Script); err != nil {
+	if err := safepath.ValidateWindowsRelative("scenario script", declared.Scenario.Script); err != nil {
 		return Payload{}, err
 	}
 
@@ -90,44 +98,92 @@ func Load(path string) (Payload, error) {
 	destinations := make(map[string]struct{}, len(declared.Files))
 	var total int64
 	for _, declaredFile := range declared.Files {
-		if err := validatePortablePath("source", declaredFile.Source); err != nil {
+		if err := safepath.ValidateWindowsRelative("source", declaredFile.Source); err != nil {
 			return Payload{}, err
 		}
-		if err := validatePortablePath("destination", declaredFile.Destination); err != nil {
+		if err := safepath.ValidateWindowsRelative("destination", declaredFile.Destination); err != nil {
 			return Payload{}, err
 		}
-		if _, exists := destinations[declaredFile.Destination]; exists {
+		destinationKey := strings.ToLower(declaredFile.Destination)
+		if _, exists := destinations[destinationKey]; exists {
 			return Payload{}, fmt.Errorf("duplicate destination %q", declaredFile.Destination)
 		}
-		destinations[declaredFile.Destination] = struct{}{}
+		destinations[destinationKey] = struct{}{}
 
-		localPath, info, err := regularFileWithoutSymlinks(base, declaredFile.Source)
+		localPath, contents, err := readValidatedFile(base, declaredFile.Source)
 		if err != nil {
 			return Payload{}, fmt.Errorf("source %q: %w", declaredFile.Source, err)
 		}
-		if info.Size() > maxFileBytes {
-			return Payload{}, fmt.Errorf("source %q exceeds %d bytes", declaredFile.Source, maxFileBytes)
-		}
-		total += info.Size()
+		total += int64(len(contents))
 		if total > maxTotalBytes {
 			return Payload{}, fmt.Errorf("payload exceeds %d bytes", maxTotalBytes)
 		}
-		hash, err := hashFile(localPath, maxFileBytes)
-		if err != nil {
-			return Payload{}, fmt.Errorf("hash source %q: %w", declaredFile.Source, err)
-		}
+		hash := sha256.Sum256(contents)
 		result.Files = append(result.Files, File{
 			Source:      declaredFile.Source,
 			Destination: declaredFile.Destination,
-			Size:        info.Size(),
-			SHA256:      hash,
+			Size:        int64(len(contents)),
+			SHA256:      hex.EncodeToString(hash[:]),
 			LocalPath:   localPath,
+			contents:    contents,
 		})
 	}
-	if _, exists := destinations[declared.Scenario.Script]; !exists {
+	if _, exists := destinations[strings.ToLower(declared.Scenario.Script)]; !exists {
 		return Payload{}, fmt.Errorf("scenario script %q is not a declared destination", declared.Scenario.Script)
 	}
+	if err := result.Validate(); err != nil {
+		return Payload{}, err
+	}
 	return result, nil
+}
+
+// Validate proves that a Payload still carries bounded bytes produced by Load.
+func (payload Payload) Validate() error {
+	if payload.SchemaVersion != 1 {
+		return fmt.Errorf("unsupported payload schema version %d", payload.SchemaVersion)
+	}
+	if len(payload.Files) == 0 || len(payload.Files) > maxFiles {
+		return fmt.Errorf("payload file count %d is outside 1..%d", len(payload.Files), maxFiles)
+	}
+	if payload.Scenario.ReadTimeoutSeconds < 1 || payload.Scenario.ReadTimeoutSeconds > maxTimeout {
+		return fmt.Errorf("scenario read timeout must be within 1..%d seconds", maxTimeout)
+	}
+	if err := safepath.ValidateWindowsRelative("scenario script", payload.Scenario.Script); err != nil {
+		return err
+	}
+	destinations := make(map[string]struct{}, len(payload.Files))
+	var total int64
+	for _, file := range payload.Files {
+		if err := safepath.ValidateWindowsRelative("source", file.Source); err != nil {
+			return err
+		}
+		if err := safepath.ValidateWindowsRelative("destination", file.Destination); err != nil {
+			return err
+		}
+		key := strings.ToLower(file.Destination)
+		if _, exists := destinations[key]; exists {
+			return fmt.Errorf("duplicate destination %q", file.Destination)
+		}
+		destinations[key] = struct{}{}
+		if file.contents == nil {
+			return fmt.Errorf("source %q has no validated contents", file.Source)
+		}
+		if len(file.contents) > maxFileBytes || int64(len(file.contents)) != file.Size {
+			return fmt.Errorf("source %q size does not match validated contents", file.Source)
+		}
+		hash := sha256.Sum256(file.contents)
+		if hex.EncodeToString(hash[:]) != file.SHA256 {
+			return fmt.Errorf("source %q SHA-256 does not match validated contents", file.Source)
+		}
+		total += file.Size
+		if total > maxTotalBytes {
+			return fmt.Errorf("payload exceeds %d bytes", maxTotalBytes)
+		}
+	}
+	if _, exists := destinations[strings.ToLower(payload.Scenario.Script)]; !exists {
+		return fmt.Errorf("scenario script %q is not a declared destination", payload.Scenario.Script)
+	}
+	return nil
 }
 
 func readBounded(path string, limit int64) ([]byte, error) {
@@ -157,17 +213,6 @@ func requireJSONEnd(decoder *json.Decoder) error {
 	return nil
 }
 
-func validatePortablePath(label, path string) error {
-	if path == "" || strings.Contains(path, `\`) || strings.HasPrefix(path, "/") {
-		return fmt.Errorf("%s %q is unsafe", label, path)
-	}
-	clean := filepath.ToSlash(filepath.Clean(filepath.FromSlash(path)))
-	if clean != path || clean == "." || clean == ".." || strings.HasPrefix(clean, "../") {
-		return fmt.Errorf("%s %q is unsafe", label, path)
-	}
-	return nil
-}
-
 func regularFileWithoutSymlinks(base, portablePath string) (string, os.FileInfo, error) {
 	current := base
 	for _, component := range strings.Split(portablePath, "/") {
@@ -190,19 +235,36 @@ func regularFileWithoutSymlinks(base, portablePath string) (string, os.FileInfo,
 	return current, info, nil
 }
 
-func hashFile(path string, limit int64) (string, error) {
+func readValidatedFile(base, portablePath string) (string, []byte, error) {
+	path, before, err := regularFileWithoutSymlinks(base, portablePath)
+	if err != nil {
+		return "", nil, err
+	}
 	file, err := os.Open(path)
 	if err != nil {
-		return "", err
+		return "", nil, err
 	}
 	defer file.Close()
-	hash := sha256.New()
-	written, err := io.Copy(hash, io.LimitReader(file, limit+1))
+	opened, err := file.Stat()
 	if err != nil {
-		return "", err
+		return "", nil, err
 	}
-	if written > limit {
-		return "", fmt.Errorf("file grew beyond %d bytes", limit)
+	if !opened.Mode().IsRegular() || !os.SameFile(before, opened) {
+		return "", nil, fmt.Errorf("file changed during validation")
 	}
-	return hex.EncodeToString(hash.Sum(nil)), nil
+	contents, err := io.ReadAll(io.LimitReader(file, maxFileBytes+1))
+	if err != nil {
+		return "", nil, err
+	}
+	if len(contents) > maxFileBytes {
+		return "", nil, fmt.Errorf("file exceeds %d bytes", maxFileBytes)
+	}
+	if int64(len(contents)) != opened.Size() {
+		return "", nil, fmt.Errorf("file changed during validation")
+	}
+	_, after, err := regularFileWithoutSymlinks(base, portablePath)
+	if err != nil || !os.SameFile(opened, after) {
+		return "", nil, fmt.Errorf("file changed during validation")
+	}
+	return path, contents, nil
 }
