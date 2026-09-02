@@ -16,7 +16,7 @@ import (
 )
 
 const (
-	maxProcessOutput        = (2 * maxScenarioJSON) + (64 << 10)
+	maxProcessOutput        = (3 * maxScenarioJSON) + (64 << 10)
 	defaultReadyPoll        = 250 * time.Millisecond
 	defaultReadinessTimeout = 2 * time.Minute
 )

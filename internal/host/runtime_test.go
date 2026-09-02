@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -20,6 +21,18 @@ func TestProcessOutputLimitCoversNestedMaximumScenarioResult(t *testing.T) {
 	}
 	if len(envelope) <= 2*maxScenarioJSON || len(envelope) > maxProcessOutput {
 		t.Fatalf("nested envelope size = %d, process limit = %d", len(envelope), maxProcessOutput)
+	}
+}
+
+func TestProcessOutputLimitCoversNestedMaximumUnicodeScenarioResult(t *testing.T) {
+	padding := strings.Repeat("é", (maxScenarioJSON-128)/2)
+	inner := []byte(`{"schema_version":1,"status":"pass","padding":"` + padding + `"}`)
+	if len(inner) > maxScenarioJSON {
+		t.Fatalf("inner result size = %d", len(inner))
+	}
+	envelope := []byte(`{"executed":true,"result":` + strconv.QuoteToASCII(string(inner)) + `}`)
+	if len(envelope) <= 2*maxScenarioJSON || len(envelope) > maxProcessOutput {
+		t.Fatalf("unicode envelope size = %d, process limit = %d", len(envelope), maxProcessOutput)
 	}
 }
 
