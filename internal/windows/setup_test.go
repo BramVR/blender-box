@@ -44,6 +44,9 @@ func TestSetupPlansWithoutSSHAndAppliesOneBoundedHostBinary(t *testing.T) {
 	if !strings.Contains(prepare, "Set-Acl -LiteralPath $root") || !strings.Contains(prepare, "Configured SSH user does not match the authenticated controller SID") || !strings.Contains(prepare, "Assert-TrustedAncestors $root $interactiveSid $controllerSid") || !strings.Contains(prepare, "provision blendersessiond inside it first") || !strings.Contains(prepare, "host-lock.json") || !strings.Contains(prepare, "Assert-NoReparsePath") || !strings.Contains(prepare, "$operation.Lock(0, 1)") || strings.Contains(prepare, "Register-ScheduledTask") {
 		t.Fatalf("unexpected setup prepare script: %s", prepare)
 	}
+	if strings.Count(prepare, "Assert-NoReparsePath $hostPath") < 2 || strings.Count(prepare, "Assert-RegularFileOrMissing $hostPath") < 2 {
+		t.Fatal("setup prepare does not revalidate the existing host executable")
+	}
 	for index, arguments := range fake.arguments {
 		if len(arguments[5]) >= 8_000 {
 			t.Fatalf("encoded setup command %d is too large for the Windows command boundary: %d bytes", index, len(arguments[5]))
@@ -66,6 +69,9 @@ func TestSetupPlansWithoutSSHAndAppliesOneBoundedHostBinary(t *testing.T) {
 		t.Fatalf("unexpected setup finalize bootstrap: %s", finalize)
 	}
 	script := setupScript(adapterTarget(), SetupResult{HostSize: int64(len(binary)), HostSHA256: hex.EncodeToString(hash[:])}, fake.uploads[0].destination)
+	if strings.Count(script, "Assert-NoReparsePath $hostPath") < 2 || strings.Count(script, "Assert-RegularFileOrMissing $hostPath") < 2 {
+		t.Fatal("setup apply does not revalidate the existing host executable")
+	}
 	for _, required := range []string{
 		fake.uploads[0].destination,
 		"$total -lt $expectedSize",

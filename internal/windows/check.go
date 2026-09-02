@@ -202,7 +202,7 @@ function Test-SafePath([string]$Path, [string]$PrincipalSid, [string]$Controller
     return $null -ne $ancestor -and $ancestor -ieq $root
 }
 function Test-SafeStateTree([string]$Path, [string]$PrincipalSid, [string]$ControllerSid) {
-    if (-not (Test-Path -LiteralPath $Path)) { return $true }
+    if (-not (Test-Path -LiteralPath $Path -PathType Container)) { return $false }
     try { $rootItem = Get-Item -Force -LiteralPath $Path -ErrorAction Stop } catch { return $false }
     if (-not $rootItem.PSIsContainer) { return $false }
     $pending = [System.Collections.Generic.Stack[System.IO.DirectoryInfo]]::new()

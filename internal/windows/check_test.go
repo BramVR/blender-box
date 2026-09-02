@@ -99,6 +99,12 @@ func TestCheckStateTreeAcceptsControllerOwnedInheritedRuntimeState(t *testing.T)
 	}
 }
 
+func TestCheckRequiresProvisionedStateDirectories(t *testing.T) {
+	if !strings.Contains(checkScript, "if (-not (Test-Path -LiteralPath $Path -PathType Container)) { return $false }") {
+		t.Fatal("state-tree inspection accepts an absent state directory")
+	}
+}
+
 func TestCheckRequiresDeclaredControllerTaskManagementAuthority(t *testing.T) {
 	if !strings.Contains(checkScript, "$controllerCanManage") ||
 		!strings.Contains(checkScript, "($aceMask -band $genericAll) -eq $genericAll") ||

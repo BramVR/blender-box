@@ -201,6 +201,13 @@ const setupOperationFunctions = `function Assert-NoReparsePath([string]$Path) {
         if (([int64]$item.Attributes -band [int64][System.IO.FileAttributes]::ReparsePoint) -ne 0) { throw 'Setup path contains a reparse point.' }
     }
 }
+function Assert-RegularFileOrMissing([string]$Path) {
+    if (-not (Test-Path -LiteralPath $Path)) { return }
+    $item = Get-Item -Force -LiteralPath $Path -ErrorAction Stop
+    if ($item.PSIsContainer -or ([int64]$item.Attributes -band [int64][System.IO.FileAttributes]::ReparsePoint) -ne 0) {
+        throw 'Managed executable destination is not a regular file.'
+    }
+}
 function Expand-BlenderBoxFileSystemMask([int64]$Mask) {
     [int64]$expanded = $Mask
     if (($Mask -band 2147483648) -ne 0) { $expanded = $expanded -bor 0x00120089 }
@@ -283,6 +290,8 @@ $operationPath = [System.IO.Path]::Combine($root, '.operation.lock')
 	return header + setupOperationFunctions + `if (-not (Test-Path -LiteralPath $root -PathType Container)) { throw 'Declared work root is missing; provision blendersessiond inside it first.' }
 Assert-NoReparsePath $root
 Assert-NoReparsePath $hostDirectory
+Assert-NoReparsePath $hostPath
+Assert-RegularFileOrMissing $hostPath
 Assert-NoReparsePath $daemonDirectory
 Assert-NoReparsePath $daemonPath
 Assert-NoReparsePath $blenderPath
@@ -294,6 +303,8 @@ $operation = Enter-BlenderBoxOperation $operationPath
 try {
     Assert-NoReparsePath $root
     Assert-NoReparsePath $hostDirectory
+    Assert-NoReparsePath $hostPath
+    Assert-RegularFileOrMissing $hostPath
     Assert-NoReparsePath $daemonDirectory
     Assert-NoReparsePath $daemonPath
     Assert-NoReparsePath $blenderPath
@@ -481,6 +492,8 @@ $operation = $null
 try {
     Assert-NoReparsePath $root
     Assert-NoReparsePath $hostDirectory
+    Assert-NoReparsePath $hostPath
+    Assert-RegularFileOrMissing $hostPath
     Assert-NoReparsePath $daemonDirectory
     Assert-NoReparsePath $daemonPath
     Assert-NoReparsePath $blenderPath
@@ -489,6 +502,8 @@ try {
     $operation = Enter-BlenderBoxOperation $operationPath
     Assert-NoReparsePath $root
     Assert-NoReparsePath $hostDirectory
+    Assert-NoReparsePath $hostPath
+    Assert-RegularFileOrMissing $hostPath
     Assert-NoReparsePath $daemonDirectory
     Assert-NoReparsePath $daemonPath
     Assert-NoReparsePath $blenderPath
