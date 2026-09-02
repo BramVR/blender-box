@@ -10,13 +10,15 @@ import (
 )
 
 type checkSSH struct {
-	output      string
-	hadDeadline bool
+	output         string
+	deadlineWindow time.Duration
 }
 
 func (fake *checkSSH) Run(ctx context.Context, _ string, _ []string, _ []byte) ([]byte, error) {
 	deadline, ok := ctx.Deadline()
-	fake.hadDeadline = ok && time.Until(deadline) > 0 && time.Until(deadline) <= time.Minute
+	if ok {
+		fake.deadlineWindow = time.Until(deadline)
+	}
 	return []byte(fake.output), nil
 }
 
@@ -78,7 +80,7 @@ func TestCheckAcceptsCompleteFailedEvidence(t *testing.T) {
 	if result.Status != "fail" || len(result.Checks) != 8 {
 		t.Fatalf("unexpected result: %+v", result)
 	}
-	if !fake.hadDeadline {
-		t.Fatal("Windows check called SSH without a bounded deadline")
+	if fake.deadlineWindow < 90*time.Second || fake.deadlineWindow > 2*time.Minute {
+		t.Fatalf("Windows check deadline window = %s, want a bounded cold-start budget", fake.deadlineWindow)
 	}
 }

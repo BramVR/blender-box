@@ -12,7 +12,7 @@ import (
 	"github.com/BramVR/blender-box/internal/target"
 )
 
-const checkTimeout = time.Minute
+const checkTimeout = 2 * time.Minute
 
 const checkScript = `$config = $configText | ConvertFrom-Json
 $checks = [System.Collections.Generic.List[object]]::new()
