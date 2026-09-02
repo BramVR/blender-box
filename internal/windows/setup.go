@@ -201,6 +201,39 @@ const setupOperationFunctions = `function Assert-NoReparsePath([string]$Path) {
         if (([int64]$item.Attributes -band [int64][System.IO.FileAttributes]::ReparsePoint) -ne 0) { throw 'Setup path contains a reparse point.' }
     }
 }
+function Expand-BlenderBoxFileSystemMask([int64]$Mask) {
+    [int64]$expanded = $Mask
+    if (($Mask -band 2147483648) -ne 0) { $expanded = $expanded -bor 0x00120089 }
+    if (($Mask -band 1073741824) -ne 0) { $expanded = $expanded -bor 0x00120116 }
+    if (($Mask -band 536870912) -ne 0) { $expanded = $expanded -bor 0x001200A0 }
+    if (($Mask -band 268435456) -ne 0) { $expanded = $expanded -bor 0x001F01FF }
+    return $expanded
+}
+function Assert-TrustedAncestors([string]$Path, [System.Security.Principal.SecurityIdentifier]$PrincipalSid, [System.Security.Principal.SecurityIdentifier]$ControllerSid) {
+    $trusted = @($PrincipalSid.Value, $ControllerSid.Value, 'S-1-5-18', 'S-1-5-32-544', 'S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464')
+    $fullPath = [System.IO.Path]::GetFullPath($Path)
+    $current = [System.IO.Path]::GetDirectoryName($fullPath.TrimEnd([char[]]@('\')))
+    $volumeRoot = [System.IO.Path]::GetPathRoot($fullPath)
+    [int64]$authorityMask = [int64][System.Security.AccessControl.FileSystemRights]::Delete -bor [int64][System.Security.AccessControl.FileSystemRights]::DeleteSubdirectoriesAndFiles -bor [int64][System.Security.AccessControl.FileSystemRights]::ChangePermissions -bor [int64][System.Security.AccessControl.FileSystemRights]::TakeOwnership
+    while ($null -ne $current) {
+        $acl = Get-Acl -LiteralPath $current -ErrorAction Stop
+        $ownerSid = ([System.Security.Principal.NTAccount]::new([string]$acl.Owner)).Translate([System.Security.Principal.SecurityIdentifier]).Value
+        if ($trusted -notcontains $ownerSid) { throw 'Setup path has an untrusted ancestor owner.' }
+        $rules = $acl.GetAccessRules($true, $true, [System.Security.Principal.SecurityIdentifier])
+        foreach ($rule in $rules) {
+            if (($rule.PropagationFlags -band [System.Security.AccessControl.PropagationFlags]::InheritOnly) -ne 0) { continue }
+            if ($rule.AccessControlType -ne [System.Security.AccessControl.AccessControlType]::Allow) { continue }
+            if ($trusted -contains $rule.IdentityReference.Value) { continue }
+            $ruleMask = Expand-BlenderBoxFileSystemMask ([int64]$rule.FileSystemRights)
+            if (($ruleMask -band $authorityMask) -ne 0) { throw 'Setup path has an untrusted writable ancestor.' }
+        }
+        if ($current -ieq $volumeRoot) { return }
+        $next = [System.IO.Path]::GetDirectoryName($current)
+        if ($null -eq $next -or $next -ieq $current) { throw 'Setup path ancestor traversal failed.' }
+        $current = $next
+    }
+    throw 'Setup path ancestor traversal failed.'
+}
 function Enter-BlenderBoxOperation([string]$Path) {
     $operation = [System.IO.File]::Open($Path, [System.IO.FileMode]::OpenOrCreate, [System.IO.FileAccess]::ReadWrite, [System.IO.FileShare]::ReadWrite)
     $deadline = [DateTime]::UtcNow.AddSeconds(30)
@@ -266,6 +299,7 @@ try {
     if (-not (Test-Path -LiteralPath $blenderPath -PathType Leaf)) { throw 'Declared Blender executable is missing.' }
     $interactiveSid = ([System.Security.Principal.NTAccount]::new($interactiveUser)).Translate([System.Security.Principal.SecurityIdentifier])
     $controllerSid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User
+    Assert-TrustedAncestors $root $interactiveSid $controllerSid
     $inherit = [System.Security.AccessControl.InheritanceFlags]::ContainerInherit -bor [System.Security.AccessControl.InheritanceFlags]::ObjectInherit
     $none = [System.Security.AccessControl.PropagationFlags]::None
     $allow = [System.Security.AccessControl.AccessControlType]::Allow
@@ -409,6 +443,7 @@ try {
     if (-not (Test-Path -LiteralPath $blenderPath -PathType Leaf)) { throw 'Declared Blender executable is missing.' }
     $interactiveSid = ([System.Security.Principal.NTAccount]::new($interactiveUser)).Translate([System.Security.Principal.SecurityIdentifier])
     $controllerSid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User
+    Assert-TrustedAncestors $root $interactiveSid $controllerSid
     Set-Acl -LiteralPath $root -AclObject (New-BlenderBoxDirectoryAcl)
     Set-BlenderBoxStateTree ([System.IO.Path]::Combine($root, 'runs'))
     Set-BlenderBoxStateTree ([System.IO.Path]::Combine($root, 'receipts'))
