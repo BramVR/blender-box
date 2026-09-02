@@ -213,6 +213,9 @@ func runCommand(ctx context.Context, args []string, stdout io.Writer, stderr io.
 			defer cancel()
 			if status, statusErr := dependencies.Runner.Status(recoveryCtx, selected, runID); statusErr == nil {
 				failure = runResultFromStatus(status)
+				if failure.State == orchestrator.StateComplete {
+					failure.State = orchestrator.StateFailed
+				}
 				failure.Error = err.Error()
 			}
 		}

@@ -311,6 +311,44 @@ func TestFailedJSONRunEmitsRecoveredReceiptAndCleanup(t *testing.T) {
 	}
 }
 
+func TestEvidenceFailureCannotEmitCompleteJSONState(t *testing.T) {
+	root := t.TempDir()
+	targetPath := writeTarget(t, root)
+	if err := os.WriteFile(filepath.Join(root, "scenario.py"), []byte("print('slice 0')\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	payloadPath := filepath.Join(root, "payload.json")
+	if err := os.WriteFile(payloadPath, []byte(`{"schema_version":1,"files":[{"source":"scenario.py","destination":"scenario.py"}],"scenario":{"script":"scenario.py"}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	runID := orchestrator.RunID("bbx_01EVIDENCEFAILIDENTITY0000000")
+	service := &fakeRunService{
+		runErr: errors.New("evidence hash changed"),
+		statusResult: orchestrator.StatusResult{
+			SchemaVersion: 1,
+			RunID:         runID,
+			RequestID:     "req_01EVIDENCEFAILIDENTITY00000",
+			SessionID:     "bss_exact-evidence-session-identity-123456",
+			State:         orchestrator.StateComplete,
+			Cleanup:       orchestrator.CleanupState{SessionStopped: true, PayloadRemoved: true, RunRootRemoved: true, LockReleased: true},
+		},
+	}
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	exitCode := Run(context.Background(), []string{
+		"run", "--target", targetPath, "--payload", payloadPath, "--json",
+	}, strings.NewReader(""), &stdout, &stderr, Dependencies{
+		Runner: service,
+		NewIdentities: func() (orchestrator.RunID, orchestrator.RequestID, string, error) {
+			return runID, "req_01EVIDENCEFAILIDENTITY00000", "ctl_cli-test", nil
+		},
+	})
+	var result orchestrator.RunResult
+	if exitCode != 1 || json.Unmarshal(stdout.Bytes(), &result) != nil || result.State != orchestrator.StateFailed || result.SessionID == "" || !result.Cleanup.Known() {
+		t.Fatalf("exit = %d, failure result = %+v, stderr = %q", exitCode, result, stderr.String())
+	}
+}
+
 func TestWindowsSetupPlansWithoutSSHAndRequiresApplyForWrite(t *testing.T) {
 	root := t.TempDir()
 	targetPath := writeTarget(t, root)
