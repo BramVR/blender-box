@@ -149,6 +149,8 @@ func TestWindowsCheckPrintsVersionedJSONWithoutRemoteWrites(t *testing.T) {
 		"securityidentifier",
 		"windowsidentity]::getcurrent()",
 		"controllercanexecute",
+		"trustedmanagers",
+		"requiredprivilege",
 		"utf8encoding]::new($false)",
 		"rawsecuritydescriptor",
 		"getsecuritydescriptor(7)",

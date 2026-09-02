@@ -90,36 +90,40 @@ function Test-TrustedAncestor([string]$Path, [string]$PrincipalSid) {
     }
     return $true
 }
-function Test-TrustedTaskAuthorities([string]$Sddl, [string]$PrincipalSid, [string]$ControllerSid) {
+function Test-TrustedTaskAuthorities([string]$Sddl, [string]$ControllerSid) {
     if ([string]::IsNullOrWhiteSpace($Sddl)) { return $false }
     try {
         $descriptor = [System.Security.AccessControl.RawSecurityDescriptor]::new($Sddl)
     } catch {
         return $false
     }
-    $trustedWriters = @(
-        $PrincipalSid,
-        $ControllerSid,
+    $trustedManagers = @(
         'S-1-5-18',
         'S-1-5-32-544',
         'S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464'
     )
-    if ($null -eq $descriptor.Owner -or $trustedWriters -notcontains $descriptor.Owner.Value -or $null -eq $descriptor.DiscretionaryAcl) { return $false }
+    if ($null -eq $descriptor.Owner -or $trustedManagers -notcontains $descriptor.Owner.Value -or $null -eq $descriptor.DiscretionaryAcl) { return $false }
     [int64]$genericAll = 0x10000000
     [int64]$genericWrite = 0x40000000
     [int64]$genericExecute = 0x20000000
     [int64]$taskWrite = 0x00000116
     [int64]$taskExecute = 0x00000020
-    [int64]$taskAuthorityMask = $genericAll -bor $genericWrite -bor $genericExecute -bor 0x00010000 -bor 0x00040000 -bor 0x00080000 -bor $taskWrite -bor $taskExecute
+    [int64]$taskWriteMask = $genericAll -bor $genericWrite -bor 0x00010000 -bor 0x00040000 -bor 0x00080000 -bor $taskWrite
+    [int64]$taskExecuteMask = $genericAll -bor $genericExecute -bor $taskExecute
     $controllerCanExecute = $false
     foreach ($ace in $descriptor.DiscretionaryAcl) {
         if (([int]$ace.AceFlags -band [int][System.Security.AccessControl.AceFlags]::InheritOnly) -ne 0) { continue }
         if ($null -eq $ace.SecurityIdentifier) { continue }
         $aceMask = [int64]$ace.AccessMask
-        if ($ace.AceQualifier -eq [System.Security.AccessControl.AceQualifier]::AccessDenied -and ($aceMask -band ($genericAll -bor $genericExecute -bor $taskExecute)) -ne 0) { return $false }
+        if ($ace.AceQualifier -eq [System.Security.AccessControl.AceQualifier]::AccessDenied -and ($aceMask -band $taskExecuteMask) -ne 0) { return $false }
         if ($ace.AceQualifier -ne [System.Security.AccessControl.AceQualifier]::AccessAllowed) { continue }
-        if ($ace.SecurityIdentifier.Value -eq $ControllerSid -and ($aceMask -band ($genericAll -bor $genericExecute -bor $taskExecute)) -ne 0) { $controllerCanExecute = $true }
-        if ($trustedWriters -notcontains $ace.SecurityIdentifier.Value -and ($aceMask -band $taskAuthorityMask) -ne 0) { return $false }
+        if ($trustedManagers -contains $ace.SecurityIdentifier.Value) { continue }
+        if ($ace.SecurityIdentifier.Value -eq $ControllerSid) {
+            if (($aceMask -band $taskWriteMask) -ne 0) { return $false }
+            if (($aceMask -band $taskExecuteMask) -ne 0) { $controllerCanExecute = $true }
+            continue
+        }
+        if (($aceMask -band ($taskWriteMask -bor $taskExecuteMask)) -ne 0) { return $false }
     }
     return $controllerCanExecute
 }
@@ -204,11 +208,13 @@ if ($null -ne $task) {
     $actions = @($task.Actions)
     $triggers = @($task.Triggers | Where-Object { $_ })
     $taskSid = Resolve-Sid ([string]$task.Principal.UserId)
+    $requiredPrivileges = @($task.Principal.RequiredPrivilege | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) })
     $taskActual = [ordered]@{
         user = [string]$task.Principal.UserId
         sid = $taskSid
         logon_type = [string]$task.Principal.LogonType
         run_level = [string]$task.Principal.RunLevel
+        required_privileges = $requiredPrivileges
         action_count = $actions.Count
         trigger_count = $triggers.Count
         multiple_instances = [string]$task.Settings.MultipleInstances
@@ -241,12 +247,12 @@ if ($null -ne $task) {
     } catch {
         $taskSddl = $null
     }
-    $taskAclOK = Test-TrustedTaskAuthorities $taskSddl $expectedSid $expectedSSHSid
+    $taskAclOK = Test-TrustedTaskAuthorities $taskSddl $expectedSSHSid
     $taskActual['task_acl_trusted'] = $taskAclOK
     $taskSettingsOK = [string]$task.Settings.MultipleInstances -eq 'IgnoreNew' -and [string]$task.Settings.ExecutionTimeLimit -in @('PT0S', '00:00:00', '0') -and [bool]$task.Settings.AllowDemandStart -and [bool]$task.Settings.AllowHardTerminate -and -not ([bool]$task.Settings.DisallowStartIfOnBatteries) -and -not ([bool]$task.Settings.StopIfGoingOnBatteries) -and -not ([bool]$task.Settings.RunOnlyIfIdle) -and -not ([bool]$task.Settings.RunOnlyIfNetworkAvailable) -and [int]$task.Settings.RestartCount -eq 0 -and -not ([bool]$task.Settings.Volatile) -and [bool]$task.Settings.Enabled
-    $taskOK = $null -ne $expectedSid -and $taskSid -eq $expectedSid -and [string]$task.Principal.LogonType -eq 'Interactive' -and [string]$task.Principal.RunLevel -eq 'Limited' -and $actions.Count -eq 1 -and $triggers.Count -eq 0 -and $taskSettingsOK -and $null -ne $actualExecute -and $actualExecute -ieq $expectedExecute -and [string]$actions[0].Arguments -ceq [string]$config.expected_task_arguments -and $null -ne $actualWorkingDirectory -and $actualWorkingDirectory -ieq $expectedWorkingDirectory -and $taskAclOK
+    $taskOK = $null -ne $expectedSid -and $taskSid -eq $expectedSid -and [string]$task.Principal.LogonType -eq 'Interactive' -and [string]$task.Principal.RunLevel -eq 'Limited' -and $requiredPrivileges.Count -eq 0 -and $actions.Count -eq 1 -and $triggers.Count -eq 0 -and $taskSettingsOK -and $null -ne $actualExecute -and $actualExecute -ieq $expectedExecute -and [string]$actions[0].Arguments -ceq [string]$config.expected_task_arguments -and $null -ne $actualWorkingDirectory -and $actualWorkingDirectory -ieq $expectedWorkingDirectory -and $taskAclOK
 }
-Add-Check 'task.interactive' $taskOK $true $taskActual ([ordered]@{user=$expectedUser; sid=$expectedSid; controller_sid=$expectedSSHSid; execute=$hostPath; arguments=[string]$config.expected_task_arguments; working_directory=[System.IO.Path]::GetDirectoryName($hostPath); logon_type='Interactive'; run_level='Limited'; triggers=0; multiple_instances='IgnoreNew'; execution_time_limit='PT0S'; allow_demand_start=$true; allow_hard_terminate=$true; disallow_start_if_on_batteries=$false; stop_if_going_on_batteries=$false; run_only_if_idle=$false; run_only_if_network_available=$false; restart_count=0; volatile=$false}) 'The static task must match the complete Blender Box action, principal, and controller contract.'
+Add-Check 'task.interactive' $taskOK $true $taskActual ([ordered]@{user=$expectedUser; sid=$expectedSid; controller_sid=$expectedSSHSid; execute=$hostPath; arguments=[string]$config.expected_task_arguments; working_directory=[System.IO.Path]::GetDirectoryName($hostPath); logon_type='Interactive'; run_level='Limited'; required_privileges=@(); triggers=0; multiple_instances='IgnoreNew'; execution_time_limit='PT0S'; allow_demand_start=$true; allow_hard_terminate=$true; disallow_start_if_on_batteries=$false; stop_if_going_on_batteries=$false; run_only_if_idle=$false; run_only_if_network_available=$false; restart_count=0; volatile=$false}) 'The static task must match the complete Blender Box action, principal, and controller contract.'
 $requiredFailed = @($checks | Where-Object { $_.required -and -not $_.passed }).Count
 [ordered]@{schema_version=1; status=$(if ($requiredFailed -eq 0) {'pass'} else {'fail'}); checks=$checks} | ConvertTo-Json -Compress -Depth 8
 `
