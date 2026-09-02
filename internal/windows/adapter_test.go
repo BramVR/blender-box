@@ -22,6 +22,13 @@ type scriptedSSH struct {
 	outputs   [][]byte
 	arguments [][]string
 	inputs    [][]byte
+	uploads   []scriptedUpload
+}
+
+type scriptedUpload struct {
+	host        string
+	source      string
+	destination string
 }
 
 func (fake *scriptedSSH) Run(_ context.Context, _ string, arguments []string, input []byte) ([]byte, error) {
@@ -30,6 +37,11 @@ func (fake *scriptedSSH) Run(_ context.Context, _ string, arguments []string, in
 	output := fake.outputs[0]
 	fake.outputs = fake.outputs[1:]
 	return output, nil
+}
+
+func (fake *scriptedSSH) Upload(_ context.Context, host, source, destination string) error {
+	fake.uploads = append(fake.uploads, scriptedUpload{host: host, source: source, destination: destination})
+	return nil
 }
 
 func TestAdapterCarriesTypedAuthorityAcrossEveryHostOperation(t *testing.T) {

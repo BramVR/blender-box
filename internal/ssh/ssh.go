@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"os/exec"
+	"strings"
 )
 
 const (
@@ -41,6 +42,28 @@ func (Runner) Run(ctx context.Context, host string, remoteArgs []string, stdin [
 		return nil, fmt.Errorf("SSH output exceeded its limit")
 	}
 	return append([]byte(nil), stdout.Bytes()...), nil
+}
+
+func (Runner) Upload(ctx context.Context, host, source, destination string) error {
+	arguments := []string{"-q", "--", source, host + ":" + strings.ReplaceAll(destination, `\`, "/")}
+	command := exec.CommandContext(ctx, "scp", arguments...)
+	stdout := newBoundedBuffer(maxStdoutBytes)
+	stderr := newBoundedBuffer(maxStderrBytes)
+	command.Stdout = stdout
+	command.Stderr = stderr
+	if err := command.Run(); err != nil {
+		if stdout.exceeded || stderr.exceeded {
+			return fmt.Errorf("SCP output exceeded its limit")
+		}
+		if message := stderr.String(); message != "" {
+			return fmt.Errorf("SCP failed: %s", message)
+		}
+		return fmt.Errorf("SCP failed: %w", err)
+	}
+	if stdout.exceeded || stderr.exceeded {
+		return fmt.Errorf("SCP output exceeded its limit")
+	}
+	return nil
 }
 
 type boundedBuffer struct {

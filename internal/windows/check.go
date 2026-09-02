@@ -289,6 +289,11 @@ type SSH interface {
 	Run(context.Context, string, []string, []byte) ([]byte, error)
 }
 
+type SetupSSH interface {
+	SSH
+	Upload(context.Context, string, string, string) error
+}
+
 type CheckResult struct {
 	SchemaVersion int             `json:"schema_version"`
 	Status        string          `json:"status"`

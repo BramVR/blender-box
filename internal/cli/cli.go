@@ -28,7 +28,7 @@ type HostService interface {
 }
 
 type Dependencies struct {
-	SSH           windows.SSH
+	SSH           windows.SetupSSH
 	Runner        RunService
 	Now           func() time.Time
 	NewIdentities func() (orchestrator.RunID, orchestrator.RequestID, string, error)

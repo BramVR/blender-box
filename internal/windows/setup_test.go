@@ -3,7 +3,6 @@ package windows
 import (
 	"context"
 	"crypto/sha256"
-	binaryencoding "encoding/binary"
 	"encoding/hex"
 	"os"
 	"path/filepath"
@@ -27,7 +26,7 @@ func TestSetupPlansWithoutSSHAndAppliesOneBoundedHostBinary(t *testing.T) {
 		t.Fatalf("plan = %+v, SSH calls = %d", planned, len(fake.inputs))
 	}
 
-	fake.outputs = [][]byte{mustJSON(t, SetupResult{
+	fake.outputs = [][]byte{nil, mustJSON(t, SetupResult{
 		SchemaVersion: 1,
 		Status:        "applied",
 		Applied:       true,
@@ -38,32 +37,33 @@ func TestSetupPlansWithoutSSHAndAppliesOneBoundedHostBinary(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if applied.Status != "applied" || !applied.Applied || len(fake.inputs) != 1 {
+	if applied.Status != "applied" || !applied.Applied || len(fake.inputs) != 2 || len(fake.uploads) != 1 {
 		t.Fatalf("apply = %+v, SSH calls = %d", applied, len(fake.inputs))
 	}
-	bootstrap := decodedAdapterScript(t, fake.arguments[0])
-	if len(fake.arguments[0][5]) >= 8_000 {
-		t.Fatalf("encoded bootstrap is too large for the Windows command boundary: %d bytes", len(fake.arguments[0][5]))
+	prepare := decodedAdapterScript(t, fake.arguments[0])
+	if !strings.Contains(prepare, "Set-Acl -LiteralPath $root") || strings.Contains(prepare, "Register-ScheduledTask") {
+		t.Fatalf("unexpected setup prepare script: %s", prepare)
 	}
-	for _, required := range []string{"BBXSET01", "BlenderBoxSetupPayloadStream", "Read-Exact"} {
-		if !strings.Contains(bootstrap, required) {
-			t.Errorf("setup bootstrap missing %q", required)
+	for index, arguments := range fake.arguments {
+		if len(arguments[5]) >= 8_000 {
+			t.Fatalf("encoded setup command %d is too large for the Windows command boundary: %d bytes", index, len(arguments[5]))
 		}
 	}
-	framed := fake.inputs[0]
-	if len(framed) < 12 || string(framed[:8]) != "BBXSET01" {
-		t.Fatalf("invalid setup frame header")
+	for index, input := range fake.inputs {
+		if len(input) != 0 {
+			t.Fatalf("setup command %d used stdin for %d bytes", index, len(input))
+		}
 	}
-	scriptSize := int(binaryencoding.LittleEndian.Uint32(framed[8:12]))
-	if scriptSize <= 0 || 12+scriptSize > len(framed) {
-		t.Fatalf("invalid framed script size %d", scriptSize)
+	if fake.uploads[0].host != adapterTarget().SSHAlias || fake.uploads[0].source != path || !strings.HasPrefix(fake.uploads[0].destination, adapterTarget().WorkRoot+`\.setup-`) {
+		t.Fatalf("upload = %+v", fake.uploads[0])
 	}
-	script := string(framed[12 : 12+scriptSize])
-	if got := framed[12+scriptSize:]; string(got) != string(binary) {
-		t.Fatalf("transferred binary = %q", got)
+	finalize := decodedAdapterScript(t, fake.arguments[1])
+	if !strings.Contains(finalize, "GzipStream") || !strings.Contains(finalize, "ScriptBlock") {
+		t.Fatalf("unexpected setup finalize bootstrap: %s", finalize)
 	}
+	script := setupScript(adapterTarget(), SetupResult{HostSize: int64(len(binary)), HostSHA256: hex.EncodeToString(hash[:])}, fake.uploads[0].destination)
 	for _, required := range []string{
-		"BlenderBoxSetupPayloadStream",
+		fake.uploads[0].destination,
 		"$total -lt $expectedSize",
 		"[Math]::Min($buffer.Length, $expectedSize - $total)",
 		"SHA256",
