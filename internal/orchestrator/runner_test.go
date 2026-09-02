@@ -229,6 +229,24 @@ func TestRunRequestRejectsUnsafeHostExecutablePaths(t *testing.T) {
 	}
 }
 
+func TestRunRequestRequiresRunDerivedSessionName(t *testing.T) {
+	request, err := buildRequest(testIntent(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Body.BlenderExecutable = `C:\Blender\blender.exe`
+	request.Body.SessionBrokerExecutable = `C:\BlenderBox\bin\blendersessiond.exe`
+	request.Body.SessionName = "blender-box-unrelated"
+	hash, err := requestBodyHash(request.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Claim.RequestHash = hash
+	if err := request.Validate(); err == nil || !strings.Contains(err.Error(), "Session name") {
+		t.Fatalf("Validate() error = %v", err)
+	}
+}
+
 func TestValidateReceiptComparesDeadlineByInstant(t *testing.T) {
 	deadline := time.Now().Add(time.Hour).UTC().Truncate(time.Second)
 	claim := LockClaim{

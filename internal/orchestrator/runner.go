@@ -126,6 +126,9 @@ func (request RunRequest) Validate() error {
 	if strings.TrimSpace(request.Body.SessionName) == "" || strings.TrimSpace(request.Body.BlenderExecutable) == "" || strings.TrimSpace(request.Body.SessionBrokerExecutable) == "" {
 		return fmt.Errorf("request body is incomplete")
 	}
+	if request.Body.SessionName != SessionNameForRun(request.Claim.RunID) {
+		return fmt.Errorf("request Session name does not match Run ID")
+	}
 	if !target.ValidateWindowsPath(request.Body.BlenderExecutable) || !target.ValidateWindowsPath(request.Body.SessionBrokerExecutable) {
 		return fmt.Errorf("request body contains an unsafe Windows executable path")
 	}
