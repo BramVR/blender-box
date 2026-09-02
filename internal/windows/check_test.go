@@ -32,6 +32,7 @@ func TestCheckRejectsMalformedOrContradictoryEvidence(t *testing.T) {
 {"id":"daemon.executable","passed":true,"required":true},
 {"id":"host.executable","passed":true,"required":true},
 {"id":"work-root.access","passed":true,"required":true},
+{"id":"work-root.state-tree","passed":true,"required":true},
 {"id":"task.interactive","passed":true,"required":true}
 ]`
 	cases := map[string]string{
@@ -49,6 +50,7 @@ func TestCheckRejectsMalformedOrContradictoryEvidence(t *testing.T) {
 {"id":"daemon.executable","passed":true,"required":true},
 {"id":"host.executable","passed":true,"required":true},
 {"id":"work-root.access","passed":true,"required":true},
+{"id":"work-root.state-tree","passed":true,"required":true},
 {"id":"task.interactive","passed":true,"required":true}]}`,
 		"fail without failure": `{"schema_version":1,"status":"fail","checks":` + validChecks + `}`,
 	}
@@ -73,6 +75,7 @@ func TestCheckAcceptsCompleteFailedEvidence(t *testing.T) {
 {"id":"daemon.executable","passed":false,"required":true},
 {"id":"host.executable","passed":false,"required":true},
 {"id":"work-root.access","passed":false,"required":true},
+{"id":"work-root.state-tree","passed":false,"required":true},
 {"id":"task.interactive","passed":false,"required":true}]}`
 
 	fake := &checkSSH{output: output}
@@ -80,7 +83,7 @@ func TestCheckAcceptsCompleteFailedEvidence(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Status != "fail" || len(result.Checks) != 9 {
+	if result.Status != "fail" || len(result.Checks) != 10 {
 		t.Fatalf("unexpected result: %+v", result)
 	}
 	if fake.deadlineWindow < 90*time.Second || fake.deadlineWindow > 2*time.Minute {

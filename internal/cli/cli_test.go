@@ -354,7 +354,7 @@ func TestWindowsCheckPrintsVersionedJSONWithoutRemoteWrites(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	checks := make([]map[string]any, 0, 9)
+	checks := make([]map[string]any, 0, 10)
 	for _, id := range []string{
 		"host.windows",
 		"host.console-user",
@@ -364,6 +364,7 @@ func TestWindowsCheckPrintsVersionedJSONWithoutRemoteWrites(t *testing.T) {
 		"daemon.executable",
 		"host.executable",
 		"work-root.access",
+		"work-root.state-tree",
 		"task.interactive",
 	} {
 		checks = append(checks, map[string]any{"id": id, "passed": true, "required": true})

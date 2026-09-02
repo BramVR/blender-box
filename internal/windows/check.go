@@ -199,6 +199,30 @@ function Test-SafePath([string]$Path, [string]$PrincipalSid, [string]$Controller
     }
     return $null -ne $ancestor -and $ancestor -ieq $root
 }
+function Test-SafeStateTree([string]$Path, [string]$PrincipalSid, [string]$ControllerSid) {
+    if (-not (Test-Path -LiteralPath $Path)) { return $true }
+    try { $rootItem = Get-Item -Force -LiteralPath $Path -ErrorAction Stop } catch { return $false }
+    if (-not $rootItem.PSIsContainer) { return $false }
+    $pending = [System.Collections.Generic.Stack[System.IO.DirectoryInfo]]::new()
+    $pending.Push($rootItem)
+    $modify = [System.Security.AccessControl.FileSystemRights]::Modify
+    while ($pending.Count -gt 0) {
+        $directory = $pending.Pop()
+        if (([int64]$directory.Attributes -band [int64][System.IO.FileAttributes]::ReparsePoint) -ne 0) { return $false }
+        if (-not (Test-SafePath $directory.FullName $PrincipalSid $ControllerSid $modify $true $true $true)) { return $false }
+        try { $children = @($directory.EnumerateFileSystemInfos()) } catch { return $false }
+        foreach ($child in $children) {
+            if (([int64]$child.Attributes -band [int64][System.IO.FileAttributes]::ReparsePoint) -ne 0) { return $false }
+            $isDirectory = ([int64]$child.Attributes -band [int64][System.IO.FileAttributes]::Directory) -ne 0
+            if ($isDirectory) {
+                $pending.Push($child)
+            } elseif (-not (Test-SafePath $child.FullName $PrincipalSid $ControllerSid $modify $true $true $false)) {
+                return $false
+            }
+        }
+    }
+    return $true
+}
 $os = Get-CimInstance -ClassName Win32_OperatingSystem -ErrorAction SilentlyContinue
 Add-Check 'host.windows' ($null -ne $os) $true $os.Caption 'Windows' 'Windows host detected.'
 $computer = Get-CimInstance -ClassName Win32_ComputerSystem -ErrorAction SilentlyContinue
@@ -229,6 +253,8 @@ Add-Check 'daemon.executable' ($daemonOK -and (Test-SafePath $daemonPath $expect
 Add-Check 'host.executable' ($hostOK -and (Test-SafePath $hostPath $expectedSid $sshSid $readExecute $true $true $false)) $true $hostPath 'existing executable with explicit task-principal access and trusted writers' 'The staged Blender Box host binary and parent must carry the setup ACL.'
 $rootExists = Test-Path -LiteralPath ([string]$config.work_root) -PathType Container -ErrorAction SilentlyContinue
 Add-Check 'work-root.access' ($rootExists -and (Test-SafePath ([string]$config.work_root) $expectedSid $sshSid $modify $true $false $true)) $true ([string]$config.work_root) 'existing directory with explicit task-principal access and trusted writers' 'The operator-managed work root and inherited child ACL must carry the setup authority and have trusted ancestors.'
+$stateTreeOK = $rootExists -and (Test-SafeStateTree ([System.IO.Path]::Combine([string]$config.work_root, 'runs')) $expectedSid $sshSid) -and (Test-SafeStateTree ([System.IO.Path]::Combine([string]$config.work_root, 'receipts')) $expectedSid $sshSid)
+Add-Check 'work-root.state-tree' $stateTreeOK $true $stateTreeOK $true 'Existing Run and receipt trees must contain no reparse points and only declared writers.'
 $task = Get-ScheduledTask -TaskPath '\' -TaskName ([string]$config.task_name) -ErrorAction SilentlyContinue
 $taskActual = $null
 $taskOK = $false
@@ -369,6 +395,7 @@ func validCheckResult(result CheckResult) bool {
 		"daemon.executable":         false,
 		"host.executable":           false,
 		"work-root.access":          false,
+		"work-root.state-tree":      false,
 		"task.interactive":          false,
 	}
 	if result.SchemaVersion != 1 || (result.Status != "pass" && result.Status != "fail") || len(result.Checks) == 0 {

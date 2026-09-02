@@ -168,6 +168,9 @@ func readHostBinary(path string) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
+	if len(contents) == 0 {
+		return nil, fmt.Errorf("host binary must not be empty")
+	}
 	if len(contents) > maxHostBinary || int64(len(contents)) != info.Size() {
 		return nil, fmt.Errorf("host binary exceeds its limit or changed during read")
 	}
@@ -180,6 +183,8 @@ $root = '%s'
 $daemonPath = '%s'
 $blenderPath = '%s'
 $interactiveUser = '%s'
+$lockPath = [System.IO.Path]::Combine($root, 'host-lock.json')
+if (Test-Path -LiteralPath $lockPath) { throw 'Cannot apply setup while a Host Lock exists.' }
 if (-not (Test-Path -LiteralPath $daemonPath -PathType Leaf)) { throw 'Declared blendersessiond executable is missing.' }
 if (-not (Test-Path -LiteralPath $blenderPath -PathType Leaf)) { throw 'Declared Blender executable is missing.' }
 $interactiveSid = ([System.Security.Principal.NTAccount]::new($interactiveUser)).Translate([System.Security.Principal.SecurityIdentifier])
@@ -214,6 +219,7 @@ $expectedHash = '%s'
 $stagedBinary = '%s'
 $temporary = $hostPath + '.setup-' + [Guid]::NewGuid().ToString('N')
 $backup = $hostPath + '.setup-backup-' + [Guid]::NewGuid().ToString('N')
+$lockPath = [System.IO.Path]::Combine($root, 'host-lock.json')
 function New-BlenderBoxDirectoryAcl {
     $inherit = [System.Security.AccessControl.InheritanceFlags]::ContainerInherit -bor [System.Security.AccessControl.InheritanceFlags]::ObjectInherit
     $none = [System.Security.AccessControl.PropagationFlags]::None
@@ -228,6 +234,43 @@ function New-BlenderBoxDirectoryAcl {
     $acl.AddAccessRule([System.Security.AccessControl.FileSystemAccessRule]::new([System.Security.Principal.SecurityIdentifier]::new('S-1-5-18'), [System.Security.AccessControl.FileSystemRights]::FullControl, $inherit, $none, $allow))
     $acl.AddAccessRule([System.Security.AccessControl.FileSystemAccessRule]::new([System.Security.Principal.SecurityIdentifier]::new('S-1-5-32-544'), [System.Security.AccessControl.FileSystemRights]::FullControl, $inherit, $none, $allow))
     return $acl
+}
+function New-BlenderBoxStateFileAcl {
+    $noneInheritance = [System.Security.AccessControl.InheritanceFlags]::None
+    $nonePropagation = [System.Security.AccessControl.PropagationFlags]::None
+    $allow = [System.Security.AccessControl.AccessControlType]::Allow
+    $acl = [System.Security.AccessControl.FileSecurity]::new()
+    $acl.SetAccessRuleProtection($true, $false)
+    $acl.SetOwner($interactiveSid)
+    $acl.AddAccessRule([System.Security.AccessControl.FileSystemAccessRule]::new($interactiveSid, [System.Security.AccessControl.FileSystemRights]::Modify, $noneInheritance, $nonePropagation, $allow))
+    if ($controllerSid -ne $interactiveSid) {
+        $acl.AddAccessRule([System.Security.AccessControl.FileSystemAccessRule]::new($controllerSid, [System.Security.AccessControl.FileSystemRights]::Modify, $noneInheritance, $nonePropagation, $allow))
+    }
+    $acl.AddAccessRule([System.Security.AccessControl.FileSystemAccessRule]::new([System.Security.Principal.SecurityIdentifier]::new('S-1-5-18'), [System.Security.AccessControl.FileSystemRights]::FullControl, $noneInheritance, $nonePropagation, $allow))
+    $acl.AddAccessRule([System.Security.AccessControl.FileSystemAccessRule]::new([System.Security.Principal.SecurityIdentifier]::new('S-1-5-32-544'), [System.Security.AccessControl.FileSystemRights]::FullControl, $noneInheritance, $nonePropagation, $allow))
+    return $acl
+}
+function Set-BlenderBoxStateTree([string]$path) {
+    if (-not (Test-Path -LiteralPath $path)) { return }
+    $rootItem = Get-Item -Force -LiteralPath $path
+    if (-not $rootItem.PSIsContainer) { throw 'Managed state path is not a directory.' }
+    $pending = [System.Collections.Generic.Stack[System.IO.DirectoryInfo]]::new()
+    $items = [System.Collections.Generic.List[System.IO.FileSystemInfo]]::new()
+    $pending.Push($rootItem)
+    while ($pending.Count -gt 0) {
+        $directory = $pending.Pop()
+        if (([int64]$directory.Attributes -band [int64][System.IO.FileAttributes]::ReparsePoint) -ne 0) { throw 'Managed state contains a reparse point.' }
+        [void]$items.Add($directory)
+        foreach ($child in $directory.EnumerateFileSystemInfos()) {
+            if (([int64]$child.Attributes -band [int64][System.IO.FileAttributes]::ReparsePoint) -ne 0) { throw 'Managed state contains a reparse point.' }
+            if (($child.Attributes -band [System.IO.FileAttributes]::Directory) -ne 0) { $pending.Push($child) }
+            else { [void]$items.Add($child) }
+        }
+    }
+    foreach ($item in $items) {
+        if (($item.Attributes -band [System.IO.FileAttributes]::Directory) -ne 0) { Set-Acl -LiteralPath $item.FullName -AclObject (New-BlenderBoxDirectoryAcl) }
+        else { Set-Acl -LiteralPath $item.FullName -AclObject (New-BlenderBoxStateFileAcl) }
+    }
 }
 function New-BlenderBoxFileAcl {
     $noneInheritance = [System.Security.AccessControl.InheritanceFlags]::None
@@ -245,6 +288,7 @@ function New-BlenderBoxFileAcl {
     return $acl
 }
 try {
+    if (Test-Path -LiteralPath $lockPath) { throw 'Cannot apply setup while a Host Lock exists.' }
     New-Item -ItemType Directory -Force -Path $root | Out-Null
     $hostDirectory = [System.IO.Path]::GetDirectoryName($hostPath)
     $daemonDirectory = [System.IO.Path]::GetDirectoryName($daemonPath)
@@ -254,6 +298,8 @@ try {
     $interactiveSid = ([System.Security.Principal.NTAccount]::new($interactiveUser)).Translate([System.Security.Principal.SecurityIdentifier])
     $controllerSid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User
     Set-Acl -LiteralPath $root -AclObject (New-BlenderBoxDirectoryAcl)
+    Set-BlenderBoxStateTree ([System.IO.Path]::Combine($root, 'runs'))
+    Set-BlenderBoxStateTree ([System.IO.Path]::Combine($root, 'receipts'))
     Set-Acl -LiteralPath $hostDirectory -AclObject (New-BlenderBoxDirectoryAcl)
     if ($daemonDirectory -ine $hostDirectory) { Set-Acl -LiteralPath $daemonDirectory -AclObject (New-BlenderBoxDirectoryAcl) }
     if ((Get-Item -LiteralPath $stagedBinary).Length -ne $expectedSize) { throw 'Host binary size changed in transfer.' }

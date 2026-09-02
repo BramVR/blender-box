@@ -41,7 +41,7 @@ func TestSetupPlansWithoutSSHAndAppliesOneBoundedHostBinary(t *testing.T) {
 		t.Fatalf("apply = %+v, SSH calls = %d", applied, len(fake.inputs))
 	}
 	prepare := decodedAdapterScript(t, fake.arguments[0])
-	if !strings.Contains(prepare, "Set-Acl -LiteralPath $root") || strings.Contains(prepare, "Register-ScheduledTask") {
+	if !strings.Contains(prepare, "Set-Acl -LiteralPath $root") || !strings.Contains(prepare, "host-lock.json") || strings.Contains(prepare, "Register-ScheduledTask") {
 		t.Fatalf("unexpected setup prepare script: %s", prepare)
 	}
 	for index, arguments := range fake.arguments {
@@ -84,6 +84,9 @@ func TestSetupPlansWithoutSSHAndAppliesOneBoundedHostBinary(t *testing.T) {
 		"SetOwner($interactiveSid)",
 		"Set-Acl -LiteralPath $hostPath",
 		"Set-Acl -LiteralPath $daemonPath",
+		"Set-BlenderBoxStateTree",
+		"FileAttributes]::ReparsePoint",
+		"host-lock.json",
 		"host run-request --state-root",
 		adapterTarget().HostExecutable,
 		adapterTarget().SessionBrokerExecutable,
@@ -91,5 +94,19 @@ func TestSetupPlansWithoutSSHAndAppliesOneBoundedHostBinary(t *testing.T) {
 		if !strings.Contains(script, required) {
 			t.Errorf("setup script missing %q", required)
 		}
+	}
+}
+
+func TestSetupRejectsEmptyHostBinaryBeforeSSH(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "blender-box.exe")
+	if err := os.WriteFile(path, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	fake := &scriptedSSH{}
+	if _, err := Setup(context.Background(), fake, adapterTarget(), path, true); err == nil || !strings.Contains(err.Error(), "empty") {
+		t.Fatalf("Setup() error = %v", err)
+	}
+	if len(fake.arguments) != 0 || len(fake.uploads) != 0 {
+		t.Fatal("empty host binary reached SSH")
 	}
 }
