@@ -191,9 +191,11 @@ try {
     try {
         $buffer = [byte[]]::new(65536)
         [int64]$total = 0
-        while (($read = $inputStream.Read($buffer, 0, $buffer.Length)) -gt 0) {
+        while ($total -lt $expectedSize) {
+            $requested = [int][Math]::Min($buffer.Length, $expectedSize - $total)
+            $read = $inputStream.Read($buffer, 0, $requested)
+            if ($read -le 0) { throw 'Host binary ended before its declared size.' }
             $total += $read
-            if ($total -gt $expectedSize) { throw 'Host binary exceeds declared size.' }
             $outputStream.Write($buffer, 0, $read)
         }
         $outputStream.Flush($true)

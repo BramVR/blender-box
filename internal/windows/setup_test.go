@@ -64,6 +64,8 @@ func TestSetupPlansWithoutSSHAndAppliesOneBoundedHostBinary(t *testing.T) {
 	}
 	for _, required := range []string{
 		"BlenderBoxSetupPayloadStream",
+		"$total -lt $expectedSize",
+		"[Math]::Min($buffer.Length, $expectedSize - $total)",
 		"SHA256",
 		"Register-ScheduledTask",
 		"New-ScheduledTaskPrincipal",
