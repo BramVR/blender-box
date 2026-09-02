@@ -707,6 +707,21 @@ func TestSettleDoesNotTrustKnownCleanupWhilePhysicalAuthorityExists(t *testing.T
 	}
 }
 
+func TestTerminalizeSettledReceiptPreservesTerminalStates(t *testing.T) {
+	for _, state := range []orchestrator.RunState{
+		orchestrator.StateComplete,
+		orchestrator.StateFailed,
+		orchestrator.StateTimedOut,
+		orchestrator.StateCleanupFailed,
+	} {
+		receipt := orchestrator.RunReceipt{State: state, Error: "existing detail"}
+		terminalizeSettledReceipt(&receipt)
+		if receipt.State != state || receipt.Error != "existing detail" {
+			t.Fatalf("terminal receipt changed from %q: %+v", state, receipt)
+		}
+	}
+}
+
 func TestSettleRejectsNonEmptyRunRootWithoutOwnership(t *testing.T) {
 	root := t.TempDir()
 	now := time.Now().UTC()
@@ -848,7 +863,7 @@ func TestExactStopCanInterruptLongScenarioCall(t *testing.T) {
 		t.Fatalf("daemon stops = %+v", daemon.stops)
 	}
 	receipt, err := service.Status(root, StatusRequest{SchemaVersion: 1, RunID: request.Claim.RunID})
-	if err != nil || !receipt.Cleanup.Known() {
+	if err != nil || receipt.State != orchestrator.StateFailed || !receipt.Cleanup.Known() {
 		t.Fatalf("final receipt = %+v, error = %v", receipt, err)
 	}
 }

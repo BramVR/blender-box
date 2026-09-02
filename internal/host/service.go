@@ -820,6 +820,7 @@ func (service *Service) Settle(ctx context.Context, root string, request SettleR
 		return orchestrator.CleanupState{}, err
 	}
 	stored.Cleanup.LockReleased = true
+	terminalizeSettledReceipt(&stored)
 	if err := service.writeReceipt(root, stored); err != nil {
 		return orchestrator.CleanupState{}, err
 	}
@@ -860,11 +861,24 @@ func (service *Service) recoverReleasedCleanup(root string, stored orchestrator.
 	stored.Cleanup.PayloadRemoved = true
 	stored.Cleanup.RunRootRemoved = true
 	stored.Cleanup.LockReleased = true
+	terminalizeSettledReceipt(&stored)
 	if err := service.writeReceipt(root, stored); err != nil {
 		return orchestrator.CleanupState{}, true, err
 	}
 	_ = os.Remove(filepath.Join(root, "pending-request.json"))
 	return stored.Cleanup, true, nil
+}
+
+func terminalizeSettledReceipt(receipt *orchestrator.RunReceipt) {
+	switch receipt.State {
+	case orchestrator.StateComplete, orchestrator.StateFailed, orchestrator.StateTimedOut, orchestrator.StateCleanupFailed:
+		return
+	default:
+		receipt.State = orchestrator.StateFailed
+		if receipt.Error == "" {
+			receipt.Error = "Run stopped before completion"
+		}
+	}
 }
 
 func removeRunRootWithRetry(ctx context.Context, runRoot string, removeAll func(string) error, retryable func(error) bool, interval time.Duration) error {
