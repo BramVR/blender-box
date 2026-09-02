@@ -241,6 +241,19 @@ type Runner struct {
 	settlementTimeout time.Duration
 }
 
+type preflightError struct {
+	cause error
+}
+
+func (failure *preflightError) Error() string { return failure.cause.Error() }
+func (failure *preflightError) Unwrap() error { return failure.cause }
+
+// IsPreflightError reports whether a Run failed before contacting its host.
+func IsPreflightError(err error) bool {
+	var failure *preflightError
+	return errors.As(err, &failure)
+}
+
 func New(host HostAdapter) *Runner {
 	return &Runner{host: host, settlementTimeout: defaultSettleTTL}
 }
@@ -311,11 +324,11 @@ func statusFromReceipt(receipt RunReceipt) StatusResult {
 func (runner *Runner) Run(ctx context.Context, intent RunIntent) (_ RunResult, resultErr error) {
 	request, err := buildRequest(intent)
 	if err != nil {
-		return RunResult{}, err
+		return RunResult{}, &preflightError{cause: err}
 	}
 	evidenceRoot, err := prepareEvidenceRoot(intent.EvidenceDir)
 	if err != nil {
-		return RunResult{}, fmt.Errorf("prepare evidence directory: %w", err)
+		return RunResult{}, &preflightError{cause: fmt.Errorf("prepare evidence directory: %w", err)}
 	}
 	runCtx, cancelRun := context.WithDeadline(ctx, intent.Deadline)
 	defer cancelRun()

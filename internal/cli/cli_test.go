@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/BramVR/blender-box/internal/orchestrator"
+	"github.com/BramVR/blender-box/internal/payload"
 	"github.com/BramVR/blender-box/internal/target"
 	"github.com/BramVR/blender-box/internal/windows"
 )
@@ -35,6 +36,35 @@ type fakeRunService struct {
 	statusResult   orchestrator.StatusResult
 	stopResult     orchestrator.StopResult
 	runErr         error
+}
+
+type noContactHost struct {
+	calls int
+}
+
+func (host *noContactHost) unexpected() error {
+	host.calls++
+	return errors.New("unexpected host contact")
+}
+
+func (host *noContactHost) Inspect(context.Context, target.Target) error { return host.unexpected() }
+func (host *noContactHost) Acquire(context.Context, target.Target, orchestrator.LockClaim) error {
+	return host.unexpected()
+}
+func (host *noContactHost) Stage(context.Context, target.Target, orchestrator.LockClaim, payload.Payload) error {
+	return host.unexpected()
+}
+func (host *noContactHost) Start(context.Context, target.Target, orchestrator.RunRequest) (orchestrator.RunReceipt, error) {
+	return orchestrator.RunReceipt{}, host.unexpected()
+}
+func (host *noContactHost) Observe(context.Context, target.Target, orchestrator.RunID) (orchestrator.RunReceipt, error) {
+	return orchestrator.RunReceipt{}, host.unexpected()
+}
+func (host *noContactHost) Fetch(context.Context, target.Target, orchestrator.RunReceipt, orchestrator.EvidenceFile) ([]byte, error) {
+	return nil, host.unexpected()
+}
+func (host *noContactHost) Settle(context.Context, target.Target, orchestrator.RunReceipt) (orchestrator.CleanupState, error) {
+	return orchestrator.CleanupState{}, host.unexpected()
 }
 
 func (fake *fakeRunService) Run(_ context.Context, intent orchestrator.RunIntent) (orchestrator.RunResult, error) {
@@ -200,6 +230,37 @@ func TestRunPublishesRunIDBeforeTargetValidation(t *testing.T) {
 	})
 	if exitCode != 1 || !strings.HasPrefix(stderr.String(), "RUN_ID=bbx_01EARLYRUNIDENTITY00000000000\n") {
 		t.Fatalf("exit = %d, stderr = %q", exitCode, stderr.String())
+	}
+}
+
+func TestRunEvidencePreflightFailureDoesNotAttemptStatusRecovery(t *testing.T) {
+	root := t.TempDir()
+	targetPath := writeTarget(t, root)
+	if err := os.WriteFile(filepath.Join(root, "scenario.py"), []byte("print('slice 0')\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	payloadPath := filepath.Join(root, "payload.json")
+	if err := os.WriteFile(payloadPath, []byte(`{"schema_version":1,"files":[{"source":"scenario.py","destination":"scenario.py"}],"scenario":{"script":"scenario.py"}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	evidenceDir := filepath.Join(root, "evidence")
+	if err := os.Mkdir(evidenceDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	host := &noContactHost{}
+	service := orchestrator.New(host)
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	exitCode := Run(context.Background(), []string{
+		"run", "--target", targetPath, "--payload", payloadPath, "--evidence-dir", evidenceDir, "--json",
+	}, strings.NewReader(""), &stdout, &stderr, Dependencies{
+		Runner: service,
+		NewIdentities: func() (orchestrator.RunID, orchestrator.RequestID, string, error) {
+			return "bbx_01PREFLIGHTRUNIDENTITY0000000", "req_01PREFLIGHTREQUESTIDENTITY00", "ctl_cli-test", nil
+		},
+	})
+	if exitCode != 1 || host.calls != 0 {
+		t.Fatalf("exit = %d, host calls = %d, stderr = %q", exitCode, host.calls, stderr.String())
 	}
 }
 

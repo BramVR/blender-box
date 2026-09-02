@@ -572,6 +572,9 @@ func TestRunRejectsExistingEvidenceDirectoryBeforeHostInspection(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "prepare evidence directory") {
 		t.Fatalf("Run() error = %v", err)
 	}
+	if !IsPreflightError(err) {
+		t.Fatalf("Run() error is not marked as local preflight: %v", err)
+	}
 	if len(host.operations) != 0 {
 		t.Fatalf("host operations before evidence reservation = %v", host.operations)
 	}

@@ -208,7 +208,7 @@ func runCommand(ctx context.Context, args []string, stdout io.Writer, stderr io.
 	})
 	if err != nil {
 		failure := orchestrator.RunResult{SchemaVersion: 1, RunID: runID, State: orchestrator.StateFailed, Error: err.Error()}
-		if *asJSON {
+		if *asJSON && !orchestrator.IsPreflightError(err) {
 			recoveryCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
 			defer cancel()
 			if status, statusErr := dependencies.Runner.Status(recoveryCtx, selected, runID); statusErr == nil {
