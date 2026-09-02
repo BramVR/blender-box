@@ -146,8 +146,25 @@ type deadlineReadyDaemon struct {
 	fakeDaemon
 }
 
+type lockedReadyDaemon struct {
+	fakeDaemon
+	root string
+}
+
 func (daemon *deadlineReadyDaemon) WaitReady(context.Context, DaemonReady) error {
 	return context.DeadlineExceeded
+}
+
+func (daemon *lockedReadyDaemon) WaitReady(ctx context.Context, _ DaemonReady) error {
+	release, err := acquireOperation(context.Background(), daemon.root)
+	if err != nil {
+		return err
+	}
+	go func() {
+		<-ctx.Done()
+		release()
+	}()
+	return nil
 }
 
 func (fake *fakeDaemon) Start(_ context.Context, request DaemonStart) (orchestrator.SessionID, error) {
@@ -848,6 +865,27 @@ func TestReadinessDeadlinePersistsTimedOutReceipt(t *testing.T) {
 	receipt, err := service.Status(root, StatusRequest{SchemaVersion: 1, RunID: request.Claim.RunID})
 	if err != nil || receipt.State != orchestrator.StateTimedOut || receipt.SessionID == "" {
 		t.Fatalf("readiness deadline receipt = %+v, error = %v", receipt, err)
+	}
+	if _, err := service.Settle(context.Background(), root, SettleRequest{SchemaVersion: 1, Receipt: receipt}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestReadinessReconciliationPersistsTimedOutReceipt(t *testing.T) {
+	root := t.TempDir()
+	now := time.Now().UTC().Add(-20*time.Minute + 2*time.Second)
+	daemon := &lockedReadyDaemon{root: root}
+	service := NewService(Dependencies{Tasks: &fakeTaskLauncher{}, Daemon: daemon, Now: func() time.Time { return now }})
+	request := stageHostTestRun(t, service, root, now, false)
+	if _, err := service.Start(context.Background(), root, request); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.ExecutePending(context.Background(), root); err == nil {
+		t.Fatal("ExecutePending() unexpectedly passed reconciliation after its deadline")
+	}
+	receipt, err := service.Status(root, StatusRequest{SchemaVersion: 1, RunID: request.Claim.RunID})
+	if err != nil || receipt.State != orchestrator.StateTimedOut || receipt.SessionID == "" {
+		t.Fatalf("reconciliation deadline receipt = %+v, error = %v", receipt, err)
 	}
 	if _, err := service.Settle(context.Background(), root, SettleRequest{SchemaVersion: 1, Receipt: receipt}); err != nil {
 		t.Fatal(err)

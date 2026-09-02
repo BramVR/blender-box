@@ -505,18 +505,11 @@ func (service *Service) ExecutePending(ctx context.Context, root string) error {
 		}
 		return service.failActiveExecution(ctx, root, request, sessionID, "Session readiness failed", err)
 	}
-	release, err = acquireOperation(runCtx, root)
+	release, receipt, err = service.resumeActiveExecution(ctx, runCtx, root, request, sessionID, "Session readiness")
 	if err != nil {
 		return err
 	}
 	locked = true
-	receipt, err = service.activeReceipt(root, request, sessionID)
-	if errors.Is(err, errRunSettled) {
-		return fmt.Errorf("Run was settled during Session readiness")
-	}
-	if err != nil {
-		return err
-	}
 	receipt.State = orchestrator.StateCalling
 	if err := service.writeReceipt(root, receipt); err != nil {
 		return err
@@ -531,18 +524,11 @@ func (service *Service) ExecutePending(ctx context.Context, root string) error {
 		}
 		return service.failActiveExecution(ctx, root, request, sessionID, "Scenario call failed", err)
 	}
-	release, err = acquireOperation(runCtx, root)
+	release, receipt, err = service.resumeActiveExecution(ctx, runCtx, root, request, sessionID, "Scenario call")
 	if err != nil {
 		return err
 	}
 	locked = true
-	receipt, err = service.activeReceipt(root, request, sessionID)
-	if errors.Is(err, errRunSettled) {
-		return fmt.Errorf("Run was settled during Scenario call")
-	}
-	if err != nil {
-		return err
-	}
 	resultPath := filepath.Join(runPath(root, request.Claim.RunID), "evidence", "result", "scenario-result.json")
 	if err := os.WriteFile(resultPath, result, 0o600); err != nil {
 		return service.failReceipt(root, receipt, "Scenario result write failed")
@@ -570,18 +556,11 @@ func (service *Service) ExecutePending(ctx context.Context, root string) error {
 			return service.failActiveExecution(ctx, root, request, sessionID, "Viewport capture failed", captureErr)
 		}
 	}
-	release, err = acquireOperation(runCtx, root)
+	release, receipt, err = service.resumeActiveExecution(ctx, runCtx, root, request, sessionID, "evidence collection")
 	if err != nil {
 		return err
 	}
 	locked = true
-	receipt, err = service.activeReceipt(root, request, sessionID)
-	if errors.Is(err, errRunSettled) {
-		return fmt.Errorf("Run was settled during evidence collection")
-	}
-	if err != nil {
-		return err
-	}
 	if request.Body.Payload.Scenario.CaptureViewport {
 		receipt.Evidence.Files = append(receipt.Evidence.Files, viewport)
 	}
@@ -608,6 +587,30 @@ func (service *Service) activeReceipt(root string, request orchestrator.RunReque
 		return orchestrator.RunReceipt{}, fmt.Errorf("active Run authority changed")
 	}
 	return receipt, nil
+}
+
+func (service *Service) resumeActiveExecution(ctx, runCtx context.Context, root string, request orchestrator.RunRequest, sessionID orchestrator.SessionID, phase string) (func(), orchestrator.RunReceipt, error) {
+	reconcileCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+	defer cancel()
+	release, err := acquireOperation(reconcileCtx, root)
+	if err != nil {
+		return nil, orchestrator.RunReceipt{}, errors.Join(fmt.Errorf("%s reconciliation failed", phase), err)
+	}
+	receipt, err := service.activeReceipt(root, request, sessionID)
+	if errors.Is(err, errRunSettled) {
+		release()
+		return nil, orchestrator.RunReceipt{}, fmt.Errorf("Run was settled during %s", phase)
+	}
+	if err != nil {
+		release()
+		return nil, orchestrator.RunReceipt{}, err
+	}
+	if err := runCtx.Err(); err != nil {
+		failureErr := service.failReceiptWithCause(root, receipt, phase+" failed", err)
+		release()
+		return nil, orchestrator.RunReceipt{}, failureErr
+	}
+	return release, receipt, nil
 }
 
 func (service *Service) failActiveExecution(ctx context.Context, root string, request orchestrator.RunRequest, sessionID orchestrator.SessionID, message string, cause error) error {
