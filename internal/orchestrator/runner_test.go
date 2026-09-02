@@ -372,11 +372,19 @@ func TestObserveCannotReplaceSessionIdentity(t *testing.T) {
 
 type blockingSettleHost struct {
 	fakeHost
-	settleCalls int
+	settleCalls     int
+	deadlineBounds  []time.Duration
+	missingDeadline bool
 }
 
 func (host *blockingSettleHost) Settle(ctx context.Context, _ target.Target, _ RunReceipt) (CleanupState, error) {
 	host.settleCalls++
+	deadline, ok := ctx.Deadline()
+	if !ok {
+		host.missingDeadline = true
+		return CleanupState{}, errors.New("settlement context has no deadline")
+	}
+	host.deadlineBounds = append(host.deadlineBounds, time.Until(deadline))
 	<-ctx.Done()
 	return CleanupState{}, ctx.Err()
 }
@@ -385,16 +393,20 @@ func TestSettlementHasIndependentBoundedDeadline(t *testing.T) {
 	host := &blockingSettleHost{fakeHost: fakeHost{evidence: testEvidence()}}
 	runner := New(host)
 	runner.settlementTimeout = 10 * time.Millisecond
-	started := time.Now()
 	_, err := runner.Run(context.Background(), testIntent(t))
 	if err == nil || !strings.Contains(err.Error(), "settle Run") {
 		t.Fatalf("error = %v", err)
 	}
-	if elapsed := time.Since(started); elapsed > 500*time.Millisecond {
-		t.Fatalf("settlement was not bounded: %s", elapsed)
-	}
 	if host.settleCalls != 2 {
 		t.Fatalf("settle calls = %d, want fallback retry", host.settleCalls)
+	}
+	if host.missingDeadline || len(host.deadlineBounds) != 2 {
+		t.Fatalf("settlement deadlines = %v, missing = %v", host.deadlineBounds, host.missingDeadline)
+	}
+	for _, bound := range host.deadlineBounds {
+		if bound > runner.settlementTimeout {
+			t.Fatalf("settlement deadline bound = %s, want at most %s", bound, runner.settlementTimeout)
+		}
 	}
 }
 
