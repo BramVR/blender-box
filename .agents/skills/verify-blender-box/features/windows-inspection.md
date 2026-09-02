@@ -21,7 +21,7 @@ Preconditions:
 - `BLENDER_BOX_TARGET` is a valid operator-supplied target.
 
 - **Inspect.** Run `"$VERIFY_CLIENT" windows check --target "$BLENDER_BOX_TARGET" --json | tee "$VERIFY_ROOT/check.json"`. Exit `0` means every required check passed; exit `1` with valid JSON means the host is not ready.
-- **Validate contract.** Run `jq -e '.schema_version == 1 and (.checks | length == 9) and ([.checks[].id] | unique | length == 9)' "$VERIFY_ROOT/check.json"`.
+- **Validate contract.** Run `jq -e '.schema_version == 1 and (.checks | length == 10) and ([.checks[].id] | unique | length == 10)' "$VERIFY_ROOT/check.json"`.
 - **Confirm Blender check.** Run `jq -e '[.checks[] | select(.id == "blender.executable")] | length == 1' "$VERIFY_ROOT/check.json"`.
 
 ## Gotchas
