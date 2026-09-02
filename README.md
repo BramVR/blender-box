@@ -87,7 +87,7 @@ The default bundle is `artifacts/blender-box/<run-id>/`. The client reserves tha
 
 A complete Run must return exactly one Scenario Result and, when requested, exactly one viewport capture; missing, duplicate, or unsolicited evidence types fail the Run before files are fetched. The decoded Scenario Result remains capped at 1 MiB, while the bounded daemon envelope allows worst-case nested JSON escaping plus fixed headroom.
 
-The launch fence remains held until the exact Session identity is durable in both the Host Lock and receipt. A daemon start error that also returns or exposes a valid identity records it for exact cleanup. Remote cleanup walks the Run tree bottom-up and rejects reparse points or non-regular entries before deletion.
+The launch fence remains held until the exact Session identity is durable in both the Host Lock and receipt. A daemon start error that also returns or exposes a valid identity records it for exact cleanup. If an exact publication rollback stop succeeds but its response is lost, settlement proves the launch fence is free, republishes only the receipt's exact identity, and repeats the idempotent stop. Remote cleanup walks the Run tree bottom-up and rejects reparse points or non-regular entries before deletion.
 
 ## Boundary
 
