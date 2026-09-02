@@ -58,7 +58,7 @@ func TestSetupPlansWithoutSSHAndAppliesOneBoundedHostBinary(t *testing.T) {
 		t.Fatalf("upload = %+v", fake.uploads[0])
 	}
 	finalize := decodedAdapterScript(t, fake.arguments[1])
-	if !strings.Contains(finalize, "[IO.Compression.CompressionMode]::Decompress") || !strings.Contains(finalize, "ScriptBlock") {
+	if !strings.Contains(finalize, "[IO.Compression.CompressionMode]0") || !strings.Contains(finalize, "ScriptBlock") {
 		t.Fatalf("unexpected setup finalize bootstrap: %s", finalize)
 	}
 	script := setupScript(adapterTarget(), SetupResult{HostSize: int64(len(binary)), HostSHA256: hex.EncodeToString(hash[:])}, fake.uploads[0].destination)
@@ -75,7 +75,8 @@ func TestSetupPlansWithoutSSHAndAppliesOneBoundedHostBinary(t *testing.T) {
 		"ExecutionTimeLimit ([TimeSpan]::Zero)",
 		"SetSecurityDescriptor",
 		"$controllerSid -ne $interactiveSid",
-		"[System.IO.File]::Replace",
+		"[System.IO.File]::Replace($temporary, $hostPath, $backup)",
+		"Remove-Item -Force -LiteralPath $backup",
 		"FileSecurity",
 		"SetOwner($interactiveSid)",
 		"Set-Acl -LiteralPath $hostPath",

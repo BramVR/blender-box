@@ -101,11 +101,11 @@ func encodeCompressedPowerShell(script string) (string, error) {
 	if err := writer.Close(); err != nil {
 		return "", fmt.Errorf("compress setup script: %w", err)
 	}
-	bootstrap := fmt.Sprintf(`$b = [Convert]::FromBase64String('%s')
-$m = [IO.MemoryStream]::new($b)
-$g = [IO.Compression.GzipStream]::new($m, [IO.Compression.CompressionMode]::Decompress)
-$r = [IO.StreamReader]::new($g)
-& ([ScriptBlock]::Create($r.ReadToEnd()))`, base64.StdEncoding.EncodeToString(compressed.Bytes()))
+	bootstrap := fmt.Sprintf(`$b=[Convert]::FromBase64String('%s')
+$m=[IO.MemoryStream]::new($b)
+$g=[IO.Compression.GzipStream]::new($m,[IO.Compression.CompressionMode]0)
+$r=[IO.StreamReader]::new($g)
+&([ScriptBlock]::Create($r.ReadToEnd()))`, base64.StdEncoding.EncodeToString(compressed.Bytes()))
 	return encodePowerShell(bootstrap), nil
 }
 
@@ -179,6 +179,7 @@ $expectedSize = [int64]%d
 $expectedHash = '%s'
 $stagedBinary = '%s'
 $temporary = $hostPath + '.setup-' + [Guid]::NewGuid().ToString('N')
+$backup = $hostPath + '.setup-backup-' + [Guid]::NewGuid().ToString('N')
 function New-BlenderBoxDirectoryAcl {
     $inherit = [System.Security.AccessControl.InheritanceFlags]::ContainerInherit -bor [System.Security.AccessControl.InheritanceFlags]::ObjectInherit
     $none = [System.Security.AccessControl.PropagationFlags]::None
@@ -248,7 +249,8 @@ try {
     } finally { $sha.Dispose() }
     if ($actualHash -cne $expectedHash) { throw 'Host binary SHA256 changed in transfer.' }
     if (Test-Path -LiteralPath $hostPath) {
-        [System.IO.File]::Replace($temporary, $hostPath, $null)
+        [System.IO.File]::Replace($temporary, $hostPath, $backup)
+        Remove-Item -Force -LiteralPath $backup
     } else {
         [System.IO.File]::Move($temporary, $hostPath)
     }
@@ -266,6 +268,7 @@ try {
     [ordered]@{schema_version=1; status='applied'; applied=$true; host_size=$expectedSize; host_sha256=$expectedHash} | ConvertTo-Json -Compress
 } finally {
     if (Test-Path -LiteralPath $temporary) { Remove-Item -Force -LiteralPath $temporary }
+    if (Test-Path -LiteralPath $backup) { Remove-Item -Force -LiteralPath $backup }
     if (Test-Path -LiteralPath $stagedBinary) { Remove-Item -Force -LiteralPath $stagedBinary }
 }
 `, selected.WorkRoot, selected.HostExecutable, selected.SessionBrokerExecutable, selected.BlenderExecutable, selected.InteractiveUser, selected.TaskName, taskArguments, plan.HostSize, plan.HostSHA256, stagedBinary)
