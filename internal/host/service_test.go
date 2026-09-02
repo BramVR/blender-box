@@ -142,6 +142,14 @@ type fakeDaemon struct {
 	captureResponse json.RawMessage
 }
 
+type deadlineReadyDaemon struct {
+	fakeDaemon
+}
+
+func (daemon *deadlineReadyDaemon) WaitReady(context.Context, DaemonReady) error {
+	return context.DeadlineExceeded
+}
+
 func (fake *fakeDaemon) Start(_ context.Context, request DaemonStart) (orchestrator.SessionID, error) {
 	fake.starts = append(fake.starts, request)
 	return "bss_exact-host-session-identity-123456", nil
@@ -804,10 +812,10 @@ func TestExactStopCanInterruptSessionReadiness(t *testing.T) {
 	}
 }
 
-func TestReadinessDeadlinePersistsTimedOutReceipt(t *testing.T) {
+func TestExpiredLaunchDeadlinePersistsTimedOutReceipt(t *testing.T) {
 	root := t.TempDir()
-	now := time.Now().UTC().Add(-20*time.Minute + 100*time.Millisecond)
-	daemon := &waitingDaemon{readyStarted: make(chan struct{}), stopped: make(chan struct{})}
+	now := time.Now().UTC().Add(-21 * time.Minute)
+	daemon := &fakeDaemon{}
 	service := NewService(Dependencies{Tasks: &fakeTaskLauncher{}, Daemon: daemon, Now: func() time.Time { return now }})
 	request := stageHostTestRun(t, service, root, now, false)
 	if _, err := service.Start(context.Background(), root, request); err != nil {
@@ -819,6 +827,27 @@ func TestReadinessDeadlinePersistsTimedOutReceipt(t *testing.T) {
 	receipt, err := service.Status(root, StatusRequest{SchemaVersion: 1, RunID: request.Claim.RunID})
 	if err != nil || receipt.State != orchestrator.StateTimedOut {
 		t.Fatalf("deadline receipt = %+v, error = %v", receipt, err)
+	}
+	if _, err := service.Settle(context.Background(), root, SettleRequest{SchemaVersion: 1, Receipt: receipt}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestReadinessDeadlinePersistsTimedOutReceipt(t *testing.T) {
+	root := t.TempDir()
+	now := time.Now().UTC()
+	daemon := &deadlineReadyDaemon{}
+	service := NewService(Dependencies{Tasks: &fakeTaskLauncher{}, Daemon: daemon, Now: func() time.Time { return now }})
+	request := stageHostTestRun(t, service, root, now, false)
+	if _, err := service.Start(context.Background(), root, request); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.ExecutePending(context.Background(), root); err == nil {
+		t.Fatal("ExecutePending() unexpectedly passed daemon deadline")
+	}
+	receipt, err := service.Status(root, StatusRequest{SchemaVersion: 1, RunID: request.Claim.RunID})
+	if err != nil || receipt.State != orchestrator.StateTimedOut || receipt.SessionID == "" {
+		t.Fatalf("readiness deadline receipt = %+v, error = %v", receipt, err)
 	}
 	if _, err := service.Settle(context.Background(), root, SettleRequest{SchemaVersion: 1, Receipt: receipt}); err != nil {
 		t.Fatal(err)

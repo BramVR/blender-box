@@ -429,7 +429,10 @@ func (service *Service) ExecutePending(ctx context.Context, root string) error {
 	environment := runEnvironment(root, request.Claim.RunID)
 	launchRelease, err := acquireLaunch(runCtx, root)
 	if err != nil {
-		return service.failExecution(root, request, "Session launch lock failed")
+		if runCtx.Err() != nil {
+			err = runCtx.Err()
+		}
+		return service.failExecutionWithCause(root, request, "Session launch lock failed", err)
 	}
 	locked = false
 	release()
@@ -455,7 +458,10 @@ func (service *Service) ExecutePending(ctx context.Context, root string) error {
 		return err
 	}
 	if startErr != nil {
-		return service.failReceipt(root, receipt, "Session start failed")
+		if runCtx.Err() != nil {
+			startErr = runCtx.Err()
+		}
+		return service.failReceiptWithCause(root, receipt, "Session start failed", startErr)
 	}
 	if err := sessionID.Validate(); err != nil {
 		return service.failReceipt(root, receipt, "Session daemon returned an invalid identity")
@@ -619,15 +625,7 @@ func (service *Service) failActiveExecution(ctx context.Context, root string, re
 	if err != nil {
 		return errors.Join(fmt.Errorf("%s", message), err)
 	}
-	if errors.Is(cause, context.DeadlineExceeded) {
-		receipt.State = orchestrator.StateTimedOut
-		receipt.Error = message
-		if err := service.writeReceipt(root, receipt); err != nil {
-			return errors.Join(fmt.Errorf("%s", message), err)
-		}
-		return fmt.Errorf("%s: %w", message, cause)
-	}
-	return service.failReceipt(root, receipt, message)
+	return service.failReceiptWithCause(root, receipt, message, cause)
 }
 
 func (service *Service) Fetch(root string, request FetchRequest) ([]byte, error) {
@@ -1061,18 +1059,33 @@ func (service *Service) writeReceipt(root string, receipt orchestrator.RunReceip
 }
 
 func (service *Service) failExecution(root string, request orchestrator.RunRequest, message string) error {
+	return service.failExecutionWithCause(root, request, message, nil)
+}
+
+func (service *Service) failExecutionWithCause(root string, request orchestrator.RunRequest, message string, cause error) error {
 	receipt, _ := service.Status(root, StatusRequest{SchemaVersion: 1, RunID: request.Claim.RunID})
 	if receipt.SchemaVersion == 0 {
 		receipt = orchestrator.RunReceipt{SchemaVersion: 1, Claim: request.Claim}
 	}
-	return service.failReceipt(root, receipt, message)
+	return service.failReceiptWithCause(root, receipt, message, cause)
 }
 
 func (service *Service) failReceipt(root string, receipt orchestrator.RunReceipt, message string) error {
-	receipt.State = orchestrator.StateFailed
+	return service.failReceiptWithCause(root, receipt, message, nil)
+}
+
+func (service *Service) failReceiptWithCause(root string, receipt orchestrator.RunReceipt, message string, cause error) error {
+	if errors.Is(cause, context.DeadlineExceeded) {
+		receipt.State = orchestrator.StateTimedOut
+	} else {
+		receipt.State = orchestrator.StateFailed
+	}
 	receipt.Error = message
 	if err := service.writeReceipt(root, receipt); err != nil {
 		return errors.Join(fmt.Errorf("%s", message), err)
+	}
+	if cause != nil {
+		return fmt.Errorf("%s: %w", message, cause)
 	}
 	return fmt.Errorf("%s", message)
 }
