@@ -227,13 +227,13 @@ function Invoke-SessionBrokerProbe([string]$Path, [string[]]$Arguments) {
         $stdoutTask = $process.StandardOutput.ReadToEndAsync()
         $stderrTask = $process.StandardError.ReadToEndAsync()
         if (-not $process.WaitForExit(10000)) {
-            $process.Kill()
-            $process.WaitForExit()
+            try { $process.Kill() } catch {}
+            [void]$process.WaitForExit(1000)
             return $null
         }
-        $process.WaitForExit()
-        $stdout = $stdoutTask.GetAwaiter().GetResult()
-        $stderr = $stderrTask.GetAwaiter().GetResult()
+        if (-not [System.Threading.Tasks.Task]::WaitAll([System.Threading.Tasks.Task[]]@($stdoutTask, $stderrTask), 1000)) { return $null }
+        $stdout = [string]$stdoutTask.Result
+        $stderr = [string]$stderrTask.Result
         if ($stdout.Length + $stderr.Length -gt 65536) { return $null }
         return [ordered]@{exit_code=$process.ExitCode; text=($stdout + [System.Environment]::NewLine + $stderr)}
     } catch {

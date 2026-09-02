@@ -146,6 +146,7 @@ func TestCheckProbesExactSessionAndTimeoutDaemonContract(t *testing.T) {
 		"--expect-session-id",
 		"--read-timeout",
 		"WaitForExit(10000)",
+		"WaitAll([System.Threading.Tasks.Task[]]@($stdoutTask, $stderrTask), 1000)",
 		"65536",
 		"$daemonContractOK = $daemonSafe -and (Test-SessionBrokerContract $daemonPath)",
 		"$daemonOK -and $daemonContractOK",
@@ -153,6 +154,9 @@ func TestCheckProbesExactSessionAndTimeoutDaemonContract(t *testing.T) {
 		if !strings.Contains(checkScript, required) {
 			t.Fatalf("inspection does not enforce daemon contract: missing %q", required)
 		}
+	}
+	if strings.Contains(checkScript, "$process.WaitForExit()") || strings.Contains(checkScript, ".GetAwaiter().GetResult()") {
+		t.Fatal("inspection contains an unbounded daemon probe wait")
 	}
 }
 

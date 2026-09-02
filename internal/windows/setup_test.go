@@ -167,12 +167,16 @@ func TestSetupRequiresCompatibleSessionBrokerBeforeTaskRegistration(t *testing.T
 			"--expect-session-id",
 			"--read-timeout",
 			"WaitForExit(10000)",
+			"WaitAll([System.Threading.Tasks.Task[]]@($stdoutTask, $stderrTask), 1000)",
 			"65536",
 			"Assert-CompatibleSessionBroker $daemonPath",
 		} {
 			if !strings.Contains(script, required) {
 				t.Fatalf("%s script does not enforce daemon contract: missing %q", name, required)
 			}
+		}
+		if strings.Contains(script, "$process.WaitForExit()") || strings.Contains(script, ".GetAwaiter().GetResult()") {
+			t.Fatalf("%s script contains an unbounded probe wait", name)
 		}
 	}
 }
