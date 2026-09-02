@@ -151,6 +151,13 @@ type lockedReadyDaemon struct {
 	root string
 }
 
+type publicationFailureDaemon struct {
+	fakeDaemon
+	sessionID          orchestrator.SessionID
+	rollbackContextErr error
+	stopCalls          int
+}
+
 func (daemon *deadlineReadyDaemon) WaitReady(context.Context, DaemonReady) error {
 	return context.DeadlineExceeded
 }
@@ -164,6 +171,25 @@ func (daemon *lockedReadyDaemon) WaitReady(ctx context.Context, _ DaemonReady) e
 		<-ctx.Done()
 		release()
 	}()
+	return nil
+}
+
+func (daemon *publicationFailureDaemon) Start(ctx context.Context, _ DaemonStart) (orchestrator.SessionID, error) {
+	<-ctx.Done()
+	return daemon.sessionID, nil
+}
+
+func (daemon *publicationFailureDaemon) Recover(context.Context, DaemonRecover) (orchestrator.SessionID, bool, error) {
+	return daemon.sessionID, true, nil
+}
+
+func (daemon *publicationFailureDaemon) Stop(ctx context.Context, request DaemonStop) error {
+	daemon.stopCalls++
+	daemon.fakeDaemon.stops = append(daemon.fakeDaemon.stops, request)
+	if daemon.stopCalls == 1 {
+		daemon.rollbackContextErr = ctx.Err()
+		return errors.New("injected rollback failure")
+	}
 	return nil
 }
 
@@ -993,6 +1019,43 @@ func TestSettleRecoversSessionStartedBeforeHostLockPublication(t *testing.T) {
 		t.Fatal(err)
 	}
 	if !cleanup.Known() || len(daemon.stops) != 1 || daemon.stops[0].SessionID != daemon.recovered {
+		t.Fatalf("cleanup = %+v, stops = %+v", cleanup, daemon.stops)
+	}
+}
+
+func TestSettleAdoptsExactReceiptIdentityAfterPublicationRollbackFails(t *testing.T) {
+	root := t.TempDir()
+	now := time.Now().UTC().Add(-20*time.Minute + 2*time.Second)
+	daemon := &publicationFailureDaemon{sessionID: "bss_exact-publication-failure-session-123456"}
+	service := NewService(Dependencies{Tasks: &fakeTaskLauncher{}, Daemon: daemon, Now: func() time.Time { return now }})
+	writeCalls := 0
+	service.writeLock = func(path string, lock lockRecord) error {
+		writeCalls++
+		if writeCalls == 1 {
+			return errors.New("injected Host Lock publication failure")
+		}
+		return writeLockAtomic(path, lock)
+	}
+	request := stageHostTestRun(t, service, root, now, false)
+	if _, err := service.Start(context.Background(), root, request); err != nil {
+		t.Fatal(err)
+	}
+	executeErr := service.ExecutePending(context.Background(), root)
+	if executeErr == nil {
+		t.Fatal("ExecutePending() unexpectedly survived injected publication failure")
+	}
+	if daemon.rollbackContextErr != nil {
+		t.Fatalf("rollback used expired Run context: %v", daemon.rollbackContextErr)
+	}
+	receipt, err := service.Status(root, StatusRequest{SchemaVersion: 1, RunID: request.Claim.RunID})
+	if err != nil || receipt.State != orchestrator.StateCleanupFailed || receipt.SessionID != daemon.sessionID {
+		t.Fatalf("publication failure receipt = %+v, status error = %v, execute error = %v", receipt, err, executeErr)
+	}
+	cleanup, err := service.Settle(context.Background(), root, SettleRequest{SchemaVersion: 1, Receipt: receipt})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cleanup.Known() || daemon.stopCalls != 2 || daemon.stops[1].SessionID != daemon.sessionID {
 		t.Fatalf("cleanup = %+v, stops = %+v", cleanup, daemon.stops)
 	}
 }

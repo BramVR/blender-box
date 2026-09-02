@@ -88,9 +88,10 @@ type Dependencies struct {
 }
 
 type Service struct {
-	tasks  TaskLauncher
-	daemon Daemon
-	now    func() time.Time
+	tasks     TaskLauncher
+	daemon    Daemon
+	now       func() time.Time
+	writeLock func(string, lockRecord) error
 }
 
 type lockRecord struct {
@@ -109,7 +110,7 @@ func NewService(dependencies Dependencies) *Service {
 	if now == nil {
 		now = time.Now
 	}
-	return &Service{tasks: dependencies.Tasks, daemon: dependencies.Daemon, now: now}
+	return &Service{tasks: dependencies.Tasks, daemon: dependencies.Daemon, now: now, writeLock: writeLockAtomic}
 }
 
 func (service *Service) Acquire(ctx context.Context, root string, request AcquireRequest) error {
@@ -467,8 +468,8 @@ func (service *Service) ExecutePending(ctx context.Context, root string) error {
 		return service.failReceipt(root, receipt, "Session daemon returned an invalid identity")
 	}
 	lock.SessionID = sessionID
-	if err := writeJSONAtomic(lockPath(root), lock); err != nil {
-		stopErr := service.daemon.Stop(runCtx, DaemonStop{Executable: request.Body.SessionBrokerExecutable, Name: request.Body.SessionName, SessionID: sessionID, Environment: environment})
+	if err := service.writeLock(lockPath(root), lock); err != nil {
+		stopErr := service.daemon.Stop(reconcileCtx, DaemonStop{Executable: request.Body.SessionBrokerExecutable, Name: request.Body.SessionName, SessionID: sessionID, Environment: environment})
 		if stopErr != nil {
 			receipt := orchestrator.RunReceipt{SchemaVersion: 1, Claim: request.Claim, State: orchestrator.StateCleanupFailed, SessionID: sessionID, Error: "Session identity publication and exact rollback failed"}
 			_ = service.writeReceipt(root, receipt)
@@ -707,6 +708,19 @@ func (service *Service) Settle(ctx context.Context, root string, request SettleR
 	if stored.State == orchestrator.StateStarting && stored.SessionID == "" && lock.SessionID != "" {
 		stored.SessionID = lock.SessionID
 	}
+	if stored.SessionID != "" && lock.SessionID == "" {
+		recovered, found, recoverErr := service.recoverUnpublishedSession(ctx, root, stored.Claim)
+		if recoverErr != nil {
+			return orchestrator.CleanupState{}, recoverErr
+		}
+		if !found || recovered != stored.SessionID {
+			return orchestrator.CleanupState{}, fmt.Errorf("settle could not verify unpublished Session identity")
+		}
+		lock.SessionID = recovered
+		if err := service.writeLock(lockPath(root), lock); err != nil {
+			return orchestrator.CleanupState{}, err
+		}
+	}
 	if request.Receipt.SessionID != "" && request.Receipt.SessionID != stored.SessionID {
 		return orchestrator.CleanupState{}, fmt.Errorf("settle Session identity does not match host receipt")
 	}
@@ -720,7 +734,7 @@ func (service *Service) Settle(ctx context.Context, root string, request SettleR
 		}
 		if found {
 			lock.SessionID = recovered
-			if err := writeJSONAtomic(lockPath(root), lock); err != nil {
+			if err := service.writeLock(lockPath(root), lock); err != nil {
 				return orchestrator.CleanupState{}, err
 			}
 			stored.SessionID = recovered
@@ -1177,6 +1191,10 @@ func writeJSONAtomic(path string, value any) error {
 		return err
 	}
 	return replaceFile(name, path)
+}
+
+func writeLockAtomic(path string, lock lockRecord) error {
+	return writeJSONAtomic(path, lock)
 }
 
 func writeFileExclusive(path string, contents []byte) (bool, error) {
