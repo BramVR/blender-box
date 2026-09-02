@@ -52,21 +52,24 @@ function Test-ConservativePathAccess([string]$Path, [string]$PrincipalSid, [Syst
     }
     return ($denyMask -band $requiredMask) -eq 0 -and ($allowMask -band $requiredMask) -eq $requiredMask
 }
-function Test-TrustedWriters([string]$Path, [string]$PrincipalSid) {
+function Test-TrustedWriters([string]$Path, [string]$PrincipalSid, [bool]$ProtectChildren) {
     if (-not (Test-Path -LiteralPath $Path -ErrorAction SilentlyContinue)) { return $false }
-    $trustedWriters = @(
+    $trustedOwners = @(
         $PrincipalSid,
         'S-1-5-18',
         'S-1-5-32-544',
         'S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464'
     )
+    $trustedWriters = @($trustedOwners)
+    if ($ProtectChildren) { $trustedWriters += 'S-1-3-0' }
     try { $acl = Get-Acl -LiteralPath $Path -ErrorAction Stop } catch { return $false }
     $ownerSid = Resolve-Sid ([string]$acl.Owner)
-    if ($trustedWriters -notcontains $ownerSid) { return $false }
+    if ($trustedOwners -notcontains $ownerSid) { return $false }
     $rules = $acl.GetAccessRules($true, $true, [System.Security.Principal.SecurityIdentifier])
     $writeMask = [int64][System.Security.AccessControl.FileSystemRights]::Write -bor [int64][System.Security.AccessControl.FileSystemRights]::Delete -bor [int64][System.Security.AccessControl.FileSystemRights]::DeleteSubdirectoriesAndFiles -bor [int64][System.Security.AccessControl.FileSystemRights]::ChangePermissions -bor [int64][System.Security.AccessControl.FileSystemRights]::TakeOwnership
     foreach ($rule in $rules) {
-        if (($rule.PropagationFlags -band [System.Security.AccessControl.PropagationFlags]::InheritOnly) -ne 0) { continue }
+        $inheritOnly = ($rule.PropagationFlags -band [System.Security.AccessControl.PropagationFlags]::InheritOnly) -ne 0
+        if ($inheritOnly -and -not $ProtectChildren) { continue }
         if ($rule.AccessControlType -ne [System.Security.AccessControl.AccessControlType]::Allow) { continue }
         if ($trustedWriters -contains $rule.IdentityReference.Value) { continue }
         if (([int64]$rule.FileSystemRights -band $writeMask) -ne 0) { return $false }
@@ -120,6 +123,8 @@ function Test-TrustedTaskAuthorities([string]$Sddl, [string]$ControllerSid) {
         if (([int]$ace.AceFlags -band [int][System.Security.AccessControl.AceFlags]::InheritOnly) -ne 0) { continue }
         if ($null -eq $ace.SecurityIdentifier) { continue }
         $aceMask = [int64]$ace.AccessMask
+        $authorityMask = $taskWriteMask -bor $taskExecuteMask
+        if (($aceMask -band $authorityMask) -ne 0 -and ($ace -isnot [System.Security.AccessControl.CommonAce] -or $ace.IsCallback)) { return $false }
         if ($ace.AceQualifier -eq [System.Security.AccessControl.AceQualifier]::AccessDenied -and ($aceMask -band $taskExecuteMask) -ne 0) { return $false }
         if ($ace.AceQualifier -ne [System.Security.AccessControl.AceQualifier]::AccessAllowed) { continue }
         if ($trustedManagers -contains $ace.SecurityIdentifier.Value) { continue }
@@ -156,14 +161,14 @@ function Test-NoReparsePoints([string]$Path) {
     }
     return $false
 }
-function Test-SafePath([string]$Path, [string]$PrincipalSid, [System.Security.AccessControl.FileSystemRights]$RequiredRights, [bool]$RequireDirectAllow, [bool]$RequireSealedParent) {
+function Test-SafePath([string]$Path, [string]$PrincipalSid, [System.Security.AccessControl.FileSystemRights]$RequiredRights, [bool]$RequireDirectAllow, [bool]$RequireSealedParent, [bool]$ProtectChildren) {
     if (-not (Test-NoReparsePoints $Path)) { return $false }
     if (-not (Test-ConservativePathAccess $Path $PrincipalSid $RequiredRights $RequireDirectAllow)) { return $false }
-    if (-not (Test-TrustedWriters $Path $PrincipalSid)) { return $false }
+    if (-not (Test-TrustedWriters $Path $PrincipalSid $ProtectChildren)) { return $false }
     $parent = [System.IO.Path]::GetDirectoryName($Path)
     if ($null -eq $parent) { return $false }
     if ($RequireSealedParent) {
-        if (-not (Test-TrustedWriters $parent $PrincipalSid)) { return $false }
+        if (-not (Test-TrustedWriters $parent $PrincipalSid $true)) { return $false }
     } elseif (-not (Test-TrustedAncestor $parent $PrincipalSid)) {
         return $false
     }
@@ -201,11 +206,11 @@ $modify = [System.Security.AccessControl.FileSystemRights]::Modify
 $blenderOK = Test-Path -LiteralPath $blenderPath -PathType Leaf -ErrorAction SilentlyContinue
 $daemonOK = Test-Path -LiteralPath $daemonPath -PathType Leaf -ErrorAction SilentlyContinue
 $hostOK = Test-Path -LiteralPath $hostPath -PathType Leaf -ErrorAction SilentlyContinue
-Add-Check 'blender.executable' ($blenderOK -and (Test-SafePath $blenderPath $expectedSid $readExecute $false $true)) $true $blenderPath 'existing executable with safe readers, owner, and writers' 'The configured Blender executable and parent must reject untrusted writers.'
-Add-Check 'daemon.executable' ($daemonOK -and (Test-SafePath $daemonPath $expectedSid $readExecute $true $true)) $true $daemonPath 'existing executable with explicit task-principal access and trusted writers' 'The staged session broker and parent must carry the setup ACL.'
-Add-Check 'host.executable' ($hostOK -and (Test-SafePath $hostPath $expectedSid $readExecute $true $true)) $true $hostPath 'existing executable with explicit task-principal access and trusted writers' 'The staged Blender Box host binary and parent must carry the setup ACL.'
+Add-Check 'blender.executable' ($blenderOK -and (Test-SafePath $blenderPath $expectedSid $readExecute $false $true $false)) $true $blenderPath 'existing executable with safe readers, owner, and writers' 'The configured Blender executable and parent must reject untrusted writers.'
+Add-Check 'daemon.executable' ($daemonOK -and (Test-SafePath $daemonPath $expectedSid $readExecute $true $true $false)) $true $daemonPath 'existing executable with explicit task-principal access and trusted writers' 'The staged session broker and parent must carry the setup ACL.'
+Add-Check 'host.executable' ($hostOK -and (Test-SafePath $hostPath $expectedSid $readExecute $true $true $false)) $true $hostPath 'existing executable with explicit task-principal access and trusted writers' 'The staged Blender Box host binary and parent must carry the setup ACL.'
 $rootExists = Test-Path -LiteralPath ([string]$config.work_root) -PathType Container -ErrorAction SilentlyContinue
-Add-Check 'work-root.access' ($rootExists -and (Test-SafePath ([string]$config.work_root) $expectedSid $modify $true $false)) $true ([string]$config.work_root) 'existing directory with explicit task-principal access and trusted writers' 'The operator-managed work root must carry the setup ACL and have trusted ancestors.'
+Add-Check 'work-root.access' ($rootExists -and (Test-SafePath ([string]$config.work_root) $expectedSid $modify $true $false $true)) $true ([string]$config.work_root) 'existing directory with explicit task-principal access and trusted writers' 'The operator-managed work root and inherited child ACL must carry the setup authority and have trusted ancestors.'
 $task = Get-ScheduledTask -TaskPath '\' -TaskName ([string]$config.task_name) -ErrorAction SilentlyContinue
 $taskActual = $null
 $taskOK = $false
