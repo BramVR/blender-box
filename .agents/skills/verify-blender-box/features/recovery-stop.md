@@ -9,7 +9,7 @@ Recovery reads the host-owned receipt after reconnect and settles only the exact
 - `stop-idempotent` returns already-known cleanup without touching another Session.
 - `starting-recovery` permits claim-only cleanup before Session publication.
 - `launch-recovery` adopts a valid opaque identity from Run-isolated daemon state when Host Lock publication was interrupted.
-- `partial-cleanup` preserves Run ownership for retry and absorbs transient Windows sharing violations inside the settlement deadline.
+- `partial-cleanup` preserves Run ownership for retry, removes an ownership-free Run root only when it is otherwise empty and non-reparse, and absorbs transient Windows sharing violations inside the settlement deadline.
 
 ## How to get to it (user POV)
 

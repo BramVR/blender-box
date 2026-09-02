@@ -19,6 +19,7 @@ Preconditions:
 
 - `VERIFY_HOST_BINARY` is the Windows build from the tested commit.
 - The declared compatible `blendersessiond` and Blender executables already exist.
+- The declared work root already exists because setup does not provision `blendersessiond` inside it.
 - The exact hostname check in `SKILL.md` passed and the operator authorized setup.
 
 - **Plan.** Run `"$VERIFY_CLIENT" windows setup --target "$BLENDER_BOX_TARGET" --host-binary "$VERIFY_HOST_BINARY" --json | tee "$VERIFY_ROOT/setup-plan.json"`. Require `jq -e '.schema_version == 1 and .status == "plan" and (.applied | not) and .host_size > 0 and (.host_sha256 | length == 64)' "$VERIFY_ROOT/setup-plan.json"`.
