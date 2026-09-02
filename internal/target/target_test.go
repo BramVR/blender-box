@@ -48,6 +48,42 @@ func TestWorkRootRejectsLegacySCPShellCharacters(t *testing.T) {
 	}
 }
 
+func TestWorkRootReservesLegacySCPSetupStagingSuffix(t *testing.T) {
+	base := Target{
+		SchemaVersion:     1,
+		SSHAlias:          "windows-test",
+		SSHUser:           "test-user",
+		InteractiveUser:   "test-user",
+		TaskName:          "BlenderBoxTest",
+		BlenderExecutable: `C:\Program Files\Blender Foundation\Blender\blender.exe`,
+	}
+	for _, test := range []struct {
+		name    string
+		tailLen int
+		valid   bool
+	}{
+		{name: "maximum stageable root", tailLen: 194, valid: true},
+		{name: "one byte too long", tailLen: 195, valid: false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			value := base
+			value.WorkRoot = `C:\` + strings.Repeat("a", test.tailLen)
+			value.SessionBrokerExecutable = value.WorkRoot + `\bin\blendersessiond.exe`
+			value.HostExecutable = value.WorkRoot + `\bin\blender-box.exe`
+			err := value.Validate()
+			if test.valid && err != nil {
+				t.Fatalf("stageable root rejected: %v", err)
+			}
+			if !test.valid && (err == nil || !strings.Contains(err.Error(), "staging")) {
+				t.Fatalf("unstageable root error = %v", err)
+			}
+			if test.valid && !ValidateLegacySCPWindowsPath(value.WorkRoot+`\.setup-`+strings.Repeat("0", 32)+`.ps1`) {
+				t.Fatal("maximum accepted root cannot carry the generated setup suffix")
+			}
+		})
+	}
+}
+
 func TestTargetRejectsNonCanonicalWindowsPaths(t *testing.T) {
 	base := Target{
 		SchemaVersion:           1,

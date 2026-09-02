@@ -12,6 +12,8 @@ import (
 	"github.com/BramVR/blender-box/internal/safepath"
 )
 
+const maxSetupWorkRootTail = 238 - len(`\.setup-`) - 32 - len(`.ps1`)
+
 var (
 	sshAliasPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$`)
 	taskNamePattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._ -]{0,127}$`)
@@ -72,6 +74,9 @@ func (value Target) Validate() error {
 	}
 	if !ValidateLegacySCPWindowsPath(value.WorkRoot) {
 		return fmt.Errorf("target work_root must use the legacy-SCP-safe Windows path grammar")
+	}
+	if len(value.WorkRoot[3:]) > maxSetupWorkRootTail {
+		return fmt.Errorf("target work_root must reserve space for setup staging paths")
 	}
 	if !userPattern.MatchString(value.InteractiveUser) {
 		return fmt.Errorf("target interactive_user is unsafe")
