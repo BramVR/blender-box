@@ -9,10 +9,13 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 
 	"github.com/BramVR/blender-box/internal/safepath"
 )
+
+var sha256Pattern = regexp.MustCompile(`^[0-9a-f]{64}$`)
 
 const (
 	maxDocumentBytes = 1 << 20
@@ -152,6 +155,26 @@ func Load(path string) (Payload, error) {
 
 // Validate proves that a Payload still carries bounded bytes produced by Load.
 func (payload Payload) Validate() error {
+	if err := payload.ValidateManifest(); err != nil {
+		return err
+	}
+	for _, file := range payload.Files {
+		if file.contents == nil {
+			return fmt.Errorf("source %q has no validated contents", file.Source)
+		}
+		if int64(len(file.contents)) != file.Size {
+			return fmt.Errorf("source %q size does not match validated contents", file.Source)
+		}
+		hash := sha256.Sum256(file.contents)
+		if hex.EncodeToString(hash[:]) != file.SHA256 {
+			return fmt.Errorf("source %q SHA-256 does not match validated contents", file.Source)
+		}
+	}
+	return nil
+}
+
+// ValidateManifest verifies bounded cross-process metadata without local bytes.
+func (payload Payload) ValidateManifest() error {
 	if payload.SchemaVersion != 1 {
 		return fmt.Errorf("unsupported payload schema version %d", payload.SchemaVersion)
 	}
@@ -178,15 +201,11 @@ func (payload Payload) Validate() error {
 			return fmt.Errorf("duplicate destination %q", file.Destination)
 		}
 		destinations[key] = struct{}{}
-		if file.contents == nil {
-			return fmt.Errorf("source %q has no validated contents", file.Source)
+		if file.Size < 0 || file.Size > maxFileBytes {
+			return fmt.Errorf("source %q has invalid size", file.Source)
 		}
-		if len(file.contents) > maxFileBytes || int64(len(file.contents)) != file.Size {
-			return fmt.Errorf("source %q size does not match validated contents", file.Source)
-		}
-		hash := sha256.Sum256(file.contents)
-		if hex.EncodeToString(hash[:]) != file.SHA256 {
-			return fmt.Errorf("source %q SHA-256 does not match validated contents", file.Source)
+		if !sha256Pattern.MatchString(file.SHA256) {
+			return fmt.Errorf("source %q has invalid SHA-256", file.Source)
 		}
 		total += file.Size
 		if total > maxTotalBytes {

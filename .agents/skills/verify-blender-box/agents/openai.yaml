@@ -1,0 +1,4 @@
+interface:
+  display_name: "Verify Blender Box"
+  short_description: "Prove the Blender Box CLI on Windows"
+  default_prompt: "Use $verify-blender-box to verify the requested Blender Box CLI behavior and preserve bounded evidence."

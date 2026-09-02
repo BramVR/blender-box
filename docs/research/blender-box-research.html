@@ -568,7 +568,7 @@
         </article>
         <article class="flow-item">
           <h3>Start interactively</h3>
-          <p>Write a validated request JSON, then trigger the static Scheduled Task. The task runs as the logged-in user, sets the per-run environment, starts <code>blendersessiond</code>, and writes the exact Session identity. SSH polls for health.</p>
+          <p>Write a validated request JSON, then trigger the static Scheduled Task. The task runs as the logged-in user, sets the per-run environment, starts <code>blendersessiond</code>, publishes the exact Session identity, and polls that same Session to healthy process and socket state before calling it. The client replays only the identical fenced start request while identity is absent. Terminal or released receipts permanently reserve their Run ID. If host publication is interrupted after daemon launch, settlement adopts the opaque identity from Run-isolated daemon state before exact stop.</p>
         </article>
         <article class="flow-item">
           <h3>Execute</h3>
@@ -671,12 +671,12 @@ hosts:
       <div class="mt-14">
 <pre><code># setup is a read-only preview unless --apply is present
 blender-box windows check --target target.json --json
-blender-box windows setup --host-config hosts.yaml
-blender-box windows setup --host-config hosts.yaml --apply
+blender-box windows setup --target target.json --host-binary blender-box.exe --json
+blender-box windows setup --target target.json --host-binary blender-box.exe --apply --json
 
 blender-box plan addon-smoke
 blender-box doctor --scenario addon-smoke
-blender-box run addon-smoke
+blender-box run --target target.json --payload payload.json --json
 
 blender-box run --keep-on-failure addon-smoke
 blender-box status --run bbx_...
@@ -708,20 +708,20 @@ blender-box stop bbx_...</code></pre>
 
       <div class="grid two">
         <article class="card red">
-          <h3><span class="priority p0">P0</span>Exact public Session identity</h3>
-          <p>Add an opaque <code>session_id</code> to start and status JSON. Let call and stop require <code>--expect-session-id</code>. A stale Run must never stop a newer Session that reused the same name.</p>
+          <h3><span class="priority p0">Landed</span>Exact public Session identity</h3>
+          <p><code>blendersessiond</code> start and status JSON return an opaque <code>session_id</code>. Call and stop require <code>--expect-session-id</code>. A stale Run cannot stop a newer Session that reused the same name.</p>
         </article>
         <article class="card red">
-          <h3><span class="priority p0">P0</span>Bounded long Scenario calls</h3>
-          <p>Expose a read-timeout flag above 180 seconds, with a hard maximum. Blender renders and add-on flows can exceed the current wire ceiling. The Stall still owns the Scenario deadline.</p>
+          <h3><span class="priority p0">Landed</span>Bounded long Scenario calls</h3>
+          <p><code>blendersessiond call --read-timeout</code> accepts 1 through 3,600 seconds. Blender Box carries the declared bound while the Run deadline remains authoritative.</p>
         </article>
         <article class="card red">
-          <h3><span class="priority p0">P0</span>Interactive task bridge</h3>
-          <p>Install one static task that calls <code>blender-box host run-request</code> against a fixed state root. Use <code>LogonType=Interactive</code>, limited rights, no trigger, <code>IgnoreNew</code>, and no execution time limit. SSH atomically writes the fenced request, then starts the task.</p>
+          <h3><span class="priority p0">Implemented</span>Interactive task bridge</h3>
+          <p>Explicit setup installs one static task that calls <code>blender-box host run-request</code> against a fixed state root. It uses <code>LogonType=Interactive</code>, limited rights, no trigger, <code>IgnoreNew</code>, and no execution time limit. SSH atomically writes the fenced request, then starts the task.</p>
         </article>
         <article class="card red">
-          <h3><span class="priority p0">P0</span>Host Lock and request fence</h3>
-          <p>Store shared host authority on Windows. Bind the Run ID, controller, deadline, request hash, task name, and returned Session identity. A stale SSH client cannot replace or clean a newer run.</p>
+          <h3><span class="priority p0">Implemented</span>Host Lock and request fence</h3>
+          <p>Windows stores shared host authority bound to the Run ID, controller, deadline, request hash, task name, and returned Session identity. Host mutations use an OS-released lock, and stale clients cannot replace or clean a newer Run. The typed Run request must use the exact Session name derived from its Run ID, keeping launch and settlement routing identical. The static task launches only from the exact identity-free <code>starting</code> receipt, so a terminal receipt cannot be replayed through a leftover pending request. Run-derived payload staging lets settlement name and remove an interrupted pre-publication directory under the exact claim; missing ownership is recoverable only when that directory is empty. After each daemon boundary, bounded reconciliation reacquires the lock, revalidates the exact authority, and durably records a deadline race as <code>timed-out</code>. Failed identity publication rolls back under the reconciliation deadline; if rollback also fails, settlement adopts the receipt identity only when Run-isolated daemon recovery returns the exact same value. Settlement takes the daemon executable from the controller-selected target and derives the Session name from the Run ID, so task-writable state cannot redirect the SSH controller process. It reconciles physical authority rather than trusting receipt cleanup flags and marks an interrupted active Run terminal <code>failed</code>. Exact stop re-observes the settled receipt so a Session identity recovered during startup cleanup is included in the public result.</p>
         </article>
         <article class="card blue">
           <h3><span class="priority p1">P1</span>Capability and version report</h3>
@@ -736,21 +736,25 @@ blender-box stop bbx_...</code></pre>
       <div class="grid two mt-14">
         <article class="card blue">
           <h3>Read-only Windows check</h3>
-          <p>The implemented first check streams one bounded read-only inspection over SSH. It verifies the declared SSH controller and logged-in console-user SIDs, declared executable and work-root access, trusted physical path authorities, and the complete root task action, principal, controller launch authority, settings, and security descriptor. Blender and daemon versions, stale Host Locks, and unexpected listeners remain later preflight work.</p>
+          <p>The implemented first check streams one bounded read-only inspection over SSH. Slice 0 requires the declared SSH controller, logged-in console user, and interactive task to resolve to one Windows SID. It verifies declared executable and work-root access, trusted physical path authorities, explicit mutation authority, runtime state under sealed parents, and the complete root task action, principal, management and launch authority, settings, and security descriptor. Task authority accepts generic-all or the equivalent concrete FullControl mask emitted by Windows descriptor canonicalization. A bounded, non-launching <code>capabilities --require blender-box-v1 --require-capability typed-call-error-reason</code> probe rejects a daemon that lacks exact Session identity fencing, bounded call support, or typed read-timeout failures; its output goes directly to the Windows null device. A package version is not used as authority because the required contract changed without a distinguishing release version. Blender versions, stale Host Locks, and unexpected listeners remain later preflight work.</p>
         </article>
         <article class="card orange">
           <h3>Explicit setup apply</h3>
-          <p>Apply creates declared work directories, installs the versioned Windows helper, and registers the exact interactive task. It does not install Blender, change Tailscale, change <code>sshd</code>, edit the firewall, store a password, or launch Blender.</p>
+          <p>The implemented command is plan-only unless <code>--apply</code> is present. Apply requires the work root and daemon to be provisioned, rejects empty input and executable-path collisions, and verifies that the authenticated SSH controller and interactive task resolve to the same SID before mutation. It validates existing physical path components and controller-only ancestor replacement authority, then guards mutation with the same OS-released operation lock used by Runs. While locked it refuses an active Host Lock, revalidates any existing host destination as a regular non-reparse file, and fails closed if the root or an existing managed entry still grants untrusted write, delete, permission, or ownership authority before path-based mutation. It then secures the declared root, creates and seals the required state directories parent-first, rehashes and atomically publishes the helper, applies matching ACLs, proves the daemon contract without launching Blender, removes exact staging files, and registers the exact interactive task. Managed executables must use a dedicated directory outside the reserved <code>runs</code> and <code>receipts</code> trees. The shared identity owns the root, state entries, executable directories, and managed files with explicit FullControl update authority. Readiness proves those effective rights and requires both state directories. The task DACL gives the same identity management and launch authority needed for repeat apply. The helper and separately hash-verified setup program use SCP; only a small bounded guard uses stdin. This avoids the proven large-stdin and command-length limits of Windows OpenSSH. Setup does not install Blender, change Tailscale, change <code>sshd</code>, edit the firewall, store a password, or launch Blender. Separate controller and task identities remain deferred until reparse-safe staging, publication, evidence reads, and cleanup land as one boundary.</p>
+        </article>
+        <article class="card blue">
+          <h3>Bounded transport grammar</h3>
+          <p>The implemented setup validates its target before SSH and keeps compatibility with legacy SCP by restricting the work root to an ASCII drive path with no spaces or remote-shell syntax, enforced again by the upload adapter. Target validation reserves the exact 44-character generated setup suffix, so every accepted root remains uploadable, and reserves the longest 46-character replacement suffix after the host executable. Apply transfers a private immutable snapshot of the bytes it bounded and hashed rather than reopening a mutable build path. Blender paths outside the work root may still contain spaces. Setup and inspection seal both OS-released lock files as regular non-reparse files. The launch fence remains held until exact Session identity publication; ambiguous start errors preserve or recover that identity for exact cleanup. If a publication rollback stop succeeded but its response was lost, settlement proves the launch fence is free and repeats the exact idempotent stop. Run cleanup rejects reparse and non-regular descendants while walking bottom-up. The daemon process-output cap allows three times the decoded 1 MiB Scenario Result plus fixed headroom for Python's worst-case nested JSON escaping.</p>
         </article>
         <article class="card green">
-          <h3>No daemon change needed</h3>
+          <h3>Focused daemon changes landed</h3>
           <ul>
+            <li>Start and status expose the opaque Session identity; Blender Box publishes it before polling that exact Session to healthy process and socket state.</li>
+            <li>Call and stop require the expected exact Session identity.</li>
+            <li>Call accepts a bounded read timeout through 3,600 seconds.</li>
             <li>Per-run Blender user roots can enter through the environment inherited at start.</li>
-            <li>The interactive task can set those roots from the validated request before start.</li>
-            <li>Unique names already isolate ports and Session state.</li>
             <li>Raw <code>execute_code</code> can run a small staged-script wrapper.</li>
             <li>Viewport capture already writes a file and reports its method.</li>
-            <li>Stop already checks daemon ownership before touching a process tree.</li>
           </ul>
         </article>
         <article class="card orange">

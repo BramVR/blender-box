@@ -6,17 +6,416 @@ import (
 	"encoding/base64"
 	"encoding/binary"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/BramVR/blender-box/internal/orchestrator"
+	"github.com/BramVR/blender-box/internal/payload"
+	"github.com/BramVR/blender-box/internal/target"
+	"github.com/BramVR/blender-box/internal/windows"
 )
 
 type fakeSSH struct {
-	stdout []byte
-	host   string
-	args   []string
-	stdin  []byte
+	stdout  []byte
+	host    string
+	args    []string
+	stdin   []byte
+	uploads [][2]string
+}
+
+type fakeRunService struct {
+	runIntent      orchestrator.RunIntent
+	statusRun      orchestrator.RunID
+	stopRun        orchestrator.RunID
+	statusDeadline time.Time
+	stopDeadline   time.Time
+	statusResult   orchestrator.StatusResult
+	stopResult     orchestrator.StopResult
+	runErr         error
+}
+
+type noContactHost struct {
+	calls int
+}
+
+func (host *noContactHost) unexpected() error {
+	host.calls++
+	return errors.New("unexpected host contact")
+}
+
+func (host *noContactHost) Inspect(context.Context, target.Target) error { return host.unexpected() }
+func (host *noContactHost) Acquire(context.Context, target.Target, orchestrator.LockClaim) error {
+	return host.unexpected()
+}
+func (host *noContactHost) Stage(context.Context, target.Target, orchestrator.LockClaim, payload.Payload) error {
+	return host.unexpected()
+}
+func (host *noContactHost) Start(context.Context, target.Target, orchestrator.RunRequest) (orchestrator.RunReceipt, error) {
+	return orchestrator.RunReceipt{}, host.unexpected()
+}
+func (host *noContactHost) Observe(context.Context, target.Target, orchestrator.RunID) (orchestrator.RunReceipt, error) {
+	return orchestrator.RunReceipt{}, host.unexpected()
+}
+func (host *noContactHost) Fetch(context.Context, target.Target, orchestrator.RunReceipt, orchestrator.EvidenceFile) ([]byte, error) {
+	return nil, host.unexpected()
+}
+func (host *noContactHost) Settle(context.Context, target.Target, orchestrator.RunReceipt) (orchestrator.CleanupState, error) {
+	return orchestrator.CleanupState{}, host.unexpected()
+}
+
+func (fake *fakeRunService) Run(_ context.Context, intent orchestrator.RunIntent) (orchestrator.RunResult, error) {
+	fake.runIntent = intent
+	result := orchestrator.RunResult{
+		SchemaVersion: 1,
+		RunID:         intent.RunID,
+		RequestID:     intent.RequestID,
+		SessionID:     "bss_exact-cli-session-identity-123456",
+		State:         orchestrator.StateComplete,
+		Evidence:      orchestrator.EvidenceManifest{SchemaVersion: 1},
+		Cleanup: orchestrator.CleanupState{
+			SessionStopped: true,
+			PayloadRemoved: true,
+			RunRootRemoved: true,
+			LockReleased:   true,
+		},
+	}
+	return result, fake.runErr
+}
+
+func (fake *fakeRunService) Status(ctx context.Context, _ target.Target, runID orchestrator.RunID) (orchestrator.StatusResult, error) {
+	fake.statusRun = runID
+	fake.statusDeadline, _ = ctx.Deadline()
+	return fake.statusResult, nil
+}
+
+func (fake *fakeRunService) Stop(ctx context.Context, _ target.Target, runID orchestrator.RunID) (orchestrator.StopResult, error) {
+	fake.stopRun = runID
+	fake.stopDeadline, _ = ctx.Deadline()
+	return fake.stopResult, nil
+}
+
+func TestStatusAndStopCommandsEmitExactVersionedResults(t *testing.T) {
+	targetPath := writeTarget(t, t.TempDir())
+	runID := orchestrator.RunID("bbx_01CLIRUNIDENTITY000000000000")
+	requestID := orchestrator.RequestID("req_01CLIREQUESTIDENTITY000000")
+	sessionID := orchestrator.SessionID("bss_exact-cli-session-identity-123456")
+	service := &fakeRunService{
+		statusResult: orchestrator.StatusResult{
+			SchemaVersion: 1,
+			RunID:         runID,
+			RequestID:     requestID,
+			State:         orchestrator.StateRunning,
+			SessionID:     sessionID,
+		},
+		stopResult: orchestrator.StopResult{
+			SchemaVersion: 1,
+			RunID:         runID,
+			RequestID:     requestID,
+			SessionID:     sessionID,
+			Status:        "settled",
+			Cleanup: orchestrator.CleanupState{
+				SessionStopped: true,
+				PayloadRemoved: true,
+				RunRootRemoved: true,
+				LockReleased:   true,
+			},
+		},
+	}
+
+	for _, command := range []string{"status", "stop"} {
+		t.Run(command, func(t *testing.T) {
+			var stdout bytes.Buffer
+			var stderr bytes.Buffer
+			started := time.Now()
+			exitCode := Run(context.Background(), []string{
+				command,
+				"--target", targetPath,
+				"--run", string(runID),
+				"--timeout", "45s",
+				"--json",
+			}, strings.NewReader(""), &stdout, &stderr, Dependencies{Runner: service})
+			if exitCode != 0 || stderr.Len() != 0 {
+				t.Fatalf("exit = %d, stderr = %q", exitCode, stderr.String())
+			}
+			var envelope struct {
+				SchemaVersion int                    `json:"schema_version"`
+				RunID         orchestrator.RunID     `json:"run_id"`
+				SessionID     orchestrator.SessionID `json:"session_id"`
+			}
+			if err := json.Unmarshal(stdout.Bytes(), &envelope); err != nil {
+				t.Fatalf("stdout is not JSON: %v\n%s", err, stdout.String())
+			}
+			if envelope.SchemaVersion != 1 || envelope.RunID != runID || envelope.SessionID != sessionID {
+				t.Fatalf("result = %+v", envelope)
+			}
+			deadline := service.statusDeadline
+			calledRun := service.statusRun
+			if command == "stop" {
+				deadline = service.stopDeadline
+				calledRun = service.stopRun
+			}
+			if calledRun != runID || deadline.Before(started.Add(44*time.Second)) || deadline.After(started.Add(46*time.Second)) {
+				t.Fatalf("call = %q, deadline = %s", calledRun, deadline)
+			}
+		})
+	}
+}
+
+func TestRunCommandEmitsVersionedJSONAndPassesBoundedIntent(t *testing.T) {
+	root := t.TempDir()
+	targetPath := writeTarget(t, root)
+	if err := os.WriteFile(filepath.Join(root, "scenario.py"), []byte("print('slice 0')\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	payloadPath := filepath.Join(root, "payload.json")
+	payloadJSON := `{"schema_version":1,"files":[{"source":"scenario.py","destination":"scenario.py"}],"scenario":{"script":"scenario.py","read_timeout_seconds":600,"capture_viewport":true}}`
+	if err := os.WriteFile(payloadPath, []byte(payloadJSON), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	evidenceDir := filepath.Join(root, "evidence")
+	service := &fakeRunService{}
+	now := time.Date(2026, 9, 2, 10, 0, 0, 0, time.UTC)
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+
+	exitCode := Run(context.Background(), []string{
+		"run",
+		"--target", targetPath,
+		"--payload", payloadPath,
+		"--evidence-dir", evidenceDir,
+		"--timeout", "30m",
+		"--json",
+	}, strings.NewReader(""), &stdout, &stderr, Dependencies{
+		Runner: service,
+		Now:    func() time.Time { return now },
+		NewIdentities: func() (orchestrator.RunID, orchestrator.RequestID, string, error) {
+			return "bbx_01CLIRUNIDENTITY000000000000", "req_01CLIREQUESTIDENTITY000000", "ctl_cli-test", nil
+		},
+	})
+
+	if exitCode != 0 || stderr.String() != "RUN_ID=bbx_01CLIRUNIDENTITY000000000000\n" {
+		t.Fatalf("exit = %d, stderr = %q", exitCode, stderr.String())
+	}
+	if service.runIntent.RunID != "bbx_01CLIRUNIDENTITY000000000000" || service.runIntent.RequestID != "req_01CLIREQUESTIDENTITY000000" {
+		t.Fatalf("intent identities = %+v", service.runIntent)
+	}
+	if service.runIntent.Deadline != now.Add(30*time.Minute) || service.runIntent.EvidenceDir != evidenceDir {
+		t.Fatalf("intent bounds = %+v", service.runIntent)
+	}
+	if err := service.runIntent.Payload.Validate(); err != nil {
+		t.Fatalf("CLI passed an invalid payload: %v", err)
+	}
+	var result orchestrator.RunResult
+	if err := json.Unmarshal(stdout.Bytes(), &result); err != nil {
+		t.Fatalf("stdout is not one JSON result: %v\n%s", err, stdout.String())
+	}
+	if result.SchemaVersion != 1 || result.RunID != service.runIntent.RunID || result.SessionID == "" || !result.Cleanup.Known() {
+		t.Fatalf("result = %+v", result)
+	}
+}
+
+func TestRunPublishesRunIDBeforeTargetValidation(t *testing.T) {
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	exitCode := Run(context.Background(), []string{
+		"run", "--target", filepath.Join(t.TempDir(), "missing.json"), "--payload", "missing.json", "--json",
+	}, strings.NewReader(""), &stdout, &stderr, Dependencies{
+		NewIdentities: func() (orchestrator.RunID, orchestrator.RequestID, string, error) {
+			return "bbx_01EARLYRUNIDENTITY00000000000", "req_01EARLYREQUESTIDENTITY00000", "ctl_cli-test", nil
+		},
+	})
+	if exitCode != 1 || !strings.HasPrefix(stderr.String(), "RUN_ID=bbx_01EARLYRUNIDENTITY00000000000\n") {
+		t.Fatalf("exit = %d, stderr = %q", exitCode, stderr.String())
+	}
+}
+
+func TestRunEvidencePreflightFailureDoesNotAttemptStatusRecovery(t *testing.T) {
+	root := t.TempDir()
+	targetPath := writeTarget(t, root)
+	if err := os.WriteFile(filepath.Join(root, "scenario.py"), []byte("print('slice 0')\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	payloadPath := filepath.Join(root, "payload.json")
+	if err := os.WriteFile(payloadPath, []byte(`{"schema_version":1,"files":[{"source":"scenario.py","destination":"scenario.py"}],"scenario":{"script":"scenario.py"}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	evidenceDir := filepath.Join(root, "evidence")
+	if err := os.Mkdir(evidenceDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	host := &noContactHost{}
+	service := orchestrator.New(host)
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	exitCode := Run(context.Background(), []string{
+		"run", "--target", targetPath, "--payload", payloadPath, "--evidence-dir", evidenceDir, "--json",
+	}, strings.NewReader(""), &stdout, &stderr, Dependencies{
+		Runner: service,
+		NewIdentities: func() (orchestrator.RunID, orchestrator.RequestID, string, error) {
+			return "bbx_01PREFLIGHTRUNIDENTITY0000000", "req_01PREFLIGHTREQUESTIDENTITY00", "ctl_cli-test", nil
+		},
+	})
+	if exitCode != 1 || host.calls != 0 {
+		t.Fatalf("exit = %d, host calls = %d, stderr = %q", exitCode, host.calls, stderr.String())
+	}
+}
+
+func TestFailedJSONRunEmitsRecoveredReceiptAndCleanup(t *testing.T) {
+	root := t.TempDir()
+	targetPath := writeTarget(t, root)
+	if err := os.WriteFile(filepath.Join(root, "scenario.py"), []byte("raise RuntimeError('expected')\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	payloadPath := filepath.Join(root, "payload.json")
+	if err := os.WriteFile(payloadPath, []byte(`{"schema_version":1,"files":[{"source":"scenario.py","destination":"scenario.py"}],"scenario":{"script":"scenario.py"}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	runID := orchestrator.RunID("bbx_01FAILEDJSONRUNIDENTITY000000")
+	service := &fakeRunService{
+		runErr: errors.New("Scenario call failed"),
+		statusResult: orchestrator.StatusResult{
+			SchemaVersion: 1,
+			RunID:         runID,
+			RequestID:     "req_01FAILEDJSONREQUESTIDENTITY0",
+			RequestHash:   strings.Repeat("a", 64),
+			Deadline:      time.Now().Add(time.Hour),
+			SessionID:     "bss_exact-failed-cli-session-identity-123456",
+			State:         orchestrator.StateFailed,
+			Cleanup:       orchestrator.CleanupState{SessionStopped: true, PayloadRemoved: true, RunRootRemoved: true, LockReleased: true},
+			Error:         "Scenario call failed",
+		},
+	}
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	exitCode := Run(context.Background(), []string{
+		"run", "--target", targetPath, "--payload", payloadPath, "--json",
+	}, strings.NewReader(""), &stdout, &stderr, Dependencies{
+		Runner: service,
+		NewIdentities: func() (orchestrator.RunID, orchestrator.RequestID, string, error) {
+			return runID, "req_01FAILEDJSONREQUESTIDENTITY0", "ctl_cli-test", nil
+		},
+	})
+	if exitCode != 1 || service.statusRun != runID {
+		t.Fatalf("exit = %d, status Run = %q", exitCode, service.statusRun)
+	}
+	var result orchestrator.RunResult
+	if err := json.Unmarshal(stdout.Bytes(), &result); err != nil {
+		t.Fatalf("stdout is not failure JSON: %v\n%s", err, stdout.String())
+	}
+	if result.RunID != runID || result.SessionID != service.statusResult.SessionID || !result.Cleanup.Known() || result.Error == "" {
+		t.Fatalf("failure result = %+v", result)
+	}
+}
+
+func TestEvidenceFailureCannotEmitCompleteJSONState(t *testing.T) {
+	root := t.TempDir()
+	targetPath := writeTarget(t, root)
+	if err := os.WriteFile(filepath.Join(root, "scenario.py"), []byte("print('slice 0')\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	payloadPath := filepath.Join(root, "payload.json")
+	if err := os.WriteFile(payloadPath, []byte(`{"schema_version":1,"files":[{"source":"scenario.py","destination":"scenario.py"}],"scenario":{"script":"scenario.py"}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	runID := orchestrator.RunID("bbx_01EVIDENCEFAILIDENTITY0000000")
+	service := &fakeRunService{
+		runErr: errors.New("evidence hash changed"),
+		statusResult: orchestrator.StatusResult{
+			SchemaVersion: 1,
+			RunID:         runID,
+			RequestID:     "req_01EVIDENCEFAILIDENTITY00000",
+			SessionID:     "bss_exact-evidence-session-identity-123456",
+			State:         orchestrator.StateComplete,
+			Cleanup:       orchestrator.CleanupState{SessionStopped: true, PayloadRemoved: true, RunRootRemoved: true, LockReleased: true},
+		},
+	}
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	exitCode := Run(context.Background(), []string{
+		"run", "--target", targetPath, "--payload", payloadPath, "--json",
+	}, strings.NewReader(""), &stdout, &stderr, Dependencies{
+		Runner: service,
+		NewIdentities: func() (orchestrator.RunID, orchestrator.RequestID, string, error) {
+			return runID, "req_01EVIDENCEFAILIDENTITY00000", "ctl_cli-test", nil
+		},
+	})
+	var result orchestrator.RunResult
+	if exitCode != 1 || json.Unmarshal(stdout.Bytes(), &result) != nil || result.State != orchestrator.StateFailed || result.SessionID == "" || !result.Cleanup.Known() {
+		t.Fatalf("exit = %d, failure result = %+v, stderr = %q", exitCode, result, stderr.String())
+	}
+}
+
+func TestWindowsSetupPlansWithoutSSHAndRequiresApplyForWrite(t *testing.T) {
+	root := t.TempDir()
+	targetPath := writeTarget(t, root)
+	hostBinary := filepath.Join(root, "blender-box.exe")
+	contents := []byte("bounded-host-binary")
+	if err := os.WriteFile(hostBinary, contents, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	fake := &fakeSSH{}
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	exitCode := Run(context.Background(), []string{
+		"windows", "setup",
+		"--target", targetPath,
+		"--host-binary", hostBinary,
+		"--json",
+	}, strings.NewReader(""), &stdout, &stderr, Dependencies{SSH: fake})
+	if exitCode != 0 || stderr.Len() != 0 || fake.host != "" {
+		t.Fatalf("plan exit = %d, stderr = %q, SSH host = %q", exitCode, stderr.String(), fake.host)
+	}
+	var planned windows.SetupResult
+	if err := json.Unmarshal(stdout.Bytes(), &planned); err != nil {
+		t.Fatal(err)
+	}
+	if planned.SchemaVersion != 1 || planned.Status != "plan" || planned.Applied || planned.HostSize != int64(len(contents)) {
+		t.Fatalf("plan = %+v", planned)
+	}
+
+	fake.stdout, _ = json.Marshal(windows.SetupResult{
+		SchemaVersion: 1,
+		Status:        "applied",
+		Applied:       true,
+		HostSize:      planned.HostSize,
+		HostSHA256:    planned.HostSHA256,
+	})
+	stdout.Reset()
+	stderr.Reset()
+	exitCode = Run(context.Background(), []string{
+		"windows", "setup",
+		"--target", targetPath,
+		"--host-binary", hostBinary,
+		"--apply",
+		"--json",
+	}, strings.NewReader(""), &stdout, &stderr, Dependencies{SSH: fake})
+	if exitCode != 0 || stderr.Len() != 0 || fake.host != "windows-test" || len(fake.uploads) != 2 || fake.uploads[0][0] == hostBinary || filepath.Base(fake.uploads[0][0]) != "blender-box.exe" || !strings.HasPrefix(fake.uploads[0][1], `C:\BlenderBoxTest\.setup-`) {
+		t.Fatalf("apply exit = %d, stderr = %q, SSH host = %q, uploads = %q", exitCode, stderr.String(), fake.host, fake.uploads)
+	}
+}
+
+func writeTarget(t *testing.T, root string) string {
+	t.Helper()
+	path := filepath.Join(root, "target.json")
+	contents := `{
+  "schema_version": 1,
+  "ssh_alias": "windows-test",
+  "ssh_user": "test-user",
+  "work_root": "C:\\BlenderBoxTest",
+  "interactive_user": "test-user",
+  "task_name": "BlenderBoxTest",
+  "blender_executable": "C:\\Program Files\\Blender Foundation\\Blender 5.2\\blender.exe",
+  "session_broker_executable": "C:\\BlenderBoxTest\\bin\\blendersessiond.exe",
+  "host_executable": "C:\\BlenderBoxTest\\bin\\blender-box.exe"
+}`
+	if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return path
 }
 
 func (fake *fakeSSH) Run(
@@ -29,6 +428,12 @@ func (fake *fakeSSH) Run(
 	fake.args = append([]string(nil), args...)
 	fake.stdin = append([]byte(nil), stdin...)
 	return fake.stdout, nil
+}
+
+func (fake *fakeSSH) Upload(_ context.Context, host, source, destination string) error {
+	fake.host = host
+	fake.uploads = append(fake.uploads, [2]string{source, destination})
+	return nil
 }
 
 func TestWindowsCheckPrintsVersionedJSONWithoutRemoteWrites(t *testing.T) {
@@ -48,7 +453,7 @@ func TestWindowsCheckPrintsVersionedJSONWithoutRemoteWrites(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	checks := make([]map[string]any, 0, 9)
+	checks := make([]map[string]any, 0, 10)
 	for _, id := range []string{
 		"host.windows",
 		"host.console-user",
@@ -58,6 +463,7 @@ func TestWindowsCheckPrintsVersionedJSONWithoutRemoteWrites(t *testing.T) {
 		"daemon.executable",
 		"host.executable",
 		"work-root.access",
+		"work-root.state-tree",
 		"task.interactive",
 	} {
 		checks = append(checks, map[string]any{"id": id, "passed": true, "required": true})
@@ -81,6 +487,7 @@ func TestWindowsCheckPrintsVersionedJSONWithoutRemoteWrites(t *testing.T) {
 	exitCode := Run(
 		context.Background(),
 		[]string{"windows", "check", "--target", targetPath, "--json"},
+		strings.NewReader(""),
 		&stdout,
 		&stderr,
 		Dependencies{SSH: fake},
