@@ -7,6 +7,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"image"
+	"image/png"
 	"os"
 	"path/filepath"
 	"strings"
@@ -137,7 +139,15 @@ func (fake *fakeDaemon) Call(_ context.Context, request DaemonCall) (json.RawMes
 	if err := os.MkdirAll(filepath.Dir(parameters.Filepath), 0o700); err != nil {
 		return nil, err
 	}
-	if err := os.WriteFile(parameters.Filepath, []byte("fake-viewport-png"), 0o600); err != nil {
+	file, err := os.OpenFile(parameters.Filepath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
+	if err != nil {
+		return nil, err
+	}
+	if err := png.Encode(file, image.NewRGBA(image.Rect(0, 0, 800, 600))); err != nil {
+		file.Close()
+		return nil, err
+	}
+	if err := file.Close(); err != nil {
 		return nil, err
 	}
 	if fake.captureResponse != nil {
@@ -161,6 +171,30 @@ func TestViewportEvidenceRequiresSuccessfulCaptureProvenance(t *testing.T) {
 	}
 	_, err := service.captureViewport(context.Background(), root, request, "bss_exact-capture-session-identity-123456", nil)
 	if err == nil || !strings.Contains(err.Error(), "invalid viewport capture result") {
+		t.Fatalf("capture error = %v", err)
+	}
+}
+
+func TestViewportEvidenceRequiresMatchingPNGDimensions(t *testing.T) {
+	root := t.TempDir()
+	runID := orchestrator.RunID("bbx_01CAPTUREDIMENSIONRUN0000000")
+	daemon := &fakeDaemon{}
+	service := NewService(Dependencies{Daemon: daemon})
+	request := orchestrator.RunRequest{
+		Claim: orchestrator.LockClaim{RunID: runID},
+		Body: orchestrator.RequestBody{
+			SessionName:             "blender-box-capture-test",
+			SessionBrokerExecutable: `C:\Fake\blendersessiond.exe`,
+		},
+	}
+	path := filepath.Join(runPath(root, runID), "evidence", "screenshots", "viewport.png")
+	response, err := json.Marshal(map[string]any{"success": true, "method": "offscreen", "width": 640, "height": 480, "filepath": path})
+	if err != nil {
+		t.Fatal(err)
+	}
+	daemon.captureResponse = response
+	_, err = service.captureViewport(context.Background(), root, request, "bss_exact-capture-session-identity-123456", nil)
+	if err == nil || !strings.Contains(err.Error(), "declared PNG") {
 		t.Fatalf("capture error = %v", err)
 	}
 }

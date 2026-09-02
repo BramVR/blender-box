@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"image/png"
 	"io"
 	"os"
 	"path/filepath"
@@ -876,6 +877,14 @@ func (service *Service) captureViewport(ctx context.Context, root string, reques
 	}
 	if err := decodeExtensibleJSON(raw, &capture, maxScenarioJSON); err != nil || !capture.Success || capture.Width < 1 || capture.Height < 1 || capture.Filepath != path || (capture.Method != "offscreen" && capture.Method != "window_grab") {
 		return orchestrator.EvidenceFile{}, fmt.Errorf("invalid viewport capture result")
+	}
+	contents, err := readRegularFile(path, maxEvidenceFile)
+	if err != nil {
+		return orchestrator.EvidenceFile{}, err
+	}
+	configuration, err := png.DecodeConfig(bytes.NewReader(contents))
+	if err != nil || configuration.Width != capture.Width || configuration.Height != capture.Height {
+		return orchestrator.EvidenceFile{}, fmt.Errorf("viewport capture is not the declared PNG")
 	}
 	file, err := evidenceFromFile(runPath(root, request.Claim.RunID), "screenshots/viewport.png", "viewport")
 	if err != nil {

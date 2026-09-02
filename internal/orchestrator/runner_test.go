@@ -1,11 +1,14 @@
 package orchestrator
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"image"
+	"image/png"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -93,7 +96,7 @@ func (host *fakeHost) Settle(_ context.Context, _ target.Target, receipt RunRece
 
 func TestRunFromIntentToVerifiedEvidenceAndKnownCleanup(t *testing.T) {
 	resultJSON := []byte(`{"objects":["Slice0Cube"],"status":"pass"}`)
-	viewportPNG := []byte("fake-png-evidence")
+	viewportPNG := testViewportPNG()
 	host := &fakeHost{evidence: map[string][]byte{
 		"scenario-result.json": resultJSON,
 		"viewport.png":         viewportPNG,
@@ -468,6 +471,29 @@ func TestWindowsUnicodeEvidenceCollisionFailsBeforeFetch(t *testing.T) {
 	}
 }
 
+func TestRunRejectsInvalidViewportBytes(t *testing.T) {
+	host := &fakeHost{evidence: map[string][]byte{
+		"scenario-result.json": []byte(`{"status":"pass"}`),
+		"viewport.png":         []byte("not-a-png"),
+	}}
+	_, err := New(host).Run(context.Background(), testIntent(t))
+	if err == nil || !strings.Contains(err.Error(), "PNG") {
+		t.Fatalf("error = %v", err)
+	}
+}
+
+func TestEvidenceManifestRejectsEmptyFiles(t *testing.T) {
+	err := validateEvidenceFile(EvidenceFile{
+		Path:   "result.json",
+		Type:   "scenario-result",
+		Size:   0,
+		SHA256: strings.Repeat("0", 64),
+	})
+	if err == nil || !strings.Contains(err.Error(), "size") {
+		t.Fatalf("error = %v", err)
+	}
+}
+
 func TestEvidencePathsUseWindowsSafePortableGrammar(t *testing.T) {
 	for _, path := range []string{"C:/temp/result.json", "CON.png", "nested/trailing. "} {
 		t.Run(path, func(t *testing.T) {
@@ -692,8 +718,16 @@ func loadTestPayload(t *testing.T) payload.Payload {
 func testEvidence() map[string][]byte {
 	return map[string][]byte{
 		"scenario-result.json": []byte(`{"status":"pass"}`),
-		"viewport.png":         []byte("fake-png-evidence"),
+		"viewport.png":         testViewportPNG(),
 	}
+}
+
+func testViewportPNG() []byte {
+	var encoded bytes.Buffer
+	if err := png.Encode(&encoded, image.NewRGBA(image.Rect(0, 0, 800, 600))); err != nil {
+		panic(err)
+	}
+	return encoded.Bytes()
 }
 
 func evidenceFile(path string, kind string, content []byte) EvidenceFile {

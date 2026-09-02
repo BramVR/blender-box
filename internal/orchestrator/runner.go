@@ -1,12 +1,14 @@
 package orchestrator
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"image/png"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -623,6 +625,15 @@ func (runner *Runner) collectEvidence(ctx context.Context, intent RunIntent, rec
 		if hex.EncodeToString(hash[:]) != file.SHA256 {
 			return "", fmt.Errorf("evidence %q: SHA-256 changed", file.Path)
 		}
+		if file.Type == "viewport" {
+			configuration, err := png.DecodeConfig(bytes.NewReader(content))
+			if err != nil {
+				return "", fmt.Errorf("evidence %q: invalid PNG: %w", file.Path, err)
+			}
+			if configuration.Width != file.Width || configuration.Height != file.Height {
+				return "", fmt.Errorf("evidence %q: PNG dimensions changed", file.Path)
+			}
+		}
 		if err := writeEvidence(evidenceRoot, file.Path, content); err != nil {
 			return "", fmt.Errorf("store evidence %q: %w", file.Path, err)
 		}
@@ -685,7 +696,7 @@ func validateEvidenceFile(file EvidenceFile) error {
 	} else if file.CaptureMethod != "" || file.Width != 0 || file.Height != 0 {
 		return fmt.Errorf("capture provenance is only valid for captures")
 	}
-	if file.Size < 0 || file.Size > maxEvidenceFile {
+	if file.Size <= 0 || file.Size > maxEvidenceFile {
 		return fmt.Errorf("invalid size %d", file.Size)
 	}
 	if !hashPattern.MatchString(file.SHA256) {
