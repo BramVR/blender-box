@@ -31,6 +31,41 @@ function Normalize-Path([string]$Path) {
     if ([string]::IsNullOrWhiteSpace($Path)) { return $null }
     try { return [System.IO.Path]::GetFullPath($Path) } catch { return $null }
 }
+function Invoke-SessionBrokerProbe([string]$Path, [string[]]$Arguments) {
+    $start = [System.Diagnostics.ProcessStartInfo]::new()
+    $start.FileName = $Path
+    $start.Arguments = [string]::Join(' ', $Arguments)
+    $start.UseShellExecute = $false
+    $start.CreateNoWindow = $true
+    $start.RedirectStandardOutput = $true
+    $start.RedirectStandardError = $true
+    $process = [System.Diagnostics.Process]::new()
+    $process.StartInfo = $start
+    try {
+        if (-not $process.Start()) { return $null }
+        $stdoutTask = $process.StandardOutput.ReadToEndAsync()
+        $stderrTask = $process.StandardError.ReadToEndAsync()
+        if (-not $process.WaitForExit(10000)) {
+            $process.Kill()
+            $process.WaitForExit()
+            return $null
+        }
+        $process.WaitForExit()
+        $stdout = $stdoutTask.GetAwaiter().GetResult()
+        $stderr = $stderrTask.GetAwaiter().GetResult()
+        if ($stdout.Length + $stderr.Length -gt 65536) { return $null }
+        return [ordered]@{exit_code=$process.ExitCode; text=($stdout + [System.Environment]::NewLine + $stderr)}
+    } catch {
+        return $null
+    } finally {
+        $process.Dispose()
+    }
+}
+function Test-SessionBrokerContract([string]$Path) {
+    $call = Invoke-SessionBrokerProbe $Path @('call', '--help')
+    $stop = Invoke-SessionBrokerProbe $Path @('stop', '--help')
+    return $null -ne $call -and [int]$call.exit_code -eq 0 -and ([string]$call.text).Contains('--expect-session-id') -and ([string]$call.text).Contains('--read-timeout') -and $null -ne $stop -and [int]$stop.exit_code -eq 0 -and ([string]$stop.text).Contains('--expect-session-id')
+}
 function Expand-FileSystemMask([int64]$Mask) {
     [int64]$genericRead = 2147483648
     [int64]$genericWrite = 1073741824
@@ -279,7 +314,9 @@ $blenderOK = Test-Path -LiteralPath $blenderPath -PathType Leaf -ErrorAction Sil
 $daemonOK = Test-Path -LiteralPath $daemonPath -PathType Leaf -ErrorAction SilentlyContinue
 $hostOK = Test-Path -LiteralPath $hostPath -PathType Leaf -ErrorAction SilentlyContinue
 Add-Check 'blender.executable' ($blenderOK -and (Test-SafePath $blenderPath $expectedSid $sshSid $readExecute $false $true $false $false)) $true $blenderPath 'existing executable with safe readers, owner, and writers' 'The configured Blender executable and parent must reject untrusted writers.'
-Add-Check 'daemon.executable' ($daemonOK -and (Test-SafePath $daemonPath $expectedSid $sshSid $readExecute $true $true $false $true) -and (Test-ConservativePathAccess $daemonPath $sshSid $fullControl $true) -and (Test-ConservativePathAccess ([System.IO.Path]::GetDirectoryName($daemonPath)) $sshSid $fullControl $true)) $true $daemonPath 'existing executable with task execution and controller update authority' 'The staged session broker and parent must carry the setup ACL.'
+$daemonSafe = $daemonOK -and (Test-SafePath $daemonPath $expectedSid $sshSid $readExecute $true $true $false $true) -and (Test-ConservativePathAccess $daemonPath $sshSid $fullControl $true) -and (Test-ConservativePathAccess ([System.IO.Path]::GetDirectoryName($daemonPath)) $sshSid $fullControl $true)
+$daemonContractOK = $daemonSafe -and (Test-SessionBrokerContract $daemonPath)
+Add-Check 'daemon.executable' ($daemonOK -and $daemonContractOK) $true $daemonPath 'safe executable supporting exact Session identity and bounded calls' 'The staged session broker and parent must carry the setup ACL and the required CLI contract.'
 Add-Check 'host.executable' ($hostOK -and (Test-SafePath $hostPath $expectedSid $sshSid $readExecute $true $true $false $true) -and (Test-ConservativePathAccess $hostPath $sshSid $fullControl $true) -and (Test-ConservativePathAccess ([System.IO.Path]::GetDirectoryName($hostPath)) $sshSid $fullControl $true)) $true $hostPath 'existing executable with task execution and controller update authority' 'The staged Blender Box host binary and parent must carry the setup ACL.'
 $rootExists = Test-Path -LiteralPath ([string]$config.work_root) -PathType Container -ErrorAction SilentlyContinue
 Add-Check 'work-root.access' ($rootExists -and $lockFilesOK -and (Test-SafePath ([string]$config.work_root) $expectedSid $sshSid $rootAccess $true $false $true $true) -and (Test-ConservativePathAccess ([string]$config.work_root) $sshSid $fullControl $true) -and (Test-RootStateFileInheritance ([string]$config.work_root) $expectedSid $sshSid)) $true ([ordered]@{root=[string]$config.work_root; lock_files=$lockFilesOK}) ([ordered]@{root='controller-owned'; operation_lock='sealed regular file'; launch_lock='sealed regular file'}) 'The operator-managed work root and both process lock files must preserve the declared authority.'

@@ -137,6 +137,25 @@ func TestCheckRequiresRegularSealedOperationAndLaunchLocks(t *testing.T) {
 	}
 }
 
+func TestCheckProbesExactSessionAndTimeoutDaemonContract(t *testing.T) {
+	for _, required := range []string{
+		"function Test-SessionBrokerContract",
+		"function Invoke-SessionBrokerProbe",
+		"call', '--help'",
+		"stop', '--help'",
+		"--expect-session-id",
+		"--read-timeout",
+		"WaitForExit(10000)",
+		"65536",
+		"$daemonContractOK = $daemonSafe -and (Test-SessionBrokerContract $daemonPath)",
+		"$daemonOK -and $daemonContractOK",
+	} {
+		if !strings.Contains(checkScript, required) {
+			t.Fatalf("inspection does not enforce daemon contract: missing %q", required)
+		}
+	}
+}
+
 func TestCheckRequiresDeclaredControllerTaskManagementAuthority(t *testing.T) {
 	if !strings.Contains(checkScript, "$controllerCanManage") ||
 		!strings.Contains(checkScript, "($aceMask -band $genericAll) -eq $genericAll") ||

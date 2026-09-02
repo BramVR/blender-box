@@ -212,6 +212,46 @@ function Assert-RegularFileOrMissing([string]$Path) {
         throw 'Managed executable destination is not a regular file.'
     }
 }
+function Invoke-SessionBrokerProbe([string]$Path, [string[]]$Arguments) {
+    $start = [System.Diagnostics.ProcessStartInfo]::new()
+    $start.FileName = $Path
+    $start.Arguments = [string]::Join(' ', $Arguments)
+    $start.UseShellExecute = $false
+    $start.CreateNoWindow = $true
+    $start.RedirectStandardOutput = $true
+    $start.RedirectStandardError = $true
+    $process = [System.Diagnostics.Process]::new()
+    $process.StartInfo = $start
+    try {
+        if (-not $process.Start()) { return $null }
+        $stdoutTask = $process.StandardOutput.ReadToEndAsync()
+        $stderrTask = $process.StandardError.ReadToEndAsync()
+        if (-not $process.WaitForExit(10000)) {
+            $process.Kill()
+            $process.WaitForExit()
+            return $null
+        }
+        $process.WaitForExit()
+        $stdout = $stdoutTask.GetAwaiter().GetResult()
+        $stderr = $stderrTask.GetAwaiter().GetResult()
+        if ($stdout.Length + $stderr.Length -gt 65536) { return $null }
+        return [ordered]@{exit_code=$process.ExitCode; text=($stdout + [System.Environment]::NewLine + $stderr)}
+    } catch {
+        return $null
+    } finally {
+        $process.Dispose()
+    }
+}
+function Assert-CompatibleSessionBroker([string]$Path) {
+    $call = Invoke-SessionBrokerProbe $Path @('call', '--help')
+    $stop = Invoke-SessionBrokerProbe $Path @('stop', '--help')
+    if ($null -eq $call -or [int]$call.exit_code -ne 0 -or -not ([string]$call.text).Contains('--expect-session-id') -or -not ([string]$call.text).Contains('--read-timeout')) {
+        throw 'Declared blendersessiond does not support exact Session identity and bounded calls.'
+    }
+    if ($null -eq $stop -or [int]$stop.exit_code -ne 0 -or -not ([string]$stop.text).Contains('--expect-session-id')) {
+        throw 'Declared blendersessiond does not support exact Session identity for stop.'
+    }
+}
 function Expand-BlenderBoxFileSystemMask([int64]$Mask) {
     [int64]$expanded = $Mask
     if (($Mask -band 2147483648) -ne 0) { $expanded = $expanded -bor 0x00120089 }
@@ -364,6 +404,7 @@ try {
     $fileAcl.AddAccessRule([System.Security.AccessControl.FileSystemAccessRule]::new([System.Security.Principal.SecurityIdentifier]::new('S-1-5-18'), [System.Security.AccessControl.FileSystemRights]::FullControl, [System.Security.AccessControl.InheritanceFlags]::None, $none, $allow))
     $fileAcl.AddAccessRule([System.Security.AccessControl.FileSystemAccessRule]::new([System.Security.Principal.SecurityIdentifier]::new('S-1-5-32-544'), [System.Security.AccessControl.FileSystemRights]::FullControl, [System.Security.AccessControl.InheritanceFlags]::None, $none, $allow))
     Set-Acl -LiteralPath $daemonPath -AclObject $fileAcl
+    Assert-CompatibleSessionBroker $daemonPath
     if (Test-Path -LiteralPath $hostPath -PathType Leaf) { Set-Acl -LiteralPath $hostPath -AclObject $fileAcl }
 } finally {
     try { $operation.Unlock(0, 1) } finally { $operation.Dispose() }
@@ -554,6 +595,7 @@ try {
     }
     Set-Acl -LiteralPath $hostPath -AclObject (New-BlenderBoxFileAcl)
     Set-Acl -LiteralPath $daemonPath -AclObject (New-BlenderBoxFileAcl)
+    Assert-CompatibleSessionBroker $daemonPath
     $action = New-ScheduledTaskAction -Execute $hostPath -Argument $expectedArguments -WorkingDirectory ([System.IO.Path]::GetDirectoryName($hostPath))
     $principal = New-ScheduledTaskPrincipal -UserId $interactiveUser -LogonType Interactive -RunLevel Limited
     $settings = New-ScheduledTaskSettingsSet -MultipleInstances IgnoreNew -ExecutionTimeLimit ([TimeSpan]::Zero) -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries

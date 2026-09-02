@@ -154,6 +154,29 @@ func TestSetupCreatesAndSealsBothHostLockFiles(t *testing.T) {
 	}
 }
 
+func TestSetupRequiresCompatibleSessionBrokerBeforeTaskRegistration(t *testing.T) {
+	for name, script := range map[string]string{
+		"prepare": prepareSetupScript(adapterTarget()),
+		"apply":   setupScript(adapterTarget(), SetupResult{HostSize: 1, HostSHA256: strings.Repeat("a", 64)}, `C:\BlenderBoxTest\.setup-host.bin`),
+	} {
+		for _, required := range []string{
+			"function Assert-CompatibleSessionBroker",
+			"function Invoke-SessionBrokerProbe",
+			"call', '--help'",
+			"stop', '--help'",
+			"--expect-session-id",
+			"--read-timeout",
+			"WaitForExit(10000)",
+			"65536",
+			"Assert-CompatibleSessionBroker $daemonPath",
+		} {
+			if !strings.Contains(script, required) {
+				t.Fatalf("%s script does not enforce daemon contract: missing %q", name, required)
+			}
+		}
+	}
+}
+
 func TestSetupPreservesSingleIdentityUpdateAuthority(t *testing.T) {
 	selected := adapterTarget()
 	prepare := prepareSetupScript(selected)
