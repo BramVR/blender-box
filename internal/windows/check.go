@@ -117,10 +117,20 @@ function Test-TrustedTaskAuthorities([string]$Sddl, [string]$PrincipalSid) {
     }
     return $true
 }
+function Test-LocalVolumeRoot([string]$Root) {
+    if ($Root -notmatch '^[A-Za-z]:\\$') { return $false }
+    try {
+        $volumes = @(Get-Volume -DriveLetter $Root.Substring(0, 1) -ErrorAction Stop)
+    } catch {
+        return $false
+    }
+    return $volumes.Count -eq 1 -and [string]$volumes[0].DriveType -eq 'Fixed'
+}
 function Test-NoReparsePoints([string]$Path) {
     $current = Normalize-Path $Path
     if ($null -eq $current) { return $false }
     $root = [System.IO.Path]::GetPathRoot($current)
+    if (-not (Test-LocalVolumeRoot $root)) { return $false }
     while ($null -ne $current) {
         try { $item = Get-Item -Force -LiteralPath $current -ErrorAction Stop } catch { return $false }
         if (([int64]$item.Attributes -band [int64][System.IO.FileAttributes]::ReparsePoint) -ne 0) { return $false }

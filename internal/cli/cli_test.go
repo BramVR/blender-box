@@ -159,6 +159,8 @@ func TestWindowsCheckPrintsVersionedJSONWithoutRemoteWrites(t *testing.T) {
 		"takeownership",
 		"getdirectoryname",
 		"getpathroot",
+		"get-volume",
+		"drivetype",
 		"$parent -ieq $root",
 		"deletechild",
 		"actions[0].execute",
