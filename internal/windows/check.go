@@ -32,7 +32,7 @@ function Normalize-Path([string]$Path) {
     try { return [System.IO.Path]::GetFullPath($Path) } catch { return $null }
 }
 function Test-ConservativePathAccess([string]$Path, [string]$PrincipalSid, [System.Security.AccessControl.FileSystemRights]$RequiredRights, [bool]$RequireDirectAllow) {
-    if (-not (Test-Path -LiteralPath $Path)) { return $false }
+    if (-not (Test-Path -LiteralPath $Path -ErrorAction SilentlyContinue)) { return $false }
     try {
         $acl = Get-Acl -LiteralPath $Path -ErrorAction Stop
         $rules = $acl.GetAccessRules($true, $true, [System.Security.Principal.SecurityIdentifier])
@@ -53,7 +53,7 @@ function Test-ConservativePathAccess([string]$Path, [string]$PrincipalSid, [Syst
     return ($denyMask -band $requiredMask) -eq 0 -and ($allowMask -band $requiredMask) -eq $requiredMask
 }
 function Test-TrustedWriters([string]$Path, [string]$PrincipalSid) {
-    if (-not (Test-Path -LiteralPath $Path)) { return $false }
+    if (-not (Test-Path -LiteralPath $Path -ErrorAction SilentlyContinue)) { return $false }
     $trustedWriters = @(
         $PrincipalSid,
         'S-1-5-18',
@@ -74,7 +74,7 @@ function Test-TrustedWriters([string]$Path, [string]$PrincipalSid) {
     return $true
 }
 function Test-TrustedAncestor([string]$Path, [string]$PrincipalSid) {
-    if (-not (Test-Path -LiteralPath $Path -PathType Container)) { return $false }
+    if (-not (Test-Path -LiteralPath $Path -PathType Container -ErrorAction SilentlyContinue)) { return $false }
     $trustedWriters = @(
         $PrincipalSid,
         'S-1-5-18',
@@ -179,9 +179,9 @@ function Test-SafePath([string]$Path, [string]$PrincipalSid, [System.Security.Ac
     }
     return $null -ne $ancestor -and $ancestor -ieq $root
 }
-$os = Get-CimInstance -ClassName Win32_OperatingSystem
+$os = Get-CimInstance -ClassName Win32_OperatingSystem -ErrorAction SilentlyContinue
 Add-Check 'host.windows' ($null -ne $os) $true $os.Caption 'Windows' 'Windows host detected.'
-$computer = Get-CimInstance -ClassName Win32_ComputerSystem
+$computer = Get-CimInstance -ClassName Win32_ComputerSystem -ErrorAction SilentlyContinue
 $consoleUser = [string]$computer.UserName
 $expectedUser = [string]$config.interactive_user
 $expectedSid = Resolve-Sid $expectedUser
@@ -198,13 +198,13 @@ $daemonPath = [string]$config.session_broker_executable
 $hostPath = [string]$config.host_executable
 $readExecute = [System.Security.AccessControl.FileSystemRights]::ReadAndExecute
 $modify = [System.Security.AccessControl.FileSystemRights]::Modify
-$blenderOK = Test-Path -LiteralPath $blenderPath -PathType Leaf
-$daemonOK = Test-Path -LiteralPath $daemonPath -PathType Leaf
-$hostOK = Test-Path -LiteralPath $hostPath -PathType Leaf
+$blenderOK = Test-Path -LiteralPath $blenderPath -PathType Leaf -ErrorAction SilentlyContinue
+$daemonOK = Test-Path -LiteralPath $daemonPath -PathType Leaf -ErrorAction SilentlyContinue
+$hostOK = Test-Path -LiteralPath $hostPath -PathType Leaf -ErrorAction SilentlyContinue
 Add-Check 'blender.executable' ($blenderOK -and (Test-SafePath $blenderPath $expectedSid $readExecute $false $true)) $true $blenderPath 'existing executable with safe readers, owner, and writers' 'The configured Blender executable and parent must reject untrusted writers.'
 Add-Check 'daemon.executable' ($daemonOK -and (Test-SafePath $daemonPath $expectedSid $readExecute $true $true)) $true $daemonPath 'existing executable with explicit task-principal access and trusted writers' 'The staged session broker and parent must carry the setup ACL.'
 Add-Check 'host.executable' ($hostOK -and (Test-SafePath $hostPath $expectedSid $readExecute $true $true)) $true $hostPath 'existing executable with explicit task-principal access and trusted writers' 'The staged Blender Box host binary and parent must carry the setup ACL.'
-$rootExists = Test-Path -LiteralPath ([string]$config.work_root) -PathType Container
+$rootExists = Test-Path -LiteralPath ([string]$config.work_root) -PathType Container -ErrorAction SilentlyContinue
 Add-Check 'work-root.access' ($rootExists -and (Test-SafePath ([string]$config.work_root) $expectedSid $modify $true $false)) $true ([string]$config.work_root) 'existing directory with explicit task-principal access and trusted writers' 'The operator-managed work root must carry the setup ACL and have trusted ancestors.'
 $task = Get-ScheduledTask -TaskPath '\' -TaskName ([string]$config.task_name) -ErrorAction SilentlyContinue
 $taskActual = $null
