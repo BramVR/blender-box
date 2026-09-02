@@ -5,7 +5,7 @@ Windows setup previews a bounded host binary install by default and applies only
 ## Sub-features
 
 - `setup-plan` hashes and sizes the host binary without SSH or remote writes.
-- `setup-apply` transfers the exact bounded bytes and registers the fixed task.
+- `setup-apply` stages the bounded binary and hash-verified setup program over SCP, then registers the fixed task.
 - `setup-postcheck` proves the applied state through the read-only check.
 
 ## How to get to it (user POV)
@@ -28,5 +28,6 @@ Preconditions:
 ## Gotchas
 
 - `--apply` changes the declared Blender Box work root, managed executable ACLs, and exact Scheduled Task. It does not install Blender or `blendersessiond`.
+- A task-local Python virtual environment is compatible when its `blendersessiond` launcher resolves without ambient `PYTHONPATH`.
 - Never apply to a host identified only by an alias.
 - Setup does not launch Blender and does not authorize stopping an existing process.

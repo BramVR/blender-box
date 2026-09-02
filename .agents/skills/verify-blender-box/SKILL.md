@@ -12,7 +12,8 @@ Use this skill for real user-facing proof of the Blender Box CLI. The host is sh
 From the repository root, use one isolated local scratch directory and build both client and Windows host binaries from the exact checkout:
 
 ```sh
-export VERIFY_ROOT="$(mktemp -d "${TMPDIR%/}/blender-box-verify.XXXXXX")"
+export VERIFY_TMPDIR="${TMPDIR:-/tmp}"
+export VERIFY_ROOT="$(mktemp -d "${VERIFY_TMPDIR%/}/blender-box-verify.XXXXXX")"
 export VERIFY_CLIENT="$VERIFY_ROOT/blender-box"
 export VERIFY_HOST_BINARY="$VERIFY_ROOT/blender-box.exe"
 go build -o "$VERIFY_CLIENT" ./cmd/blender-box
@@ -101,7 +102,7 @@ Prove idempotent recovery cleanup without touching an unknown process, retain ev
 "$VERIFY_CLIENT" stop --target "$BLENDER_BOX_TARGET" --run "$VERIFY_RUN_ID" --json | tee "$VERIFY_ROOT/stop.json"
 jq -e --arg run "$VERIFY_RUN_ID" '.schema_version == 1 and .run_id == $run and .status == "settled" and .cleanup.session_stopped and .cleanup.payload_removed and .cleanup.run_root_removed and .cleanup.lock_released' "$VERIFY_ROOT/stop.json"
 test -f "$VERIFY_EVIDENCE/evidence.json"
-case "$VERIFY_ROOT" in "${TMPDIR%/}"/blender-box-verify.*) rm -rf -- "$VERIFY_ROOT" ;; *) echo "refusing unexpected cleanup root" >&2; exit 1 ;; esac
+case "$VERIFY_ROOT" in "${VERIFY_TMPDIR%/}"/blender-box-verify.*) rm -rf -- "$VERIFY_ROOT" ;; *) echo "refusing unexpected cleanup root" >&2; exit 1 ;; esac
 test ! -e "$VERIFY_ROOT"
 test -f "$VERIFY_EVIDENCE/evidence.json"
 git status --short --untracked-files=all

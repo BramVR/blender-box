@@ -49,7 +49,7 @@ go run ./cmd/blender-box windows setup --target target.json --host-binary /tmp/b
 go run ./cmd/blender-box windows check --target target.json --json
 ```
 
-Plan mode makes no SSH call. Apply streams one bounded binary, verifies its size and SHA-256 on Windows, applies the declared ACLs, and registers the exact no-trigger interactive task with limited rights, `IgnoreNew`, and no execution time limit. It requires the declared Blender and compatible `blendersessiond` executables to exist. It does not install Blender, launch it, change SSH, Tailscale, or firewall settings, or expose Blender's loopback MCP port.
+Plan mode makes no SSH call. Apply secures the declared work root, uploads one bounded binary and a bounded hash-verified setup program over SCP, rehashes the binary on Windows, publishes it atomically, applies the declared ACLs, and registers the exact no-trigger interactive task with limited rights, `IgnoreNew`, and no execution time limit. It requires the declared Blender and compatible `blendersessiond` executables to exist. A standard task-local Python virtual environment is compatible; its launcher must resolve without ambient `PYTHONPATH`. Setup does not install Blender, launch it, change SSH, Tailscale, or firewall settings, or expose Blender's loopback MCP port.
 
 ## Run a Scenario
 
@@ -77,7 +77,7 @@ go run ./cmd/blender-box status --target target.json --run bbx_... --json
 go run ./cmd/blender-box stop --target target.json --run bbx_... --json
 ```
 
-`run` writes `RUN_ID=bbx_...` to stderr before validation or remote work; stdout remains one versioned JSON result. The client acquires the host-owned lock, transfers and rehashes bounded payload files, triggers the static task, pins the exact returned `blendersessiond` Session identity, and applies the Run deadline to the Scenario call. `stop` recovers the full request and Session fence from the host receipt. It never stops Blender by name, port, path, or guessed PID.
+`run` writes `RUN_ID=bbx_...` to stderr before validation or remote work; stdout remains one versioned JSON result. The client acquires the host-owned lock, transfers and rehashes bounded payload files, triggers the static task, pins the exact returned `blendersessiond` Session identity, then waits up to two minutes for `status` to report that same Session's process and loopback socket healthy before the Scenario call. The Run deadline remains authoritative. `stop` recovers the full request and Session fence from the host receipt. It never stops Blender by name, port, path, or guessed PID.
 
 The default bundle is `artifacts/blender-box/<run-id>/`. `manifest.json` records evidence paths, types, sizes, SHA-256 hashes, and viewport capture provenance. `evidence.json` records Run, request, deadline, exact Session identity, terminal state, and cleanup. Scenario and viewport files are fetched only from the declared manifest and published without replacement.
 
