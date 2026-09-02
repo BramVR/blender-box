@@ -39,6 +39,37 @@ type waitingDaemon struct {
 	stops        []DaemonStop
 }
 
+type launchingDaemon struct {
+	started chan struct{}
+	stopped chan struct{}
+	once    sync.Once
+	stops   []DaemonStop
+}
+
+func (daemon *launchingDaemon) Start(context.Context, DaemonStart) (orchestrator.SessionID, error) {
+	close(daemon.started)
+	<-daemon.stopped
+	return "bss_exact-launching-session-identity-123456", nil
+}
+
+func (daemon *launchingDaemon) Recover(context.Context, DaemonRecover) (orchestrator.SessionID, bool, error) {
+	return "bss_exact-launching-session-identity-123456", true, nil
+}
+
+func (daemon *launchingDaemon) WaitReady(context.Context, DaemonReady) error {
+	return errors.New("unexpected readiness after settlement")
+}
+
+func (daemon *launchingDaemon) Call(context.Context, DaemonCall) (json.RawMessage, error) {
+	return nil, errors.New("unexpected call after settlement")
+}
+
+func (daemon *launchingDaemon) Stop(_ context.Context, request DaemonStop) error {
+	daemon.stops = append(daemon.stops, request)
+	daemon.once.Do(func() { close(daemon.stopped) })
+	return nil
+}
+
 func (daemon *waitingDaemon) Start(context.Context, DaemonStart) (orchestrator.SessionID, error) {
 	return "bss_exact-waiting-session-identity-123456", nil
 }
@@ -760,6 +791,39 @@ func TestExactStopCanInterruptSessionReadiness(t *testing.T) {
 	case <-executionDone:
 	case <-time.After(time.Second):
 		t.Fatal("Scheduled Task did not observe exact stop during readiness")
+	}
+}
+
+func TestExactStopCanInterruptDaemonStartup(t *testing.T) {
+	root := t.TempDir()
+	now := time.Now().UTC()
+	daemon := &launchingDaemon{started: make(chan struct{}), stopped: make(chan struct{})}
+	service := NewService(Dependencies{Tasks: &fakeTaskLauncher{}, Daemon: daemon, Now: func() time.Time { return now }})
+	request := stageHostTestRun(t, service, root, now, false)
+	starting, err := service.Start(context.Background(), root, request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	executionDone := make(chan error, 1)
+	go func() { executionDone <- service.ExecutePending(context.Background(), root) }()
+	select {
+	case <-daemon.started:
+	case <-time.After(time.Second):
+		t.Fatal("daemon startup did not begin")
+	}
+	settleCtx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	cleanup, err := service.Settle(settleCtx, root, SettleRequest{SchemaVersion: 1, Receipt: starting})
+	if err != nil {
+		t.Fatalf("settle during daemon startup: %v", err)
+	}
+	if !cleanup.Known() || len(daemon.stops) != 1 || daemon.stops[0].SessionID != "bss_exact-launching-session-identity-123456" {
+		t.Fatalf("cleanup = %+v, stops = %+v", cleanup, daemon.stops)
+	}
+	select {
+	case <-executionDone:
+	case <-time.After(time.Second):
+		t.Fatal("Scheduled Task did not observe settlement during daemon startup")
 	}
 }
 

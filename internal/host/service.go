@@ -427,18 +427,38 @@ func (service *Service) ExecutePending(ctx context.Context, root string) error {
 	runCtx, cancel := context.WithDeadline(ctx, request.Claim.Deadline)
 	defer cancel()
 	environment := runEnvironment(root, request.Claim.RunID)
-	sessionID, err := service.daemon.Start(runCtx, DaemonStart{
+	launchRelease, err := acquireLaunch(runCtx, root)
+	if err != nil {
+		return service.failExecution(root, request, "Session launch lock failed")
+	}
+	locked = false
+	release()
+	sessionID, startErr := service.daemon.Start(runCtx, DaemonStart{
 		Executable:        request.Body.SessionBrokerExecutable,
 		Name:              request.Body.SessionName,
 		BlenderExecutable: request.Body.BlenderExecutable,
 		Environment:       environment,
 	})
+	launchRelease()
+	reconcileCtx, cancelReconcile := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+	defer cancelReconcile()
+	release, err = acquireOperation(reconcileCtx, root)
 	if err != nil {
-		return service.failExecution(root, request, "Session start failed")
+		return err
+	}
+	locked = true
+	receipt, err := service.activeReceipt(root, request, "")
+	if errors.Is(err, errRunSettled) {
+		return fmt.Errorf("Run was settled during Session start")
+	}
+	if err != nil {
+		return err
+	}
+	if startErr != nil {
+		return service.failReceipt(root, receipt, "Session start failed")
 	}
 	if err := sessionID.Validate(); err != nil {
-		_ = service.daemon.Stop(runCtx, DaemonStop{Executable: request.Body.SessionBrokerExecutable, Name: request.Body.SessionName, SessionID: sessionID, Environment: environment})
-		return service.failExecution(root, request, "Session daemon returned an invalid identity")
+		return service.failReceipt(root, receipt, "Session daemon returned an invalid identity")
 	}
 	lock.SessionID = sessionID
 	if err := writeJSONAtomic(lockPath(root), lock); err != nil {
@@ -450,7 +470,7 @@ func (service *Service) ExecutePending(ctx context.Context, root string) error {
 		}
 		return service.failExecution(root, request, "Session identity publication failed; exact Session was rolled back")
 	}
-	receipt := orchestrator.RunReceipt{SchemaVersion: 1, Claim: request.Claim, State: orchestrator.StateRunning, SessionID: sessionID}
+	receipt = orchestrator.RunReceipt{SchemaVersion: 1, Claim: request.Claim, State: orchestrator.StateRunning, SessionID: sessionID}
 	if err := service.writeReceipt(root, receipt); err != nil {
 		receipt.State = orchestrator.StateCleanupFailed
 		receipt.Error = "Session started but its running receipt could not be published"
@@ -691,6 +711,17 @@ func (service *Service) Settle(ctx context.Context, root string, request SettleR
 			if err := service.writeReceipt(root, stored); err != nil {
 				return orchestrator.CleanupState{}, err
 			}
+		} else if stored.State == orchestrator.StateStarting {
+			probeCtx, cancelProbe := context.WithCancel(context.Background())
+			cancelProbe()
+			launchRelease, launchErr := acquireLaunch(probeCtx, root)
+			if launchErr != nil {
+				if errors.Is(launchErr, context.Canceled) {
+					return orchestrator.CleanupState{}, fmt.Errorf("Session launch identity is not published yet")
+				}
+				return orchestrator.CleanupState{}, launchErr
+			}
+			launchRelease()
 		}
 	}
 	if stored.SessionID != "" && !stored.Cleanup.SessionStopped {

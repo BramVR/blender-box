@@ -12,7 +12,15 @@ import (
 )
 
 func acquireOperation(ctx context.Context, root string) (func(), error) {
-	lock, err := os.OpenFile(filepath.Join(root, ".operation.lock"), os.O_RDWR|os.O_CREATE, 0o600)
+	return acquireOperationFile(ctx, filepath.Join(root, ".operation.lock"))
+}
+
+func acquireLaunch(ctx context.Context, root string) (func(), error) {
+	return acquireOperationFile(ctx, filepath.Join(root, ".launch.lock"))
+}
+
+func acquireOperationFile(ctx context.Context, path string) (func(), error) {
+	lock, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE, 0o600)
 	if err != nil {
 		return nil, err
 	}
