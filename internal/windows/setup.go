@@ -245,7 +245,8 @@ $interactiveUser = '%s'
 $lockPath = [System.IO.Path]::Combine($root, 'host-lock.json')
 $operationPath = [System.IO.Path]::Combine($root, '.operation.lock')
 `, selected.WorkRoot, selected.SessionBrokerExecutable, selected.BlenderExecutable, selected.HostExecutable, selected.InteractiveUser)
-	return header + setupOperationFunctions + `Assert-NoReparsePath $root
+	return header + setupOperationFunctions + `if (-not (Test-Path -LiteralPath $root -PathType Container)) { throw 'Declared work root is missing; provision blendersessiond inside it first.' }
+Assert-NoReparsePath $root
 Assert-NoReparsePath $hostDirectory
 Assert-NoReparsePath $daemonDirectory
 Assert-NoReparsePath $daemonPath
@@ -403,7 +404,6 @@ try {
     Assert-NoReparsePath $stagedBinary
     Assert-NoReparsePath $operationPath
     if (Test-Path -LiteralPath $lockPath) { throw 'Cannot apply setup while a Host Lock exists.' }
-    New-Item -ItemType Directory -Force -Path $root | Out-Null
     if (-not (Test-Path -LiteralPath $daemonPath -PathType Leaf)) { throw 'Declared blendersessiond executable is missing.' }
     if (-not (Test-Path -LiteralPath $blenderPath -PathType Leaf)) { throw 'Declared Blender executable is missing.' }
     $interactiveSid = ([System.Security.Principal.NTAccount]::new($interactiveUser)).Translate([System.Security.Principal.SecurityIdentifier])
