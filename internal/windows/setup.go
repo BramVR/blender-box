@@ -224,6 +224,24 @@ function Expand-BlenderBoxFileSystemMask([int64]$Mask) {
     if (($Mask -band 268435456) -ne 0) { $expanded = $expanded -bor 0x001F01FF }
     return $expanded
 }
+function Assert-TrustedManagedPath([string]$Path, [System.Security.Principal.SecurityIdentifier]$ControllerSid) {
+    if (-not (Test-Path -LiteralPath $Path)) { return }
+    $trusted = @($ControllerSid.Value, 'S-1-5-18', 'S-1-5-32-544', 'S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464')
+    $item = Get-Item -Force -LiteralPath $Path -ErrorAction Stop
+    if (([int64]$item.Attributes -band [int64][System.IO.FileAttributes]::ReparsePoint) -ne 0) { throw 'Managed path contains a reparse point.' }
+    $acl = Get-Acl -LiteralPath $Path -ErrorAction Stop
+    $ownerSid = ([System.Security.Principal.NTAccount]::new([string]$acl.Owner)).Translate([System.Security.Principal.SecurityIdentifier]).Value
+    if ($trusted -notcontains $ownerSid) { throw 'Managed path has an untrusted owner.' }
+    $rules = $acl.GetAccessRules($true, $true, [System.Security.Principal.SecurityIdentifier])
+    [int64]$mutationMask = [int64][System.Security.AccessControl.FileSystemRights]::Write -bor [int64][System.Security.AccessControl.FileSystemRights]::Delete -bor [int64][System.Security.AccessControl.FileSystemRights]::DeleteSubdirectoriesAndFiles -bor [int64][System.Security.AccessControl.FileSystemRights]::ChangePermissions -bor [int64][System.Security.AccessControl.FileSystemRights]::TakeOwnership
+    foreach ($rule in $rules) {
+        if (($rule.PropagationFlags -band [System.Security.AccessControl.PropagationFlags]::InheritOnly) -ne 0) { continue }
+        if ($rule.AccessControlType -ne [System.Security.AccessControl.AccessControlType]::Allow) { continue }
+        if ($trusted -contains $rule.IdentityReference.Value) { continue }
+        $ruleMask = Expand-BlenderBoxFileSystemMask ([int64]$rule.FileSystemRights)
+        if (($ruleMask -band $mutationMask) -ne 0) { throw 'Managed path grants mutation authority to an untrusted principal.' }
+    }
+}
 function Assert-TrustedAncestors([string]$Path, [System.Security.Principal.SecurityIdentifier]$ControllerSid) {
     $trusted = @($ControllerSid.Value, 'S-1-5-18', 'S-1-5-32-544', 'S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464')
     $fullPath = [System.IO.Path]::GetFullPath($Path)
@@ -265,7 +283,7 @@ function Enter-BlenderBoxOperation([string]$Path) {
         }
     }
 }
-function Set-BlenderBoxDirectoryPath([string]$Root, [string]$Directory, [System.Security.AccessControl.DirectorySecurity]$Acl) {
+function Set-BlenderBoxDirectoryPath([string]$Root, [string]$Directory, [System.Security.AccessControl.DirectorySecurity]$Acl, [System.Security.Principal.SecurityIdentifier]$ControllerSid) {
     $rootFull = [System.IO.Path]::GetFullPath($Root).TrimEnd([char[]]@('\'))
     $directoryFull = [System.IO.Path]::GetFullPath($Directory).TrimEnd([char[]]@('\'))
     if ($directoryFull -ieq $rootFull) { return }
@@ -277,6 +295,7 @@ function Set-BlenderBoxDirectoryPath([string]$Root, [string]$Directory, [System.
         $current = [System.IO.Path]::Combine($current, $segment)
         if (-not (Test-Path -LiteralPath $current)) { New-Item -ItemType Directory -Path $current | Out-Null }
         Assert-NoReparsePath $current
+        Assert-TrustedManagedPath $current $ControllerSid
         Set-Acl -LiteralPath $current -AclObject $Acl
     }
 }
@@ -312,6 +331,10 @@ $authenticatedControllerSid = [System.Security.Principal.WindowsIdentity]::GetCu
 if ($authenticatedControllerSid -ne $expectedControllerSid) { throw 'Configured SSH user does not match the authenticated controller SID.' }
 $interactiveSid = ([System.Security.Principal.NTAccount]::new($interactiveUser)).Translate([System.Security.Principal.SecurityIdentifier])
 if ($interactiveSid -ne $authenticatedControllerSid) { throw 'Slice 0 requires the SSH controller and interactive task to use the same Windows identity.' }
+$controllerSid = $authenticatedControllerSid
+Assert-TrustedAncestors $root $controllerSid
+Assert-TrustedManagedPath $root $controllerSid
+Assert-TrustedManagedPath $operationPath $controllerSid
 $operation = Enter-BlenderBoxOperation $operationPath
 try {
     Assert-NoReparsePath $root
@@ -327,8 +350,12 @@ try {
     if (Test-Path -LiteralPath $lockPath) { throw 'Cannot apply setup while a Host Lock exists.' }
     if (-not (Test-Path -LiteralPath $daemonPath -PathType Leaf)) { throw 'Declared blendersessiond executable is missing.' }
     if (-not (Test-Path -LiteralPath $blenderPath -PathType Leaf)) { throw 'Declared Blender executable is missing.' }
-    $controllerSid = $authenticatedControllerSid
     Assert-TrustedAncestors $root $controllerSid
+    Assert-TrustedManagedPath $root $controllerSid
+    Assert-TrustedManagedPath $operationPath $controllerSid
+    Assert-TrustedManagedPath $launchPath $controllerSid
+    Assert-TrustedManagedPath $daemonPath $controllerSid
+    Assert-TrustedManagedPath $hostPath $controllerSid
     $inherit = [System.Security.AccessControl.InheritanceFlags]::ContainerInherit -bor [System.Security.AccessControl.InheritanceFlags]::ObjectInherit
     $none = [System.Security.AccessControl.PropagationFlags]::None
     $allow = [System.Security.AccessControl.AccessControlType]::Allow
@@ -349,8 +376,8 @@ try {
     $executableDirectoryAcl.AddAccessRule([System.Security.AccessControl.FileSystemAccessRule]::new($controllerSid, [System.Security.AccessControl.FileSystemRights]::FullControl, $inherit, $none, $allow))
     $executableDirectoryAcl.AddAccessRule([System.Security.AccessControl.FileSystemAccessRule]::new([System.Security.Principal.SecurityIdentifier]::new('S-1-5-18'), [System.Security.AccessControl.FileSystemRights]::FullControl, $inherit, $none, $allow))
     $executableDirectoryAcl.AddAccessRule([System.Security.AccessControl.FileSystemAccessRule]::new([System.Security.Principal.SecurityIdentifier]::new('S-1-5-32-544'), [System.Security.AccessControl.FileSystemRights]::FullControl, $inherit, $none, $allow))
-    Set-BlenderBoxDirectoryPath $root $hostDirectory $executableDirectoryAcl
-    Set-BlenderBoxDirectoryPath $root $daemonDirectory $executableDirectoryAcl
+    Set-BlenderBoxDirectoryPath $root $hostDirectory $executableDirectoryAcl $controllerSid
+    Set-BlenderBoxDirectoryPath $root $daemonDirectory $executableDirectoryAcl $controllerSid
 
     $stateFileAcl = [System.Security.AccessControl.FileSecurity]::new()
     $stateFileAcl.SetAccessRuleProtection($true, $false)
@@ -358,7 +385,9 @@ try {
     $stateFileAcl.AddAccessRule([System.Security.AccessControl.FileSystemAccessRule]::new($controllerSid, [System.Security.AccessControl.FileSystemRights]::FullControl, [System.Security.AccessControl.InheritanceFlags]::None, $none, $allow))
     $stateFileAcl.AddAccessRule([System.Security.AccessControl.FileSystemAccessRule]::new([System.Security.Principal.SecurityIdentifier]::new('S-1-5-18'), [System.Security.AccessControl.FileSystemRights]::FullControl, [System.Security.AccessControl.InheritanceFlags]::None, $none, $allow))
     $stateFileAcl.AddAccessRule([System.Security.AccessControl.FileSystemAccessRule]::new([System.Security.Principal.SecurityIdentifier]::new('S-1-5-32-544'), [System.Security.AccessControl.FileSystemRights]::FullControl, [System.Security.AccessControl.InheritanceFlags]::None, $none, $allow))
+    Assert-TrustedManagedPath $operationPath $controllerSid
     Set-Acl -LiteralPath $operationPath -AclObject $stateFileAcl
+    Assert-TrustedManagedPath $launchPath $controllerSid
     Set-Acl -LiteralPath $launchPath -AclObject $stateFileAcl
 
     $fileAcl = [System.Security.AccessControl.FileSecurity]::new()
@@ -367,9 +396,13 @@ try {
     $fileAcl.AddAccessRule([System.Security.AccessControl.FileSystemAccessRule]::new($controllerSid, [System.Security.AccessControl.FileSystemRights]::FullControl, [System.Security.AccessControl.InheritanceFlags]::None, $none, $allow))
     $fileAcl.AddAccessRule([System.Security.AccessControl.FileSystemAccessRule]::new([System.Security.Principal.SecurityIdentifier]::new('S-1-5-18'), [System.Security.AccessControl.FileSystemRights]::FullControl, [System.Security.AccessControl.InheritanceFlags]::None, $none, $allow))
     $fileAcl.AddAccessRule([System.Security.AccessControl.FileSystemAccessRule]::new([System.Security.Principal.SecurityIdentifier]::new('S-1-5-32-544'), [System.Security.AccessControl.FileSystemRights]::FullControl, [System.Security.AccessControl.InheritanceFlags]::None, $none, $allow))
+    Assert-TrustedManagedPath $daemonPath $controllerSid
     Set-Acl -LiteralPath $daemonPath -AclObject $fileAcl
     Assert-CompatibleSessionBroker $daemonPath
-    if (Test-Path -LiteralPath $hostPath -PathType Leaf) { Set-Acl -LiteralPath $hostPath -AclObject $fileAcl }
+    if (Test-Path -LiteralPath $hostPath -PathType Leaf) {
+        Assert-TrustedManagedPath $hostPath $controllerSid
+        Set-Acl -LiteralPath $hostPath -AclObject $fileAcl
+    }
 } finally {
     try { $operation.Unlock(0, 1) } finally { $operation.Dispose() }
 }`
@@ -451,16 +484,23 @@ function Set-BlenderBoxStateTree([string]$path) {
     if (-not (Test-Path -LiteralPath $path)) { return }
     $rootItem = Get-Item -Force -LiteralPath $path
     if (-not $rootItem.PSIsContainer) { throw 'Managed state path is not a directory.' }
+    Assert-TrustedManagedPath $rootItem.FullName $controllerSid
+    Set-Acl -LiteralPath $rootItem.FullName -AclObject (New-BlenderBoxStateDirectoryAcl)
     $pending = [System.Collections.Generic.Stack[System.IO.DirectoryInfo]]::new()
     $pending.Push($rootItem)
     while ($pending.Count -gt 0) {
         $directory = $pending.Pop()
         if (([int64]$directory.Attributes -band [int64][System.IO.FileAttributes]::ReparsePoint) -ne 0) { throw 'Managed state contains a reparse point.' }
-        Set-Acl -LiteralPath $directory.FullName -AclObject (New-BlenderBoxStateDirectoryAcl)
+        Assert-TrustedManagedPath $directory.FullName $controllerSid
         foreach ($child in $directory.EnumerateFileSystemInfos()) {
             if (([int64]$child.Attributes -band [int64][System.IO.FileAttributes]::ReparsePoint) -ne 0) { throw 'Managed state contains a reparse point.' }
-            if (($child.Attributes -band [System.IO.FileAttributes]::Directory) -ne 0) { $pending.Push($child) }
-            else { Set-Acl -LiteralPath $child.FullName -AclObject (New-BlenderBoxStateFileAcl) }
+            Assert-TrustedManagedPath $child.FullName $controllerSid
+            if (($child.Attributes -band [System.IO.FileAttributes]::Directory) -ne 0) {
+                Set-Acl -LiteralPath $child.FullName -AclObject (New-BlenderBoxStateDirectoryAcl)
+                $pending.Push($child)
+            } else {
+                Set-Acl -LiteralPath $child.FullName -AclObject (New-BlenderBoxStateFileAcl)
+            }
         }
     }
 }
@@ -481,6 +521,10 @@ $authenticatedControllerSid = [System.Security.Principal.WindowsIdentity]::GetCu
 if ($authenticatedControllerSid -ne $expectedControllerSid) { throw 'Configured SSH user does not match the authenticated controller SID.' }
 $interactiveSid = ([System.Security.Principal.NTAccount]::new($interactiveUser)).Translate([System.Security.Principal.SecurityIdentifier])
 if ($interactiveSid -ne $authenticatedControllerSid) { throw 'Slice 0 requires the SSH controller and interactive task to use the same Windows identity.' }
+$controllerSid = $authenticatedControllerSid
+Assert-TrustedAncestors $root $controllerSid
+Assert-TrustedManagedPath $root $controllerSid
+Assert-TrustedManagedPath $operationPath $controllerSid
 $operation = $null
 try {
     Assert-NoReparsePath $root
@@ -509,22 +553,28 @@ try {
     if (Test-Path -LiteralPath $lockPath) { throw 'Cannot apply setup while a Host Lock exists.' }
     if (-not (Test-Path -LiteralPath $daemonPath -PathType Leaf)) { throw 'Declared blendersessiond executable is missing.' }
     if (-not (Test-Path -LiteralPath $blenderPath -PathType Leaf)) { throw 'Declared Blender executable is missing.' }
-    $controllerSid = $authenticatedControllerSid
     Assert-TrustedAncestors $root $controllerSid
+    Assert-TrustedManagedPath $root $controllerSid
+    Assert-TrustedManagedPath $operationPath $controllerSid
+    Assert-TrustedManagedPath $launchPath $controllerSid
+    Assert-TrustedManagedPath $daemonPath $controllerSid
+    Assert-TrustedManagedPath $hostPath $controllerSid
     Set-Acl -LiteralPath $root -AclObject (New-BlenderBoxRootAcl)
     $launch = [System.IO.File]::Open($launchPath, [System.IO.FileMode]::OpenOrCreate, [System.IO.FileAccess]::ReadWrite, [System.IO.FileShare]::ReadWrite)
     $launch.Dispose()
     Assert-NoReparsePath $launchPath
     $runsPath = [System.IO.Path]::Combine($root, 'runs')
     $receiptsPath = [System.IO.Path]::Combine($root, 'receipts')
-    Set-BlenderBoxDirectoryPath $root $runsPath (New-BlenderBoxStateDirectoryAcl)
-    Set-BlenderBoxDirectoryPath $root $receiptsPath (New-BlenderBoxStateDirectoryAcl)
+    Set-BlenderBoxDirectoryPath $root $runsPath (New-BlenderBoxStateDirectoryAcl) $controllerSid
+    Set-BlenderBoxDirectoryPath $root $receiptsPath (New-BlenderBoxStateDirectoryAcl) $controllerSid
     Set-BlenderBoxStateTree $runsPath
     Set-BlenderBoxStateTree $receiptsPath
+    Assert-TrustedManagedPath $operationPath $controllerSid
     Set-Acl -LiteralPath $operationPath -AclObject (New-BlenderBoxStateFileAcl)
+    Assert-TrustedManagedPath $launchPath $controllerSid
     Set-Acl -LiteralPath $launchPath -AclObject (New-BlenderBoxStateFileAcl)
-    Set-BlenderBoxDirectoryPath $root $hostDirectory (New-BlenderBoxExecutableDirectoryAcl)
-    Set-BlenderBoxDirectoryPath $root $daemonDirectory (New-BlenderBoxExecutableDirectoryAcl)
+    Set-BlenderBoxDirectoryPath $root $hostDirectory (New-BlenderBoxExecutableDirectoryAcl) $controllerSid
+    Set-BlenderBoxDirectoryPath $root $daemonDirectory (New-BlenderBoxExecutableDirectoryAcl) $controllerSid
     if ((Get-Item -LiteralPath $stagedBinary).Length -ne $expectedSize) { throw 'Host binary size changed in transfer.' }
     $inputStream = [System.IO.File]::Open($stagedBinary, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::None)
     $outputStream = [System.IO.File]::Open($temporary, [System.IO.FileMode]::CreateNew, [System.IO.FileAccess]::Write, [System.IO.FileShare]::None)
@@ -557,7 +607,9 @@ try {
     } else {
         [System.IO.File]::Move($temporary, $hostPath)
     }
+    Assert-TrustedManagedPath $hostPath $controllerSid
     Set-Acl -LiteralPath $hostPath -AclObject (New-BlenderBoxFileAcl)
+    Assert-TrustedManagedPath $daemonPath $controllerSid
     Set-Acl -LiteralPath $daemonPath -AclObject (New-BlenderBoxFileAcl)
     Assert-CompatibleSessionBroker $daemonPath
     $action = New-ScheduledTaskAction -Execute $hostPath -Argument $expectedArguments -WorkingDirectory ([System.IO.Path]::GetDirectoryName($hostPath))

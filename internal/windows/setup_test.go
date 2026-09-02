@@ -122,6 +122,41 @@ func TestSetupAncestorsTrustOnlyControllerAndSystemAuthority(t *testing.T) {
 	}
 }
 
+func TestSetupTrustsExistingManagedPathsBeforePathBasedMutation(t *testing.T) {
+	for name, script := range map[string]string{
+		"prepare": prepareSetupScript(adapterTarget()),
+		"apply":   setupScript(adapterTarget(), SetupResult{HostSize: 1, HostSHA256: strings.Repeat("a", 64)}, `C:\BlenderBoxTest\.setup-host.bin`),
+	} {
+		for _, required := range []string{
+			"function Assert-TrustedManagedPath",
+			"[System.Security.AccessControl.FileSystemRights]::Write",
+			"[System.Security.AccessControl.FileSystemRights]::DeleteSubdirectoriesAndFiles",
+			"Assert-TrustedManagedPath $current $ControllerSid",
+			"Assert-TrustedManagedPath $root $controllerSid",
+			"Assert-TrustedManagedPath $daemonPath $controllerSid",
+			"Assert-TrustedManagedPath $launchPath $controllerSid",
+		} {
+			if !strings.Contains(script, required) {
+				t.Fatalf("%s script does not fail closed on existing managed authority: missing %q", name, required)
+			}
+		}
+		trustRoot := strings.LastIndex(script, "Assert-TrustedManagedPath $root $controllerSid")
+		setRoot := strings.LastIndex(script, "Set-Acl -LiteralPath $root")
+		if trustRoot < 0 || setRoot < 0 || trustRoot > setRoot {
+			t.Fatalf("%s script mutates the work root before trusting its current ACL", name)
+		}
+	}
+	apply := setupScript(adapterTarget(), SetupResult{HostSize: 1, HostSHA256: strings.Repeat("a", 64)}, `C:\BlenderBoxTest\.setup-host.bin`)
+	for _, required := range []string{
+		"Assert-TrustedManagedPath $directory.FullName $controllerSid",
+		"Assert-TrustedManagedPath $child.FullName $controllerSid",
+	} {
+		if !strings.Contains(apply, required) {
+			t.Fatalf("apply script does not seal existing state descendants: missing %q", required)
+		}
+	}
+}
+
 func TestSetupRequiresControllerToOwnInteractiveTaskIdentityBeforeMutation(t *testing.T) {
 	selected := adapterTarget()
 	selected.InteractiveUser = "task-user"
