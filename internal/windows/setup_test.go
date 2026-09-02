@@ -115,3 +115,17 @@ func TestSetupRejectsEmptyHostBinaryBeforeSSH(t *testing.T) {
 		t.Fatal("empty host binary reached SSH")
 	}
 }
+
+func TestSetupRejectsRemoteResultThatOmitsBinaryAttestation(t *testing.T) {
+	binary := []byte("bounded-windows-host-binary")
+	path := filepath.Join(t.TempDir(), "blender-box.exe")
+	if err := os.WriteFile(path, binary, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	fake := &scriptedSSH{outputs: [][]byte{nil, []byte(`{"status":"applied","applied":true}`)}}
+
+	_, err := Setup(context.Background(), fake, adapterTarget(), path, true)
+	if err == nil || !strings.Contains(err.Error(), "invalid contract") {
+		t.Fatalf("Setup() error = %v", err)
+	}
+}

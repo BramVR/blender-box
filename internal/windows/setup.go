@@ -82,13 +82,14 @@ func Setup(ctx context.Context, ssh SetupSSH, selected target.Target, source str
 	if err != nil {
 		return SetupResult{}, cleanupSetupUploads(ctx, ssh, selected, []string{stagedBinary, stagedScript}, fmt.Errorf("apply Windows setup: %w", err))
 	}
-	if err := json.Unmarshal(output, &result); err != nil {
+	var applied SetupResult
+	if err := json.Unmarshal(output, &applied); err != nil {
 		return SetupResult{}, fmt.Errorf("decode Windows setup result: %w", err)
 	}
-	if result.SchemaVersion != 1 || result.Status != "applied" || !result.Applied || result.HostSize != int64(len(contents)) || result.HostSHA256 != hex.EncodeToString(hash[:]) {
+	if applied.SchemaVersion != 1 || applied.Status != "applied" || !applied.Applied || applied.HostSize != int64(len(contents)) || applied.HostSHA256 != hex.EncodeToString(hash[:]) {
 		return SetupResult{}, fmt.Errorf("Windows setup returned an invalid contract")
 	}
-	return result, nil
+	return applied, nil
 }
 
 func powerShellArguments(script string) []string {
