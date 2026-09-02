@@ -33,7 +33,12 @@ function Normalize-Path([string]$Path) {
 }
 function Test-ConservativePathAccess([string]$Path, [string]$PrincipalSid, [System.Security.AccessControl.FileSystemRights]$RequiredRights, [bool]$RequireDirectAllow) {
     if (-not (Test-Path -LiteralPath $Path)) { return $false }
-    $rules = (Get-Acl -LiteralPath $Path).GetAccessRules($true, $true, [System.Security.Principal.SecurityIdentifier])
+    try {
+        $acl = Get-Acl -LiteralPath $Path -ErrorAction Stop
+        $rules = $acl.GetAccessRules($true, $true, [System.Security.Principal.SecurityIdentifier])
+    } catch {
+        return $false
+    }
     $allowedSids = if ($RequireDirectAllow) { @($PrincipalSid) } else { @($PrincipalSid, 'S-1-1-0', 'S-1-5-11', 'S-1-5-32-545') }
     [int64]$allowMask = 0
     [int64]$denyMask = 0
@@ -55,7 +60,7 @@ function Test-TrustedWriters([string]$Path, [string]$PrincipalSid) {
         'S-1-5-32-544',
         'S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464'
     )
-    $acl = Get-Acl -LiteralPath $Path
+    try { $acl = Get-Acl -LiteralPath $Path -ErrorAction Stop } catch { return $false }
     $ownerSid = Resolve-Sid ([string]$acl.Owner)
     if ($trustedWriters -notcontains $ownerSid) { return $false }
     $rules = $acl.GetAccessRules($true, $true, [System.Security.Principal.SecurityIdentifier])
@@ -76,7 +81,7 @@ function Test-TrustedAncestor([string]$Path, [string]$PrincipalSid) {
         'S-1-5-32-544',
         'S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464'
     )
-    $acl = Get-Acl -LiteralPath $Path
+    try { $acl = Get-Acl -LiteralPath $Path -ErrorAction Stop } catch { return $false }
     $ownerSid = Resolve-Sid ([string]$acl.Owner)
     if ($trustedWriters -notcontains $ownerSid) { return $false }
     $rules = $acl.GetAccessRules($true, $true, [System.Security.Principal.SecurityIdentifier])

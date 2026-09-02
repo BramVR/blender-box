@@ -163,6 +163,7 @@ func TestWindowsCheckPrintsVersionedJSONWithoutRemoteWrites(t *testing.T) {
 		"denymask",
 		"inheritonly",
 		"trustedwriters",
+		"try { $acl = get-acl",
 		"takeownership",
 		"getdirectoryname",
 		"getpathroot",
