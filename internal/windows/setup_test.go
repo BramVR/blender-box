@@ -112,9 +112,12 @@ func TestSetupPlansWithoutSSHAndAppliesOneBoundedHostBinary(t *testing.T) {
 
 func TestSetupAncestorsTrustOnlyControllerAndSystemAuthority(t *testing.T) {
 	prepare := prepareSetupScript(adapterTarget())
+	apply := setupScript(adapterTarget(), SetupResult{HostSize: 1, HostSHA256: strings.Repeat("a", 64)}, `C:\BlenderBoxTest\.setup-host.bin`)
 	if !strings.Contains(prepare, "function Assert-TrustedAncestors([string]$Path, [System.Security.Principal.SecurityIdentifier]$ControllerSid)") ||
 		!strings.Contains(prepare, "$trusted = @($ControllerSid.Value, 'S-1-5-18'") ||
-		strings.Contains(prepare, "$trusted = @($PrincipalSid.Value, $ControllerSid.Value") {
+		strings.Contains(prepare, "$trusted = @($PrincipalSid.Value, $ControllerSid.Value") ||
+		!strings.Contains(apply, "Assert-TrustedAncestors $root $controllerSid") ||
+		strings.Contains(apply, "Assert-TrustedAncestors $root $interactiveSid $controllerSid") {
 		t.Fatal("setup trusts the interactive task user to replace a work-root ancestor")
 	}
 }

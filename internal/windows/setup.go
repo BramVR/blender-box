@@ -515,7 +515,7 @@ try {
     if (-not (Test-Path -LiteralPath $blenderPath -PathType Leaf)) { throw 'Declared Blender executable is missing.' }
     $interactiveSid = ([System.Security.Principal.NTAccount]::new($interactiveUser)).Translate([System.Security.Principal.SecurityIdentifier])
     $controllerSid = $authenticatedControllerSid
-    Assert-TrustedAncestors $root $interactiveSid $controllerSid
+    Assert-TrustedAncestors $root $controllerSid
     Set-Acl -LiteralPath $root -AclObject (New-BlenderBoxRootAcl)
     $runsPath = [System.IO.Path]::Combine($root, 'runs')
     $receiptsPath = [System.IO.Path]::Combine($root, 'receipts')
