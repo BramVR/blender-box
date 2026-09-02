@@ -5,8 +5,8 @@ Windows setup previews a bounded host binary install by default and applies only
 ## Sub-features
 
 - `setup-plan` hashes and sizes the host binary without SSH or remote writes.
-- `setup-apply` stages the bounded binary and hash-verified setup program over SCP, then registers the fixed task.
-- `setup-postcheck` proves the applied state through the read-only check.
+- `setup-apply` refuses an active Host Lock, seals existing managed state without following reparse points, stages the non-empty bounded binary and hash-verified setup program over SCP, then registers the fixed task.
+- `setup-postcheck` proves the applied root, state-tree, executable, and task contract through the read-only check.
 
 ## How to get to it (user POV)
 

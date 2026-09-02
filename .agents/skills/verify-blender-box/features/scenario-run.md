@@ -9,7 +9,7 @@ Run stages one declared payload, launches Blender through the interactive task, 
 - `interactive-session` publishes one exact daemon Session identity, then waits for that same Session's process and socket health.
 - `start-replay` repeats only the identical fenced start request while an `IgnoreNew` task has not published an identity.
 - `long-call` carries the declared read timeout without dropping the Run deadline.
-- `evidence` returns hash-verified Scenario and viewport artifacts.
+- `evidence` returns non-empty hash-verified artifacts and independently matches viewport PNG dimensions to declared provenance.
 - `cleanup` reports exact Session stop, payload removal, Run-root removal, and lock release.
 
 ## How to get to it (user POV)
