@@ -129,10 +129,12 @@ func (adapter *Adapter) invokeJSON(ctx context.Context, selected target.Target, 
 		return fmt.Errorf("encode host %s request: %w", operation, err)
 	}
 	script := fmt.Sprintf(
-		"$ErrorActionPreference = 'Stop'\n& '%s' 'host' '%s' '--state-root' '%s'\nexit $LASTEXITCODE",
-		selected.HostExecutable,
-		operation,
-		selected.WorkRoot,
+		"$ErrorActionPreference = 'Stop'\n& %s %s %s %s %s\nexit $LASTEXITCODE",
+		powerShellLiteral(selected.HostExecutable),
+		powerShellLiteral("host"),
+		powerShellLiteral(operation),
+		powerShellLiteral("--state-root"),
+		powerShellLiteral(selected.WorkRoot),
 	)
 	arguments := []string{
 		"powershell.exe",

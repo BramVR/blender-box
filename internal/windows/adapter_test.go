@@ -141,6 +141,30 @@ func TestAdapterCarriesTypedAuthorityAcrossEveryHostOperation(t *testing.T) {
 	}
 }
 
+func TestAdapterEscapesTargetPathsAsPowerShellLiterals(t *testing.T) {
+	selected := adapterTarget()
+	selected.WorkRoot = `C:\Operator's Box`
+	selected.HostExecutable = `C:\Operator's Box\bin\blender-box.exe`
+	fake := &scriptedSSH{outputs: [][]byte{mustJSON(t, host.Acknowledgement{SchemaVersion: 1, Status: "acquired"})}}
+	claim := orchestrator.LockClaim{
+		SchemaVersion: 1,
+		RunID:         "bbx_01QUOTEDPATHRUNIDENTITY0000",
+		RequestID:     "req_01QUOTEDPATHREQUESTIDENTITY",
+		ControllerID:  "ctl_quoted-path-test",
+		Deadline:      time.Now().Add(time.Hour).UTC(),
+		RequestHash:   strings.Repeat("a", 64),
+		TaskName:      selected.TaskName,
+	}
+
+	if err := NewAdapter(fake).Acquire(context.Background(), selected, claim); err != nil {
+		t.Fatal(err)
+	}
+	script := decodedAdapterScript(t, fake.arguments[0])
+	if !strings.Contains(script, `& 'C:\Operator''s Box\bin\blender-box.exe'`) || !strings.Contains(script, `'--state-root' 'C:\Operator''s Box'`) {
+		t.Fatalf("target paths are not safe PowerShell literals: %s", script)
+	}
+}
+
 func adapterTarget() target.Target {
 	return target.Target{
 		SchemaVersion:           1,

@@ -151,6 +151,54 @@ func TestSetupPreservesExecutableUpdateAuthorityForSameAndSplitUsers(t *testing.
 	}
 }
 
+func TestSetupEscapesEveryPowerShellLiteralBoundary(t *testing.T) {
+	selected := adapterTarget()
+	selected.WorkRoot = `C:\Operator's Box`
+	selected.HostExecutable = `C:\Operator's Box\bin\blender-box.exe`
+	selected.SessionBrokerExecutable = `C:\Operator's Box\daemon\blendersessiond.exe`
+	selected.BlenderExecutable = `C:\Program Files\Blender's Build\blender.exe`
+	selected.InteractiveUser = `HOST\O'Brien`
+	selected.SSHUser = `HOST\O'Brien`
+	selected.TaskName = `Blender's Box`
+	stagedBinary := `C:\Operator's Box\.setup-host.bin`
+	stagedScript := `C:\Operator's Box\.setup-script.ps1`
+
+	prepare := prepareSetupScript(selected)
+	for _, want := range []string{
+		`$root = 'C:\Operator''s Box'`,
+		`$daemonPath = 'C:\Operator''s Box\daemon\blendersessiond.exe'`,
+		`$blenderPath = 'C:\Program Files\Blender''s Build\blender.exe'`,
+		`$interactiveUser = 'HOST\O''Brien'`,
+	} {
+		if !strings.Contains(prepare, want) {
+			t.Fatalf("prepare script missing escaped literal %q", want)
+		}
+	}
+
+	apply := setupScript(selected, SetupResult{HostSize: 1, HostSHA256: strings.Repeat("a", 64)}, stagedBinary)
+	for _, want := range []string{
+		`$root = 'C:\Operator''s Box'`,
+		`$taskName = 'Blender''s Box'`,
+		`$expectedArguments = 'host run-request --state-root "C:\Operator''s Box"'`,
+		`$stagedBinary = 'C:\Operator''s Box\.setup-host.bin'`,
+	} {
+		if !strings.Contains(apply, want) {
+			t.Fatalf("apply script missing escaped literal %q", want)
+		}
+	}
+
+	bootstrap := setupScriptBootstrap(stagedScript, 1, strings.Repeat("a", 64))
+	if !strings.Contains(bootstrap, `$path = 'C:\Operator''s Box\.setup-script.ps1'`) {
+		t.Fatalf("bootstrap path is not escaped: %s", bootstrap)
+	}
+	fake := &scriptedSSH{outputs: [][]byte{nil}}
+	_ = cleanupSetupUploads(context.Background(), fake, selected, []string{stagedBinary, stagedScript}, context.Canceled)
+	cleanup := decodedAdapterScript(t, fake.arguments[0])
+	if strings.Count(cleanup, `'C:\Operator''s Box\`) != 4 {
+		t.Fatalf("cleanup paths are not escaped: %s", cleanup)
+	}
+}
+
 func TestSetupRejectsEmptyHostBinaryBeforeSSH(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "blender-box.exe")
 	if err := os.WriteFile(path, nil, 0o600); err != nil {

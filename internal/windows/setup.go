@@ -134,20 +134,20 @@ func writeSetupScript(script string) (string, error) {
 
 func setupScriptBootstrap(path string, size int64, expectedHash string) string {
 	return fmt.Sprintf(`$ErrorActionPreference = 'Stop'
-$path = '%s'
+$path = %s
 try {
     $bytes = [IO.File]::ReadAllBytes($path)
     if ($bytes.Length -ne %d) { throw 'Setup script size changed in transfer.' }
     $sha = [Security.Cryptography.SHA256]::Create()
     try { $actualHash = [BitConverter]::ToString($sha.ComputeHash($bytes)).Replace('-', '').ToLowerInvariant() }
     finally { $sha.Dispose() }
-    if ($actualHash -cne '%s') { throw 'Setup script SHA256 changed in transfer.' }
+    if ($actualHash -cne %s) { throw 'Setup script SHA256 changed in transfer.' }
     $script = [Text.Encoding]::UTF8.GetString($bytes)
     Remove-Item -Force -LiteralPath $path
     & ([ScriptBlock]::Create($script))
 } finally {
     if (Test-Path -LiteralPath $path -PathType Leaf) { Remove-Item -Force -LiteralPath $path }
-}`, path, size, expectedHash)
+}`, powerShellLiteral(path), size, powerShellLiteral(expectedHash))
 }
 
 func cleanupSetupUploads(ctx context.Context, ssh SetupSSH, selected target.Target, paths []string, cause error) error {
@@ -155,7 +155,8 @@ func cleanupSetupUploads(ctx context.Context, ssh SetupSSH, selected target.Targ
 	defer cancel()
 	cleanupScript := "$ErrorActionPreference = 'Stop'\n"
 	for _, path := range paths {
-		cleanupScript += fmt.Sprintf("if (Test-Path -LiteralPath '%s' -PathType Leaf) { Remove-Item -Force -LiteralPath '%s' }\n", path, path)
+		literal := powerShellLiteral(path)
+		cleanupScript += fmt.Sprintf("if (Test-Path -LiteralPath %s -PathType Leaf) { Remove-Item -Force -LiteralPath %s }\n", literal, literal)
 	}
 	if _, err := ssh.Run(cleanupCtx, selected.SSHAlias, powerShellArguments(cleanupScript), nil); err != nil {
 		return errors.Join(cause, fmt.Errorf("clean setup uploads: %w", err))
@@ -276,17 +277,17 @@ function Set-BlenderBoxDirectoryPath([string]$Root, [string]$Directory, [System.
 
 func prepareSetupScript(selected target.Target) string {
 	header := fmt.Sprintf(`$ErrorActionPreference = 'Stop'
-$root = '%s'
-$daemonPath = '%s'
-$blenderPath = '%s'
-$hostPath = '%s'
+$root = %s
+$daemonPath = %s
+$blenderPath = %s
+$hostPath = %s
 $hostDirectory = [System.IO.Path]::GetDirectoryName($hostPath)
 $daemonDirectory = [System.IO.Path]::GetDirectoryName($daemonPath)
-$interactiveUser = '%s'
-$expectedControllerUser = '%s'
+$interactiveUser = %s
+$expectedControllerUser = %s
 $lockPath = [System.IO.Path]::Combine($root, 'host-lock.json')
 $operationPath = [System.IO.Path]::Combine($root, '.operation.lock')
-`, selected.WorkRoot, selected.SessionBrokerExecutable, selected.BlenderExecutable, selected.HostExecutable, selected.InteractiveUser, selected.SSHUser)
+`, powerShellLiteral(selected.WorkRoot), powerShellLiteral(selected.SessionBrokerExecutable), powerShellLiteral(selected.BlenderExecutable), powerShellLiteral(selected.HostExecutable), powerShellLiteral(selected.InteractiveUser), powerShellLiteral(selected.SSHUser))
 	return header + setupOperationFunctions + `if (-not (Test-Path -LiteralPath $root -PathType Container)) { throw 'Declared work root is missing; provision blendersessiond inside it first.' }
 Assert-NoReparsePath $root
 Assert-NoReparsePath $hostDirectory
@@ -371,19 +372,19 @@ func setupScript(selected target.Target, plan SetupResult, stagedBinary string) 
 	return fmt.Sprintf(`$ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 Set-StrictMode -Version Latest
-$root = '%s'
-$hostPath = '%s'
-$daemonPath = '%s'
-$blenderPath = '%s'
+$root = %s
+$hostPath = %s
+$daemonPath = %s
+$blenderPath = %s
 $hostDirectory = [System.IO.Path]::GetDirectoryName($hostPath)
 $daemonDirectory = [System.IO.Path]::GetDirectoryName($daemonPath)
-$interactiveUser = '%s'
-$expectedControllerUser = '%s'
-$taskName = '%s'
-$expectedArguments = '%s'
+$interactiveUser = %s
+$expectedControllerUser = %s
+$taskName = %s
+$expectedArguments = %s
 $expectedSize = [int64]%d
-$expectedHash = '%s'
-$stagedBinary = '%s'
+$expectedHash = %s
+$stagedBinary = %s
 $temporary = $hostPath + '.setup-' + [Guid]::NewGuid().ToString('N')
 $backup = $hostPath + '.setup-backup-' + [Guid]::NewGuid().ToString('N')
 $lockPath = [System.IO.Path]::Combine($root, 'host-lock.json')
@@ -575,5 +576,5 @@ try {
     if (Test-Path -LiteralPath $stagedBinary) { Remove-Item -Force -LiteralPath $stagedBinary }
     if ($null -ne $operation) { try { $operation.Unlock(0, 1) } finally { $operation.Dispose() } }
 }
-`, selected.WorkRoot, selected.HostExecutable, selected.SessionBrokerExecutable, selected.BlenderExecutable, selected.InteractiveUser, selected.SSHUser, selected.TaskName, taskArguments, plan.HostSize, plan.HostSHA256, stagedBinary, setupOperationFunctions)
+`, powerShellLiteral(selected.WorkRoot), powerShellLiteral(selected.HostExecutable), powerShellLiteral(selected.SessionBrokerExecutable), powerShellLiteral(selected.BlenderExecutable), powerShellLiteral(selected.InteractiveUser), powerShellLiteral(selected.SSHUser), powerShellLiteral(selected.TaskName), powerShellLiteral(taskArguments), plan.HostSize, powerShellLiteral(plan.HostSHA256), powerShellLiteral(stagedBinary), setupOperationFunctions)
 }
