@@ -40,15 +40,12 @@ func (runtime *Runtime) Launch(ctx context.Context, taskName string) error {
 }
 
 func (runtime *Runtime) Start(ctx context.Context, request DaemonStart) (orchestrator.SessionID, error) {
-	output, err := runtime.processes.Run(ctx, request.Executable, []string{
+	output, runErr := runtime.processes.Run(ctx, request.Executable, []string{
 		"start",
 		"--name", request.Name,
 		"--blender", request.BlenderExecutable,
 		"--json",
 	}, request.Environment)
-	if err != nil {
-		return "", err
-	}
 	var result struct {
 		SchemaVersion int    `json:"schema_version"`
 		Status        string `json:"status"`
@@ -57,12 +54,15 @@ func (runtime *Runtime) Start(ctx context.Context, request DaemonStart) (orchest
 		} `json:"session"`
 	}
 	if err := decodeExtensibleJSON(output, &result, maxProcessOutput); err != nil || result.SchemaVersion != 1 || result.Status != "started" {
+		if runErr != nil {
+			return "", runErr
+		}
 		return "", fmt.Errorf("blendersessiond start returned an invalid contract")
 	}
 	if err := result.Session.SessionID.Validate(); err != nil {
 		return "", err
 	}
-	return result.Session.SessionID, nil
+	return result.Session.SessionID, runErr
 }
 
 func (runtime *Runtime) Recover(ctx context.Context, request DaemonRecover) (orchestrator.SessionID, bool, error) {

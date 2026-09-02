@@ -12,6 +12,7 @@ import (
 	"image/png"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -158,6 +159,15 @@ type publicationFailureDaemon struct {
 	sessionID          orchestrator.SessionID
 	rollbackContextErr error
 	stopCalls          int
+}
+
+type ambiguousStartDaemon struct {
+	fakeDaemon
+	sessionID orchestrator.SessionID
+}
+
+func (daemon *ambiguousStartDaemon) Start(context.Context, DaemonStart) (orchestrator.SessionID, error) {
+	return daemon.sessionID, errors.New("connection closed after start")
 }
 
 func (daemon *deadlineReadyDaemon) WaitReady(context.Context, DaemonReady) error {
@@ -861,6 +871,30 @@ func TestRunRootCleanupPreservesOwnershipUntilOtherEntriesAreRemoved(t *testing.
 	}
 }
 
+func TestRunRootCleanupRejectsDescendantSymlinkWithoutTouchingTarget(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("unprivileged symlink creation is not portable on Windows")
+	}
+	runRoot := t.TempDir()
+	outside := t.TempDir()
+	outsideFile := filepath.Join(outside, "preserve.txt")
+	if err := os.WriteFile(filepath.Join(runRoot, "ownership.json"), []byte("owned\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(outsideFile, []byte("preserve"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(runRoot, "evidence")); err != nil {
+		t.Fatal(err)
+	}
+	if err := removeRunRootPreservingOwnership(runRoot, os.RemoveAll); err == nil || !strings.Contains(err.Error(), "reparse") {
+		t.Fatalf("cleanup error = %v", err)
+	}
+	if contents, err := os.ReadFile(outsideFile); err != nil || string(contents) != "preserve" {
+		t.Fatalf("outside target changed: %q, error = %v", contents, err)
+	}
+}
+
 func TestRunRootCleanupRetriesTransientSharingViolation(t *testing.T) {
 	runRoot := t.TempDir()
 	if err := os.WriteFile(filepath.Join(runRoot, "ownership.json"), []byte("owned\n"), 0o600); err != nil {
@@ -1140,6 +1174,58 @@ func TestSettleRecoversSessionStartedBeforeHostLockPublication(t *testing.T) {
 	}
 	if !cleanup.Known() || len(daemon.stops) != 1 || daemon.stops[0].SessionID != daemon.recovered {
 		t.Fatalf("cleanup = %+v, stops = %+v", cleanup, daemon.stops)
+	}
+}
+
+func TestExecutePendingPublishesIdentityBeforeReleasingLaunchFence(t *testing.T) {
+	root := t.TempDir()
+	now := time.Now().UTC()
+	service := NewService(Dependencies{Tasks: &fakeTaskLauncher{}, Daemon: &fakeDaemon{}, Now: func() time.Time { return now }})
+	request := stageHostTestRun(t, service, root, now, false)
+	if _, err := service.Start(context.Background(), root, request); err != nil {
+		t.Fatal(err)
+	}
+	launchWasFree := false
+	service.writeLock = func(path string, lock lockRecord) error {
+		if lock.SessionID != "" {
+			release, acquired, err := tryAcquireLaunch(root)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if acquired {
+				launchWasFree = true
+				release()
+			}
+		}
+		return writeLockAtomic(path, lock)
+	}
+	if err := service.ExecutePending(context.Background(), root); err != nil {
+		t.Fatal(err)
+	}
+	if launchWasFree {
+		t.Fatal("launch fence was released before Session identity publication")
+	}
+}
+
+func TestExecutePendingPreservesValidIdentityReturnedWithStartError(t *testing.T) {
+	root := t.TempDir()
+	now := time.Now().UTC()
+	daemon := &ambiguousStartDaemon{sessionID: "bss_ambiguous-start-session-identity-123456"}
+	service := NewService(Dependencies{Tasks: &fakeTaskLauncher{}, Daemon: daemon, Now: func() time.Time { return now }})
+	request := stageHostTestRun(t, service, root, now, false)
+	if _, err := service.Start(context.Background(), root, request); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.ExecutePending(context.Background(), root); err == nil {
+		t.Fatal("ambiguous daemon start unexpectedly succeeded")
+	}
+	receipt, err := service.Status(root, StatusRequest{SchemaVersion: 1, RunID: request.Claim.RunID})
+	if err != nil || receipt.SessionID != daemon.sessionID {
+		t.Fatalf("receipt = %+v, error = %v", receipt, err)
+	}
+	cleanup, err := service.Settle(context.Background(), root, settleHostRequest(receipt))
+	if err != nil || !cleanup.Known() || len(daemon.stops) != 1 || daemon.stops[0].SessionID != daemon.sessionID {
+		t.Fatalf("cleanup = %+v, stops = %+v, error = %v", cleanup, daemon.stops, err)
 	}
 }
 

@@ -49,6 +49,17 @@ func TestRuntimeTreatsExactStoppedSessionAbsenceAsIdempotent(t *testing.T) {
 	assertArguments(t, fake.arguments[0], "stop", "--name", "blender-box-test", "--expect-session-id", "bss_exact-runtime-session-identity-123456", "--json")
 }
 
+func TestRuntimePreservesStartedIdentityAlongsideProcessError(t *testing.T) {
+	fake := &fakeProcessRunner{
+		outputs: [][]byte{[]byte(`{"schema_version":1,"status":"started","session":{"session_id":"bss_ambiguous-start-session-identity-123456"}}`)},
+		errors:  []error{errors.New("connection closed after response")},
+	}
+	sessionID, err := NewRuntime(fake).Start(context.Background(), DaemonStart{Executable: `C:\Bin\blendersessiond.exe`, Name: "blender-box-test"})
+	if sessionID != "bss_ambiguous-start-session-identity-123456" || err == nil {
+		t.Fatalf("Start() Session ID = %q, error = %v", sessionID, err)
+	}
+}
+
 func TestRuntimeRejectsNotFoundWithAReplacementIdentity(t *testing.T) {
 	fake := &fakeProcessRunner{
 		outputs: [][]byte{[]byte(`{"schema_version":1,"status":"not-found","session":{"session_id":"bss_replacement-runtime-session-identity-123456"}}`)},

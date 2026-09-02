@@ -436,6 +436,11 @@ func (service *Service) ExecutePending(ctx context.Context, root string) error {
 		}
 		return service.failExecutionWithCause(root, request, "Session launch lock failed", err)
 	}
+	defer func() {
+		if launchRelease != nil {
+			launchRelease()
+		}
+	}()
 	locked = false
 	release()
 	sessionID, startErr := service.daemon.Start(runCtx, DaemonStart{
@@ -444,7 +449,6 @@ func (service *Service) ExecutePending(ctx context.Context, root string) error {
 		BlenderExecutable: request.Body.BlenderExecutable,
 		Environment:       environment,
 	})
-	launchRelease()
 	reconcileCtx, cancelReconcile := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
 	defer cancelReconcile()
 	release, err = acquireOperation(reconcileCtx, root)
@@ -459,13 +463,24 @@ func (service *Service) ExecutePending(ctx context.Context, root string) error {
 	if err != nil {
 		return err
 	}
-	if startErr != nil {
-		if runCtx.Err() != nil {
-			startErr = runCtx.Err()
+	identityErr := sessionID.Validate()
+	if startErr != nil && identityErr != nil {
+		recovered, found, recoverErr := service.recoverUnpublishedSession(reconcileCtx, root, request.Claim, request.Body.SessionBrokerExecutable, request.Body.SessionName)
+		if recoverErr != nil {
+			return service.failReceiptWithCause(root, receipt, "Session start recovery failed", recoverErr)
 		}
-		return service.failReceiptWithCause(root, receipt, "Session start failed", startErr)
+		if found {
+			sessionID = recovered
+			identityErr = sessionID.Validate()
+		}
 	}
-	if err := sessionID.Validate(); err != nil {
+	if identityErr != nil {
+		if startErr != nil {
+			if runCtx.Err() != nil {
+				startErr = runCtx.Err()
+			}
+			return service.failReceiptWithCause(root, receipt, "Session start failed", startErr)
+		}
 		return service.failReceipt(root, receipt, "Session daemon returned an invalid identity")
 	}
 	lock.SessionID = sessionID
@@ -479,12 +494,27 @@ func (service *Service) ExecutePending(ctx context.Context, root string) error {
 		return service.failExecution(root, request, "Session identity publication failed; exact Session was rolled back")
 	}
 	receipt = orchestrator.RunReceipt{SchemaVersion: 1, Claim: request.Claim, State: orchestrator.StateRunning, SessionID: sessionID}
+	if startErr != nil {
+		if runCtx.Err() != nil {
+			startErr = runCtx.Err()
+		}
+		receipt.State = orchestrator.StateFailed
+		receipt.Error = "Session start returned an error after publishing an identity"
+		if err := service.writeReceipt(root, receipt); err != nil {
+			return errors.Join(startErr, err)
+		}
+		launchRelease()
+		launchRelease = nil
+		return startErr
+	}
 	if err := service.writeReceipt(root, receipt); err != nil {
 		receipt.State = orchestrator.StateCleanupFailed
 		receipt.Error = "Session started but its running receipt could not be published"
 		_ = service.writeReceipt(root, receipt)
 		return err
 	}
+	launchRelease()
+	launchRelease = nil
 	resultDirectory := filepath.Join(runPath(root, request.Claim.RunID), "evidence", "result")
 	if err := os.MkdirAll(resultDirectory, 0o700); err != nil {
 		return service.failReceipt(root, receipt, "Scenario evidence directory failed")
@@ -942,7 +972,7 @@ func removeRunRootPreservingOwnership(runRoot string, removeAll func(string) err
 		if strings.EqualFold(entry.Name(), "ownership.json") {
 			continue
 		}
-		if err := removeAll(filepath.Join(runRoot, entry.Name())); err != nil {
+		if err := removeTreeNoReparse(filepath.Join(runRoot, entry.Name()), removeAll); err != nil {
 			return err
 		}
 	}
@@ -951,6 +981,30 @@ func removeRunRootPreservingOwnership(runRoot string, removeAll func(string) err
 		return err
 	}
 	return os.Remove(runRoot)
+}
+
+func removeTreeNoReparse(path string, remove func(string) error) error {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return err
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("Run cleanup encountered a reparse point")
+	}
+	if info.IsDir() {
+		entries, err := os.ReadDir(path)
+		if err != nil {
+			return err
+		}
+		for _, entry := range entries {
+			if err := removeTreeNoReparse(filepath.Join(path, entry.Name()), remove); err != nil {
+				return err
+			}
+		}
+	} else if !info.Mode().IsRegular() {
+		return fmt.Errorf("Run cleanup encountered a non-regular entry")
+	}
+	return remove(path)
 }
 
 func (service *Service) callScenario(ctx context.Context, root string, request orchestrator.RunRequest, sessionID orchestrator.SessionID, environment map[string]string) ([]byte, error) {
