@@ -31,6 +31,18 @@ function Normalize-Path([string]$Path) {
     if ([string]::IsNullOrWhiteSpace($Path)) { return $null }
     try { return [System.IO.Path]::GetFullPath($Path) } catch { return $null }
 }
+function Expand-FileSystemMask([int64]$Mask) {
+    [int64]$genericRead = 2147483648
+    [int64]$genericWrite = 1073741824
+    [int64]$genericExecute = 536870912
+    [int64]$genericAll = 268435456
+    [int64]$expanded = $Mask
+    if (($Mask -band $genericRead) -ne 0) { $expanded = $expanded -bor 0x00120089 }
+    if (($Mask -band $genericWrite) -ne 0) { $expanded = $expanded -bor 0x00120116 }
+    if (($Mask -band $genericExecute) -ne 0) { $expanded = $expanded -bor 0x001200A0 }
+    if (($Mask -band $genericAll) -ne 0) { $expanded = $expanded -bor 0x001F01FF }
+    return $expanded
+}
 function Test-ConservativePathAccess([string]$Path, [string]$PrincipalSid, [System.Security.AccessControl.FileSystemRights]$RequiredRights, [bool]$RequireDirectAllow) {
     if (-not (Test-Path -LiteralPath $Path -ErrorAction SilentlyContinue)) { return $false }
     try {
@@ -45,7 +57,7 @@ function Test-ConservativePathAccess([string]$Path, [string]$PrincipalSid, [Syst
     $requiredMask = [int64]$RequiredRights
     foreach ($rule in $rules) {
 		if (($rule.PropagationFlags -band [System.Security.AccessControl.PropagationFlags]::InheritOnly) -ne 0) { continue }
-        $ruleMask = [int64]$rule.FileSystemRights
+        $ruleMask = Expand-FileSystemMask ([int64]$rule.FileSystemRights)
         # This process does not own the interactive task token. Treat every deny as applicable so inspection can fail closed instead of guessing group membership.
         if ($rule.AccessControlType -eq [System.Security.AccessControl.AccessControlType]::Deny -and ($ruleMask -band $requiredMask) -ne 0) { $denyMask = $denyMask -bor $ruleMask }
         if ($rule.AccessControlType -eq [System.Security.AccessControl.AccessControlType]::Allow -and $allowedSids -contains $rule.IdentityReference.Value) { $allowMask = $allowMask -bor $ruleMask }
@@ -72,7 +84,8 @@ function Test-TrustedWriters([string]$Path, [string]$PrincipalSid, [bool]$Protec
         if ($inheritOnly -and -not $ProtectChildren) { continue }
         if ($rule.AccessControlType -ne [System.Security.AccessControl.AccessControlType]::Allow) { continue }
         if ($trustedWriters -contains $rule.IdentityReference.Value) { continue }
-        if (([int64]$rule.FileSystemRights -band $writeMask) -ne 0) { return $false }
+        $ruleMask = Expand-FileSystemMask ([int64]$rule.FileSystemRights)
+        if (($ruleMask -band $writeMask) -ne 0) { return $false }
     }
     return $true
 }
@@ -94,7 +107,8 @@ function Test-TrustedAncestor([string]$Path, [string]$PrincipalSid) {
         if (($rule.PropagationFlags -band [System.Security.AccessControl.PropagationFlags]::InheritOnly) -ne 0) { continue }
         if ($rule.AccessControlType -ne [System.Security.AccessControl.AccessControlType]::Allow) { continue }
         if ($trustedWriters -contains $rule.IdentityReference.Value) { continue }
-        if (([int64]$rule.FileSystemRights -band $authorityMask) -ne 0) { return $false }
+        $ruleMask = Expand-FileSystemMask ([int64]$rule.FileSystemRights)
+        if (($ruleMask -band $authorityMask) -ne 0) { return $false }
     }
     return $true
 }

@@ -158,6 +158,8 @@ func TestWindowsCheckPrintsVersionedJSONWithoutRemoteWrites(t *testing.T) {
 		"getsecuritydescriptor(7)",
 		"[int]$ace.aceflags",
 		"genericexecute",
+		"genericread",
+		"expand-filesystemmask",
 		"taskexecute",
 		"reparsepoint",
 		"normalize-path",
