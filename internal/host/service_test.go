@@ -5,9 +5,11 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -17,10 +19,42 @@ import (
 
 type fakeTaskLauncher struct {
 	taskName string
+	launches int
+}
+
+type stoppingDaemon struct {
+	started chan struct{}
+	stopped chan struct{}
+	once    sync.Once
+	stops   []DaemonStop
+}
+
+func (daemon *stoppingDaemon) Start(context.Context, DaemonStart) (orchestrator.SessionID, error) {
+	return "bss_exact-stoppable-session-identity-123456", nil
+}
+
+func (daemon *stoppingDaemon) Call(ctx context.Context, request DaemonCall) (json.RawMessage, error) {
+	if request.Command != "execute_code" {
+		return nil, errors.New("unexpected capture after stop")
+	}
+	close(daemon.started)
+	select {
+	case <-daemon.stopped:
+		return nil, errors.New("Session stopped")
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+}
+
+func (daemon *stoppingDaemon) Stop(_ context.Context, request DaemonStop) error {
+	daemon.stops = append(daemon.stops, request)
+	daemon.once.Do(func() { close(daemon.stopped) })
+	return nil
 }
 
 func (fake *fakeTaskLauncher) Launch(_ context.Context, taskName string) error {
 	fake.taskName = taskName
+	fake.launches++
 	return nil
 }
 
@@ -259,6 +293,202 @@ func TestRepeatedAcquireDoesNotRegressReceiptState(t *testing.T) {
 	}
 	if got.State != orchestrator.StateStaged {
 		t.Fatalf("receipt state regressed to %q", got.State)
+	}
+}
+
+func TestHostOperationLockSurvivesPriorProcessExit(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, ".operation.lock"), []byte("stale-owner\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	release, err := acquireOperation(ctx, root)
+	if err != nil {
+		t.Fatalf("acquire OS-released operation lock: %v", err)
+	}
+	release()
+}
+
+func TestSettleReleasesExactPartialAcquireWithoutReceipt(t *testing.T) {
+	root := t.TempDir()
+	now := time.Now().UTC()
+	service := NewService(Dependencies{Now: func() time.Time { return now }})
+	claim := testHostClaim(now, "PARTIALACQUIRE")
+	if err := writeJSONAtomic(lockPath(root), lockRecord{SchemaVersion: 1, Claim: claim}); err != nil {
+		t.Fatal(err)
+	}
+	cleanup, err := service.Settle(context.Background(), root, SettleRequest{
+		SchemaVersion: 1,
+		Receipt:       orchestrator.RunReceipt{SchemaVersion: 1, Claim: claim, State: orchestrator.StateAccepted},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cleanup.Known() {
+		t.Fatalf("cleanup = %+v", cleanup)
+	}
+	if _, err := os.Stat(lockPath(root)); !os.IsNotExist(err) {
+		t.Fatalf("Host Lock remains: %v", err)
+	}
+}
+
+func TestStartRehashesPublishedPayloadBeforeLaunch(t *testing.T) {
+	root := t.TempDir()
+	now := time.Now().UTC()
+	service := NewService(Dependencies{Tasks: &fakeTaskLauncher{}, Now: func() time.Time { return now }})
+	request := stageHostTestRun(t, service, root, now, false)
+	path := filepath.Join(runPath(root, request.Claim.RunID), "payload", "scenario.py")
+	if err := os.WriteFile(path, []byte("tampered after transfer\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, err := service.Start(context.Background(), root, request)
+	if err == nil || !strings.Contains(err.Error(), "published payload") {
+		t.Fatalf("Start() error = %v, want published payload validation", err)
+	}
+}
+
+func TestExactStopCanInterruptLongScenarioCall(t *testing.T) {
+	root := t.TempDir()
+	now := time.Now().UTC()
+	daemon := &stoppingDaemon{started: make(chan struct{}), stopped: make(chan struct{})}
+	service := NewService(Dependencies{Tasks: &fakeTaskLauncher{}, Daemon: daemon, Now: func() time.Time { return now }})
+	request := stageHostTestRun(t, service, root, now, false)
+	starting, err := service.Start(context.Background(), root, request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	executionDone := make(chan error, 1)
+	go func() { executionDone <- service.ExecutePending(context.Background(), root) }()
+	select {
+	case <-daemon.started:
+	case <-time.After(time.Second):
+		t.Fatal("Scenario call did not start")
+	}
+	settleCtx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	cleanup, err := service.Settle(settleCtx, root, SettleRequest{SchemaVersion: 1, Receipt: starting})
+	if err != nil {
+		t.Fatalf("settle during Scenario call: %v", err)
+	}
+	if !cleanup.Known() {
+		t.Fatalf("cleanup = %+v", cleanup)
+	}
+	select {
+	case <-executionDone:
+	case <-time.After(time.Second):
+		t.Fatal("Scheduled Task did not observe exact stop")
+	}
+	if len(daemon.stops) != 1 || daemon.stops[0].SessionID != "bss_exact-stoppable-session-identity-123456" {
+		t.Fatalf("daemon stops = %+v", daemon.stops)
+	}
+	receipt, err := service.Status(root, StatusRequest{SchemaVersion: 1, RunID: request.Claim.RunID})
+	if err != nil || !receipt.Cleanup.Known() {
+		t.Fatalf("final receipt = %+v, error = %v", receipt, err)
+	}
+}
+
+func TestExactStartReplayReturnsDurableReceiptWithoutRelaunch(t *testing.T) {
+	root := t.TempDir()
+	now := time.Now().UTC()
+	launcher := &fakeTaskLauncher{}
+	daemon := &fakeDaemon{}
+	service := NewService(Dependencies{Tasks: launcher, Daemon: daemon, Now: func() time.Time { return now }})
+	request := stageHostTestRun(t, service, root, now, false)
+	if _, err := service.Start(context.Background(), root, request); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.ExecutePending(context.Background(), root); err != nil {
+		t.Fatal(err)
+	}
+	replayed, err := service.Start(context.Background(), root, request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if replayed.State != orchestrator.StateComplete || replayed.SessionID == "" {
+		t.Fatalf("replayed receipt = %+v", replayed)
+	}
+	if launcher.launches != 1 {
+		t.Fatalf("task launches = %d, want 1", launcher.launches)
+	}
+}
+
+func TestSettleReconcilesSessionPublishedOnlyInHostLock(t *testing.T) {
+	root := t.TempDir()
+	now := time.Now().UTC()
+	daemon := &fakeDaemon{}
+	service := NewService(Dependencies{Tasks: &fakeTaskLauncher{}, Daemon: daemon, Now: func() time.Time { return now }})
+	request := stageHostTestRun(t, service, root, now, false)
+	starting, err := service.Start(context.Background(), root, request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lock, err := service.readLock(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lock.SessionID = "bss_exact-published-lock-session-123456"
+	if err := writeJSONAtomic(lockPath(root), lock); err != nil {
+		t.Fatal(err)
+	}
+	cleanup, err := service.Settle(context.Background(), root, SettleRequest{SchemaVersion: 1, Receipt: starting})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cleanup.Known() || len(daemon.stops) != 1 || daemon.stops[0].SessionID != lock.SessionID {
+		t.Fatalf("cleanup = %+v, stops = %+v", cleanup, daemon.stops)
+	}
+}
+
+func stageHostTestRun(t *testing.T, service *Service, root string, now time.Time, capture bool) orchestrator.RunRequest {
+	t.Helper()
+	script := []byte("print scenario result\n")
+	hash := sha256.Sum256(script)
+	manifest := payload.Payload{
+		SchemaVersion: 1,
+		Files: []payload.File{{
+			Source:      "scenario.py",
+			Destination: "scenario.py",
+			Size:        int64(len(script)),
+			SHA256:      hex.EncodeToString(hash[:]),
+		}},
+		Scenario: payload.Scenario{Script: "scenario.py", ReadTimeoutSeconds: 600, CaptureViewport: capture},
+	}
+	body := orchestrator.RequestBody{
+		SchemaVersion:           1,
+		SessionName:             "blender-box-host-test",
+		BlenderExecutable:       `C:\Fake\blender.exe`,
+		SessionBrokerExecutable: `C:\Fake\blendersessiond.exe`,
+		Payload:                 manifest,
+	}
+	bodyJSON, err := json.Marshal(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	requestHash := sha256.Sum256(bodyJSON)
+	claim := testHostClaim(now, "HOSTSTAGETEST")
+	claim.RequestHash = hex.EncodeToString(requestHash[:])
+	request := orchestrator.RunRequest{Claim: claim, Body: body}
+	if err := service.Acquire(context.Background(), root, AcquireRequest{SchemaVersion: 1, Claim: claim}); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.Stage(context.Background(), root, StageRequest{SchemaVersion: 1, Claim: claim, Files: []StageFile{{
+		Destination: "scenario.py", Size: int64(len(script)), SHA256: hex.EncodeToString(hash[:]), Contents: script,
+	}}}); err != nil {
+		t.Fatal(err)
+	}
+	return request
+}
+
+func testHostClaim(now time.Time, suffix string) orchestrator.LockClaim {
+	return orchestrator.LockClaim{
+		SchemaVersion: 1,
+		RunID:         orchestrator.RunID("bbx_01" + suffix + "RUNIDENTITY0000000000"),
+		RequestID:     orchestrator.RequestID("req_01" + suffix + "REQUESTIDENTITY000000"),
+		ControllerID:  "ctl_host-test",
+		Deadline:      now.Add(20 * time.Minute),
+		RequestHash:   strings.Repeat("a", 64),
+		TaskName:      "BlenderBoxTest",
 	}
 }
 

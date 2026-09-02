@@ -630,6 +630,30 @@ func TestStatusAllowsFailedReceiptBeforeSessionStart(t *testing.T) {
 	}
 }
 
+func TestStatusAllowsStartingReceiptBeforeSessionPublication(t *testing.T) {
+	claim := LockClaim{
+		SchemaVersion: 1,
+		RunID:         "bbx_01TESTRUNIDENTITY0000000000",
+		RequestID:     "req_01TESTREQUESTIDENTITY00000",
+		ControllerID:  "controller-test",
+		Deadline:      time.Now().Add(time.Hour).UTC(),
+		RequestHash:   strings.Repeat("a", 64),
+		TaskName:      "BlenderBoxTest",
+	}
+	host := &recoveryHost{fakeHost: fakeHost{receipt: RunReceipt{
+		SchemaVersion: 1,
+		Claim:         claim,
+		State:         StateStarting,
+	}}}
+	status, err := New(host).Status(context.Background(), target.Target{TaskName: claim.TaskName}, claim.RunID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status.State != StateStarting || status.SessionID != "" {
+		t.Fatalf("status = %+v", status)
+	}
+}
+
 func testIntent(t *testing.T) RunIntent {
 	t.Helper()
 	return RunIntent{

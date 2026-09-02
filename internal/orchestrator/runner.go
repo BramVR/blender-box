@@ -515,7 +515,7 @@ func validateRecoveredReceipt(receipt RunReceipt, selected target.Target, runID 
 
 func stateRequiresSession(state RunState) bool {
 	switch state {
-	case StateStarting, StateRunning, StateCalling, StateCollecting, StateSettling, StateComplete:
+	case StateRunning, StateCalling, StateCollecting, StateSettling, StateComplete:
 		return true
 	default:
 		return false

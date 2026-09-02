@@ -242,8 +242,56 @@ func (service *Service) Start(ctx context.Context, root string, request orchestr
 		return orchestrator.RunReceipt{}, err
 	}
 	defer release()
-	if _, err := service.authorizeClaim(root, request.Claim); err != nil {
+	lock, err := service.authorizeClaim(root, request.Claim)
+	if err != nil {
 		return orchestrator.RunReceipt{}, err
+	}
+	existing, statusErr := service.Status(root, StatusRequest{SchemaVersion: 1, RunID: request.Claim.RunID})
+	if statusErr == nil {
+		if !existing.Claim.Equal(request.Claim) {
+			return orchestrator.RunReceipt{}, fmt.Errorf("stored receipt claim changed")
+		}
+		if lock.SessionID != "" || existing.State != orchestrator.StateAccepted && existing.State != orchestrator.StateStaged {
+			if err := service.validateStoredRequest(root, request); err != nil {
+				return orchestrator.RunReceipt{}, err
+			}
+			if lock.SessionID != "" && existing.SessionID == "" {
+				existing.SessionID = lock.SessionID
+				existing.State = orchestrator.StateCleanupFailed
+				existing.Error = "Recovered a Session whose receipt publication was interrupted"
+				if err := service.writeReceipt(root, existing); err != nil {
+					return orchestrator.RunReceipt{}, err
+				}
+			} else if lock.SessionID != existing.SessionID {
+				return orchestrator.RunReceipt{}, fmt.Errorf("stored receipt Session identity changed")
+			}
+			if existing.State == orchestrator.StateStarting && lock.SessionID == "" {
+				if service.tasks == nil {
+					return orchestrator.RunReceipt{}, fmt.Errorf("Scheduled Task launcher is unavailable")
+				}
+				if err := service.tasks.Launch(ctx, request.Claim.TaskName); err != nil {
+					return orchestrator.RunReceipt{}, err
+				}
+			}
+			return existing, nil
+		}
+	} else if lock.SessionID != "" {
+		if err := service.validateStoredRequest(root, request); err != nil {
+			return orchestrator.RunReceipt{}, err
+		}
+		recovered := orchestrator.RunReceipt{
+			SchemaVersion: 1,
+			Claim:         request.Claim,
+			State:         orchestrator.StateCleanupFailed,
+			SessionID:     lock.SessionID,
+			Error:         "Recovered a Session whose receipt publication was interrupted",
+		}
+		if err := service.writeReceipt(root, recovered); err != nil {
+			return orchestrator.RunReceipt{}, err
+		}
+		return recovered, nil
+	} else {
+		return orchestrator.RunReceipt{}, statusErr
 	}
 	if err := service.validateStagedRequest(root, request); err != nil {
 		return orchestrator.RunReceipt{}, err
@@ -267,6 +315,25 @@ func (service *Service) Start(ctx context.Context, root string, request orchestr
 	return receipt, nil
 }
 
+func (service *Service) validateStoredRequest(root string, request orchestrator.RunRequest) error {
+	var stored orchestrator.RunRequest
+	if err := readJSON(filepath.Join(runPath(root, request.Claim.RunID), "request.json"), &stored, maxScenarioJSON); err != nil {
+		return fmt.Errorf("read stored Run request: %w", err)
+	}
+	storedJSON, err := json.Marshal(stored)
+	if err != nil {
+		return err
+	}
+	requestJSON, err := json.Marshal(request)
+	if err != nil {
+		return err
+	}
+	if !bytes.Equal(storedJSON, requestJSON) {
+		return fmt.Errorf("stored Run request changed")
+	}
+	return nil
+}
+
 func (service *Service) Status(root string, request StatusRequest) (orchestrator.RunReceipt, error) {
 	if request.SchemaVersion != 1 || request.RunID.Validate() != nil {
 		return orchestrator.RunReceipt{}, fmt.Errorf("invalid status contract")
@@ -283,7 +350,12 @@ func (service *Service) ExecutePending(ctx context.Context, root string) error {
 	if err != nil {
 		return err
 	}
-	defer release()
+	locked := true
+	defer func() {
+		if locked {
+			release()
+		}
+	}()
 	var request orchestrator.RunRequest
 	if err := readJSON(filepath.Join(root, "pending-request.json"), &request, maxScenarioJSON); err != nil {
 		return err
@@ -332,20 +404,44 @@ func (service *Service) ExecutePending(ctx context.Context, root string) error {
 	}
 	receipt := orchestrator.RunReceipt{SchemaVersion: 1, Claim: request.Claim, State: orchestrator.StateRunning, SessionID: sessionID}
 	if err := service.writeReceipt(root, receipt); err != nil {
+		receipt.State = orchestrator.StateCleanupFailed
+		receipt.Error = "Session started but its running receipt could not be published"
+		_ = service.writeReceipt(root, receipt)
 		return err
 	}
 	receipt.State = orchestrator.StateCalling
 	if err := service.writeReceipt(root, receipt); err != nil {
 		return err
 	}
-	result, err := service.callScenario(runCtx, root, request, sessionID, environment)
-	if err != nil {
-		return service.failReceipt(root, receipt, "Scenario call failed")
-	}
-	resultPath := filepath.Join(runPath(root, request.Claim.RunID), "evidence", "result", "scenario-result.json")
-	if err := os.MkdirAll(filepath.Dir(resultPath), 0o700); err != nil {
+	resultDirectory := filepath.Join(runPath(root, request.Claim.RunID), "evidence", "result")
+	if err := os.MkdirAll(resultDirectory, 0o700); err != nil {
 		return service.failReceipt(root, receipt, "Scenario evidence directory failed")
 	}
+	if request.Body.Payload.Scenario.CaptureViewport {
+		if err := os.MkdirAll(filepath.Join(runPath(root, request.Claim.RunID), "evidence", "screenshots"), 0o700); err != nil {
+			return service.failReceipt(root, receipt, "Viewport evidence directory failed")
+		}
+	}
+	locked = false
+	release()
+
+	result, err := service.callScenario(runCtx, root, request, sessionID, environment)
+	if err != nil {
+		return service.failActiveExecution(ctx, root, request, sessionID, "Scenario call failed")
+	}
+	release, err = acquireOperation(runCtx, root)
+	if err != nil {
+		return err
+	}
+	locked = true
+	receipt, err = service.activeReceipt(root, request, sessionID)
+	if errors.Is(err, errRunSettled) {
+		return fmt.Errorf("Run was settled during Scenario call")
+	}
+	if err != nil {
+		return err
+	}
+	resultPath := filepath.Join(runPath(root, request.Claim.RunID), "evidence", "result", "scenario-result.json")
 	if err := os.WriteFile(resultPath, result, 0o600); err != nil {
 		return service.failReceipt(root, receipt, "Scenario result write failed")
 	}
@@ -358,11 +454,30 @@ func (service *Service) ExecutePending(ctx context.Context, root string) error {
 	if err := service.writeReceipt(root, receipt); err != nil {
 		return err
 	}
+	locked = false
+	release()
+
+	var viewport orchestrator.EvidenceFile
 	if request.Body.Payload.Scenario.CaptureViewport {
-		viewport, captureErr := service.captureViewport(runCtx, root, request, sessionID, environment)
+		var captureErr error
+		viewport, captureErr = service.captureViewport(runCtx, root, request, sessionID, environment)
 		if captureErr != nil {
-			return service.failReceipt(root, receipt, "Viewport capture failed")
+			return service.failActiveExecution(ctx, root, request, sessionID, "Viewport capture failed")
 		}
+	}
+	release, err = acquireOperation(runCtx, root)
+	if err != nil {
+		return err
+	}
+	locked = true
+	receipt, err = service.activeReceipt(root, request, sessionID)
+	if errors.Is(err, errRunSettled) {
+		return fmt.Errorf("Run was settled during evidence collection")
+	}
+	if err != nil {
+		return err
+	}
+	if request.Body.Payload.Scenario.CaptureViewport {
 		receipt.Evidence.Files = append(receipt.Evidence.Files, viewport)
 	}
 	receipt.State = orchestrator.StateComplete
@@ -371,6 +486,41 @@ func (service *Service) ExecutePending(ctx context.Context, root string) error {
 	}
 	_ = os.Remove(filepath.Join(root, "pending-request.json"))
 	return nil
+}
+
+var errRunSettled = errors.New("Run already settled")
+
+func (service *Service) activeReceipt(root string, request orchestrator.RunRequest, sessionID orchestrator.SessionID) (orchestrator.RunReceipt, error) {
+	receipt, err := service.Status(root, StatusRequest{SchemaVersion: 1, RunID: request.Claim.RunID})
+	if err != nil {
+		return orchestrator.RunReceipt{}, err
+	}
+	if receipt.Cleanup.Known() {
+		return orchestrator.RunReceipt{}, errRunSettled
+	}
+	lock, err := service.authorizeClaim(root, request.Claim)
+	if err != nil || lock.SessionID != sessionID || receipt.SessionID != sessionID || !receipt.Claim.Equal(request.Claim) {
+		return orchestrator.RunReceipt{}, fmt.Errorf("active Run authority changed")
+	}
+	return receipt, nil
+}
+
+func (service *Service) failActiveExecution(ctx context.Context, root string, request orchestrator.RunRequest, sessionID orchestrator.SessionID, message string) error {
+	failureCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+	defer cancel()
+	release, err := acquireOperation(failureCtx, root)
+	if err != nil {
+		return errors.Join(fmt.Errorf("%s", message), err)
+	}
+	defer release()
+	receipt, err := service.activeReceipt(root, request, sessionID)
+	if errors.Is(err, errRunSettled) {
+		return fmt.Errorf("%s", message)
+	}
+	if err != nil {
+		return errors.Join(fmt.Errorf("%s", message), err)
+	}
+	return service.failReceipt(root, receipt, message)
 }
 
 func (service *Service) Fetch(root string, request FetchRequest) ([]byte, error) {
@@ -421,19 +571,34 @@ func (service *Service) Settle(ctx context.Context, root string, request SettleR
 	defer release()
 	stored, err := service.Status(root, StatusRequest{SchemaVersion: 1, RunID: request.Receipt.Claim.RunID})
 	if err != nil {
-		return orchestrator.CleanupState{}, err
+		lock, lockErr := service.authorizeClaim(root, request.Receipt.Claim)
+		if lockErr != nil {
+			return orchestrator.CleanupState{}, err
+		}
+		stored = orchestrator.RunReceipt{
+			SchemaVersion: 1,
+			Claim:         lock.Claim,
+			State:         orchestrator.StateAccepted,
+			SessionID:     lock.SessionID,
+		}
 	}
 	if !stored.Claim.Equal(request.Receipt.Claim) {
 		return orchestrator.CleanupState{}, fmt.Errorf("settle claim does not match host receipt")
-	}
-	if request.Receipt.SessionID != "" && request.Receipt.SessionID != stored.SessionID {
-		return orchestrator.CleanupState{}, fmt.Errorf("settle Session identity does not match host receipt")
 	}
 	if stored.Cleanup.Known() {
 		return stored.Cleanup, nil
 	}
 	lock, err := service.authorizeClaim(root, stored.Claim)
-	if err != nil || lock.SessionID != stored.SessionID {
+	if err != nil {
+		return orchestrator.CleanupState{}, fmt.Errorf("settle authority does not match Host Lock")
+	}
+	if stored.State == orchestrator.StateStarting && stored.SessionID == "" && lock.SessionID != "" {
+		stored.SessionID = lock.SessionID
+	}
+	if request.Receipt.SessionID != "" && request.Receipt.SessionID != stored.SessionID {
+		return orchestrator.CleanupState{}, fmt.Errorf("settle Session identity does not match host receipt")
+	}
+	if lock.SessionID != stored.SessionID {
 		return orchestrator.CleanupState{}, fmt.Errorf("settle authority does not match Host Lock")
 	}
 	if stored.SessionID != "" {
@@ -525,9 +690,6 @@ func (service *Service) callScenario(ctx context.Context, root string, request o
 
 func (service *Service) captureViewport(ctx context.Context, root string, request orchestrator.RunRequest, sessionID orchestrator.SessionID, environment map[string]string) (orchestrator.EvidenceFile, error) {
 	path := filepath.Join(runPath(root, request.Claim.RunID), "evidence", "screenshots", "viewport.png")
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		return orchestrator.EvidenceFile{}, err
-	}
 	parameters, _ := json.Marshal(map[string]any{"filepath": path, "format": "png", "max_size": 1600})
 	raw, err := service.daemon.Call(ctx, DaemonCall{
 		Executable:         request.Body.SessionBrokerExecutable,
@@ -572,7 +734,22 @@ func (service *Service) validateStagedRequest(root string, request orchestrator.
 	}
 	byDestination := make(map[string]StageFile, len(staged.Files))
 	for _, file := range staged.Files {
-		byDestination[safepath.WindowsKey(file.Destination)] = file
+		if err := safepath.ValidateWindowsRelative("staged destination", file.Destination); err != nil || file.Size < 0 || file.Size > maxStageFile || !hashPattern.MatchString(file.SHA256) {
+			return fmt.Errorf("invalid staged payload manifest")
+		}
+		key := safepath.WindowsKey(file.Destination)
+		if _, exists := byDestination[key]; exists {
+			return fmt.Errorf("invalid staged payload manifest")
+		}
+		contents, err := readRegularFile(filepath.Join(runPath(root, request.Claim.RunID), "payload", filepath.FromSlash(file.Destination)), maxStageFile)
+		if err != nil {
+			return fmt.Errorf("published payload %q is invalid: %w", file.Destination, err)
+		}
+		hash := sha256.Sum256(contents)
+		if int64(len(contents)) != file.Size || hex.EncodeToString(hash[:]) != file.SHA256 {
+			return fmt.Errorf("published payload %q changed after transfer", file.Destination)
+		}
+		byDestination[key] = file
 	}
 	for _, file := range request.Body.Payload.Files {
 		stagedFile, exists := byDestination[safepath.WindowsKey(file.Destination)]
@@ -722,28 +899,6 @@ func writeJSONAtomic(path string, value any) error {
 		return err
 	}
 	return replaceFile(name, path)
-}
-
-func acquireOperation(ctx context.Context, root string) (func(), error) {
-	path := filepath.Join(root, ".operation.lock")
-	for {
-		lock, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
-		if err == nil {
-			_, _ = fmt.Fprintf(lock, "%d\n", os.Getpid())
-			_ = lock.Close()
-			return func() { _ = os.Remove(path) }, nil
-		}
-		if !os.IsExist(err) {
-			return nil, err
-		}
-		timer := time.NewTimer(100 * time.Millisecond)
-		select {
-		case <-ctx.Done():
-			timer.Stop()
-			return nil, fmt.Errorf("wait for host operation: %w", ctx.Err())
-		case <-timer.C:
-		}
-	}
 }
 
 func readJSON(path string, value any, limit int64) error {
