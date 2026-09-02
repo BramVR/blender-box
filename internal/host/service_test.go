@@ -159,6 +159,7 @@ type publicationFailureDaemon struct {
 	sessionID          orchestrator.SessionID
 	rollbackContextErr error
 	stopCalls          int
+	recoveryMissing    bool
 }
 
 type ambiguousStartDaemon struct {
@@ -192,6 +193,9 @@ func (daemon *publicationFailureDaemon) Start(ctx context.Context, _ DaemonStart
 }
 
 func (daemon *publicationFailureDaemon) Recover(context.Context, DaemonRecover) (orchestrator.SessionID, bool, error) {
+	if daemon.recoveryMissing {
+		return "", false, nil
+	}
 	return daemon.sessionID, true, nil
 }
 
@@ -1263,6 +1267,36 @@ func TestSettleAdoptsExactReceiptIdentityAfterPublicationRollbackFails(t *testin
 	}
 	if !cleanup.Known() || daemon.stopCalls != 2 || daemon.stops[1].SessionID != daemon.sessionID {
 		t.Fatalf("cleanup = %+v, stops = %+v", cleanup, daemon.stops)
+	}
+}
+
+func TestSettleRecoversWhenPublicationRollbackStoppedSessionButResponseWasLost(t *testing.T) {
+	root := t.TempDir()
+	now := time.Now().UTC().Add(-20*time.Minute + time.Second)
+	daemon := &publicationFailureDaemon{sessionID: "bss_exact-ambiguous-rollback-session-123456", recoveryMissing: true}
+	service := NewService(Dependencies{Tasks: &fakeTaskLauncher{}, Daemon: daemon, Now: func() time.Time { return now }})
+	writeCalls := 0
+	service.writeLock = func(path string, lock lockRecord) error {
+		writeCalls++
+		if writeCalls == 1 {
+			return errors.New("injected Host Lock publication failure")
+		}
+		return writeLockAtomic(path, lock)
+	}
+	request := stageHostTestRun(t, service, root, now, false)
+	if _, err := service.Start(context.Background(), root, request); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.ExecutePending(context.Background(), root); err == nil {
+		t.Fatal("ExecutePending() unexpectedly survived ambiguous rollback")
+	}
+	receipt, err := service.Status(root, StatusRequest{SchemaVersion: 1, RunID: request.Claim.RunID})
+	if err != nil || receipt.State != orchestrator.StateCleanupFailed || receipt.SessionID != daemon.sessionID {
+		t.Fatalf("receipt = %+v, error = %v", receipt, err)
+	}
+	cleanup, err := service.Settle(context.Background(), root, settleHostRequest(receipt))
+	if err != nil || !cleanup.Known() || daemon.stopCalls != 2 {
+		t.Fatalf("cleanup = %+v, stop calls = %d, error = %v", cleanup, daemon.stopCalls, err)
 	}
 }
 

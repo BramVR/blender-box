@@ -29,6 +29,8 @@ const (
 	maxStageTotal   = 32 << 20
 	maxEvidenceFile = 16 << 20
 	maxScenarioJSON = 1 << 20
+
+	identityPublicationRollbackFailure = "Session identity publication and exact rollback failed"
 )
 
 var hashPattern = regexp.MustCompile(`^[0-9a-f]{64}$`)
@@ -487,9 +489,9 @@ func (service *Service) ExecutePending(ctx context.Context, root string) error {
 	if err := service.writeLock(lockPath(root), lock); err != nil {
 		stopErr := service.daemon.Stop(reconcileCtx, DaemonStop{Executable: request.Body.SessionBrokerExecutable, Name: request.Body.SessionName, SessionID: sessionID, Environment: environment})
 		if stopErr != nil {
-			receipt := orchestrator.RunReceipt{SchemaVersion: 1, Claim: request.Claim, State: orchestrator.StateCleanupFailed, SessionID: sessionID, Error: "Session identity publication and exact rollback failed"}
+			receipt := orchestrator.RunReceipt{SchemaVersion: 1, Claim: request.Claim, State: orchestrator.StateCleanupFailed, SessionID: sessionID, Error: identityPublicationRollbackFailure}
 			_ = service.writeReceipt(root, receipt)
-			return fmt.Errorf("Session identity publication and exact rollback failed")
+			return fmt.Errorf("%s", identityPublicationRollbackFailure)
 		}
 		return service.failExecution(root, request, "Session identity publication failed; exact Session was rolled back")
 	}
@@ -750,8 +752,22 @@ func (service *Service) Settle(ctx context.Context, root string, request SettleR
 		if recoverErr != nil {
 			return orchestrator.CleanupState{}, recoverErr
 		}
-		if !found || recovered != stored.SessionID {
+		if found && recovered != stored.SessionID {
 			return orchestrator.CleanupState{}, fmt.Errorf("settle could not verify unpublished Session identity")
+		}
+		if !found {
+			if stored.State != orchestrator.StateCleanupFailed || stored.Error != identityPublicationRollbackFailure {
+				return orchestrator.CleanupState{}, fmt.Errorf("settle could not verify unpublished Session identity")
+			}
+			launchRelease, acquired, launchErr := tryAcquireLaunch(root)
+			if launchErr != nil {
+				return orchestrator.CleanupState{}, launchErr
+			}
+			if !acquired {
+				return orchestrator.CleanupState{}, fmt.Errorf("Session launch identity is not published yet")
+			}
+			launchRelease()
+			recovered = stored.SessionID
 		}
 		lock.SessionID = recovered
 		if err := service.writeLock(lockPath(root), lock); err != nil {
