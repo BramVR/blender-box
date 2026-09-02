@@ -16,6 +16,9 @@ func ValidateWindowsRelative(label, value string) error {
 	if clean != value || clean == "." || clean == ".." || strings.HasPrefix(clean, "../") {
 		return fmt.Errorf("%s %q is unsafe", label, value)
 	}
+	if len(utf16.Encode([]rune(value))) > 240 {
+		return fmt.Errorf("%s %q is unsafe", label, value)
+	}
 	for _, component := range strings.Split(value, "/") {
 		if strings.TrimRight(component, ". ") != component || windowsReservedName(component) || len(utf16.Encode([]rune(component))) > 255 {
 			return fmt.Errorf("%s %q is unsafe", label, value)

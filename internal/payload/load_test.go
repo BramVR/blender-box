@@ -5,8 +5,10 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestLoadResolvesAndHashesDeclaredFiles(t *testing.T) {
@@ -34,7 +36,11 @@ func TestLoadResolvesAndHashesDeclaredFiles(t *testing.T) {
 	}
 	file := loaded.Files[0]
 	wantHash := sha256.Sum256(script)
-	if file.LocalPath != filepath.Join(root, "scenario.py") || file.Size != int64(len(script)) || file.SHA256 != fmt.Sprintf("%x", wantHash) {
+	canonicalRoot, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if file.LocalPath != filepath.Join(canonicalRoot, "scenario.py") || file.Size != int64(len(script)) || file.SHA256 != fmt.Sprintf("%x", wantHash) {
 		t.Fatalf("loaded file = %+v", file)
 	}
 	if got := file.Contents(); string(got) != string(script) {
@@ -144,6 +150,62 @@ func TestValidateRejectsForgedPayload(t *testing.T) {
 	}
 	if err := forged.Validate(); err == nil || !strings.Contains(err.Error(), "validated contents") {
 		t.Fatalf("error = %v", err)
+	}
+}
+
+func TestLoadPinsSymlinkedDocumentRootToCanonicalPath(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("creating an unprivileged symlink is not portable on Windows")
+	}
+	parent := t.TempDir()
+	actual := filepath.Join(parent, "actual")
+	if err := os.Mkdir(actual, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	writeScenario(t, actual)
+	document := `{"schema_version":1,"files":[{"source":"scenario.py","destination":"scenario.py"}],"scenario":{"script":"scenario.py"}}`
+	if err := os.WriteFile(filepath.Join(actual, "payload.json"), []byte(document), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	linked := filepath.Join(parent, "linked")
+	if err := os.Symlink(actual, linked); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := Load(filepath.Join(linked, "payload.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	canonicalActual, err := filepath.EvalSymlinks(actual)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.Files[0].LocalPath != filepath.Join(canonicalActual, "scenario.py") {
+		t.Fatalf("source root was not pinned: %q", loaded.Files[0].LocalPath)
+	}
+}
+
+func TestFileInfoStableDetectsSameSizeChange(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "scenario.py")
+	if err := os.WriteFile(path, []byte("first"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("other"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	changedTime := before.ModTime().Add(time.Second)
+	if err := os.Chtimes(path, changedTime, changedTime); err != nil {
+		t.Fatal(err)
+	}
+	after, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fileInfoStable(before, after) {
+		t.Fatal("same-size metadata change accepted")
 	}
 }
 

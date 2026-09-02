@@ -443,6 +443,39 @@ func TestEvidenceWriteRejectsSymlinkedParent(t *testing.T) {
 	}
 }
 
+func TestEvidenceWriteDoesNotReplaceExistingFile(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "result.json")
+	if err := os.WriteFile(path, []byte("prior evidence"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeEvidence(root, "result.json", []byte("replacement")); err == nil || !strings.Contains(err.Error(), "exists") {
+		t.Fatalf("error = %v", err)
+	}
+	contents, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(contents) != "prior evidence" {
+		t.Fatalf("existing evidence changed to %q", contents)
+	}
+}
+
+func TestPrepareEvidenceRootCreatesExclusiveCanonicalRunDirectory(t *testing.T) {
+	parent := t.TempDir()
+	root := filepath.Join(parent, "bbx_new-run")
+	prepared, err := prepareEvidenceRoot(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !filepath.IsAbs(prepared) {
+		t.Fatalf("prepared root is not absolute: %q", prepared)
+	}
+	if _, err := prepareEvidenceRoot(root); err == nil || !strings.Contains(err.Error(), "already exists") {
+		t.Fatalf("second prepare error = %v", err)
+	}
+}
+
 func testIntent(t *testing.T) RunIntent {
 	t.Helper()
 	return RunIntent{

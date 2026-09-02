@@ -28,7 +28,13 @@ func TestValidateWindowsRelativeRejectsOtherDevicesAndOverlongComponents(t *test
 			}
 		})
 	}
-	if err := ValidateWindowsRelative("path", strings.Repeat("😀", 127)+"a"); err != nil {
-		t.Fatalf("255 UTF-16 code-unit component rejected: %v", err)
+	if err := ValidateWindowsRelative("path", strings.Repeat("😀", 120)); err != nil {
+		t.Fatalf("240 UTF-16 code-unit component rejected: %v", err)
+	}
+	if err := ValidateWindowsRelative("path", strings.Repeat("a", 120)+"/"+strings.Repeat("b", 120)); err == nil {
+		t.Fatal("overlong complete relative path accepted")
+	}
+	if err := ValidateWindowsRelative("path", strings.Repeat("a", 119)+"/"+strings.Repeat("b", 120)); err != nil {
+		t.Fatalf("240 UTF-16 code-unit relative path rejected: %v", err)
 	}
 }

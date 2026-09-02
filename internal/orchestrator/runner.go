@@ -420,6 +420,10 @@ func (runner *Runner) collectEvidence(ctx context.Context, intent RunIntent, rec
 			return fmt.Errorf("evidence exceeds total size limit")
 		}
 	}
+	evidenceRoot, err := prepareEvidenceRoot(intent.EvidenceDir)
+	if err != nil {
+		return fmt.Errorf("prepare evidence directory: %w", err)
+	}
 	for _, file := range manifest.Files {
 		content, err := runner.host.Fetch(ctx, intent.Target, receipt, file)
 		if err != nil {
@@ -432,7 +436,7 @@ func (runner *Runner) collectEvidence(ctx context.Context, intent RunIntent, rec
 		if hex.EncodeToString(hash[:]) != file.SHA256 {
 			return fmt.Errorf("evidence %q: SHA-256 changed", file.Path)
 		}
-		if err := writeEvidence(intent.EvidenceDir, file.Path, content); err != nil {
+		if err := writeEvidence(evidenceRoot, file.Path, content); err != nil {
 			return fmt.Errorf("store evidence %q: %w", file.Path, err)
 		}
 	}
@@ -477,16 +481,46 @@ func writeEvidence(root, relative string, content []byte) error {
 		temporary.Close()
 		return err
 	}
+	if err := temporary.Sync(); err != nil {
+		temporary.Close()
+		return err
+	}
 	if err := temporary.Close(); err != nil {
 		return err
 	}
-	return os.Rename(temporaryName, destination)
+	if err := os.Link(temporaryName, destination); err != nil {
+		return fmt.Errorf("publish evidence without replacement: %w", err)
+	}
+	return os.Remove(temporaryName)
+}
+
+func prepareEvidenceRoot(root string) (string, error) {
+	if root == "" {
+		return "", fmt.Errorf("evidence directory is required")
+	}
+	absoluteRoot, err := filepath.Abs(root)
+	if err != nil {
+		return "", err
+	}
+	parent := filepath.Dir(absoluteRoot)
+	if err := os.MkdirAll(parent, 0o755); err != nil {
+		return "", err
+	}
+	canonicalParent, err := filepath.EvalSymlinks(parent)
+	if err != nil {
+		return "", err
+	}
+	canonicalRoot := filepath.Join(canonicalParent, filepath.Base(absoluteRoot))
+	if err := os.Mkdir(canonicalRoot, 0o700); err != nil {
+		if os.IsExist(err) {
+			return "", fmt.Errorf("evidence directory already exists")
+		}
+		return "", err
+	}
+	return canonicalRoot, nil
 }
 
 func evidenceDestination(root, relative string) (string, error) {
-	if err := os.MkdirAll(root, 0o755); err != nil {
-		return "", err
-	}
 	rootInfo, err := os.Lstat(root)
 	if err != nil {
 		return "", err
@@ -522,8 +556,8 @@ func evidenceDestination(root, relative string) (string, error) {
 		}
 	}
 	destination := filepath.Join(current, filepath.Base(relative))
-	if info, err := os.Lstat(destination); err == nil && info.Mode()&os.ModeSymlink != 0 {
-		return "", fmt.Errorf("evidence destination is a symlink")
+	if _, err := os.Lstat(destination); err == nil {
+		return "", fmt.Errorf("evidence destination already exists")
 	} else if err != nil && !os.IsNotExist(err) {
 		return "", err
 	}

@@ -1,6 +1,7 @@
 package payload
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -64,7 +65,19 @@ type documentFile struct {
 
 // Load validates a Run Payload and computes the immutable transfer facts.
 func Load(path string) (Payload, error) {
-	contents, err := readBounded(path, maxDocumentBytes)
+	absolutePath, err := filepath.Abs(path)
+	if err != nil {
+		return Payload{}, fmt.Errorf("resolve payload document: %w", err)
+	}
+	canonicalPath, err := filepath.EvalSymlinks(absolutePath)
+	if err != nil {
+		return Payload{}, fmt.Errorf("resolve payload document: %w", err)
+	}
+	documentInfo, err := os.Stat(canonicalPath)
+	if err != nil || !documentInfo.Mode().IsRegular() {
+		return Payload{}, fmt.Errorf("payload document is not a regular file")
+	}
+	contents, err := readBounded(canonicalPath, maxDocumentBytes)
 	if err != nil {
 		return Payload{}, fmt.Errorf("read payload document: %w", err)
 	}
@@ -93,7 +106,7 @@ func Load(path string) (Payload, error) {
 		return Payload{}, err
 	}
 
-	base := filepath.Dir(path)
+	base := filepath.Dir(canonicalPath)
 	result := Payload{SchemaVersion: 1, Scenario: declared.Scenario}
 	destinations := make(map[string]struct{}, len(declared.Files))
 	var total int64
@@ -262,9 +275,28 @@ func readValidatedFile(base, portablePath string) (string, []byte, error) {
 	if int64(len(contents)) != opened.Size() {
 		return "", nil, fmt.Errorf("file changed during validation")
 	}
+	if _, err := file.Seek(0, io.SeekStart); err != nil {
+		return "", nil, err
+	}
+	confirmation, err := io.ReadAll(io.LimitReader(file, maxFileBytes+1))
+	if err != nil || !bytes.Equal(contents, confirmation) {
+		return "", nil, fmt.Errorf("file changed during validation")
+	}
+	readComplete, err := file.Stat()
+	if err != nil || !fileInfoStable(opened, readComplete) {
+		return "", nil, fmt.Errorf("file changed during validation")
+	}
 	_, after, err := regularFileWithoutSymlinks(base, portablePath)
 	if err != nil || !os.SameFile(opened, after) {
 		return "", nil, fmt.Errorf("file changed during validation")
 	}
 	return path, contents, nil
+}
+
+func fileInfoStable(before, after os.FileInfo) bool {
+	return before != nil && after != nil &&
+		os.SameFile(before, after) &&
+		before.Mode() == after.Mode() &&
+		before.Size() == after.Size() &&
+		before.ModTime().Equal(after.ModTime())
 }
