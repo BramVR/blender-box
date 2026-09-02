@@ -647,6 +647,9 @@ func (runner *Runner) collectEvidence(ctx context.Context, intent RunIntent, rec
 	if err := validateEvidenceManifest(manifest); err != nil {
 		return err
 	}
+	if err := validateRequiredEvidence(manifest, intent.Payload.Scenario); err != nil {
+		return err
+	}
 	for _, file := range manifest.Files {
 		content, err := runner.host.Fetch(ctx, intent.Target, receipt, file)
 		if err != nil {
@@ -671,6 +674,31 @@ func (runner *Runner) collectEvidence(ctx context.Context, intent RunIntent, rec
 		if err := writeEvidence(evidenceRoot, file.Path, content); err != nil {
 			return fmt.Errorf("store evidence %q: %w", file.Path, err)
 		}
+	}
+	return nil
+}
+
+func validateRequiredEvidence(manifest EvidenceManifest, scenario payload.Scenario) error {
+	scenarioResults := 0
+	viewports := 0
+	for _, file := range manifest.Files {
+		switch file.Type {
+		case "scenario-result":
+			scenarioResults++
+		case "viewport":
+			viewports++
+		default:
+			return fmt.Errorf("unexpected evidence type %q", file.Type)
+		}
+	}
+	if scenarioResults != 1 {
+		return fmt.Errorf("required Scenario Result evidence is missing or ambiguous")
+	}
+	if scenario.CaptureViewport && viewports != 1 {
+		return fmt.Errorf("required viewport evidence is missing or ambiguous")
+	}
+	if !scenario.CaptureViewport && viewports != 0 {
+		return fmt.Errorf("unexpected viewport evidence")
 	}
 	return nil
 }

@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -25,6 +26,7 @@ type fakeHost struct {
 	operations []string
 	receipt    RunReceipt
 	evidence   map[string][]byte
+	manifest   *EvidenceManifest
 }
 
 func (host *fakeHost) Inspect(context.Context, target.Target) error {
@@ -63,14 +65,49 @@ func (host *fakeHost) Observe(_ context.Context, _ target.Target, runID RunID) (
 		return RunReceipt{}, fmt.Errorf("observe run changed")
 	}
 	host.receipt.State = StateComplete
-	host.receipt.Evidence = EvidenceManifest{
-		SchemaVersion: 1,
-		Files: []EvidenceFile{
-			evidenceFile("scenario-result.json", "scenario-result", host.evidence["scenario-result.json"]),
-			evidenceFile("viewport.png", "viewport", host.evidence["viewport.png"]),
-		},
+	if host.manifest != nil {
+		host.receipt.Evidence = *host.manifest
+	} else {
+		host.receipt.Evidence = EvidenceManifest{
+			SchemaVersion: 1,
+			Files: []EvidenceFile{
+				evidenceFile("scenario-result.json", "scenario-result", host.evidence["scenario-result.json"]),
+				evidenceFile("viewport.png", "viewport", host.evidence["viewport.png"]),
+			},
+		}
 	}
 	return host.receipt, nil
+}
+
+func TestRunRequiresExactScenarioEvidenceSet(t *testing.T) {
+	evidence := testEvidence()
+	scenarioResult := evidenceFile("scenario-result.json", "scenario-result", evidence["scenario-result.json"])
+	viewport := evidenceFile("viewport.png", "viewport", evidence["viewport.png"])
+	for _, test := range []struct {
+		name            string
+		captureViewport bool
+		files           []EvidenceFile
+		want            string
+	}{
+		{name: "missing Scenario Result", captureViewport: true, files: []EvidenceFile{viewport}, want: "Scenario Result"},
+		{name: "missing requested viewport", captureViewport: true, files: []EvidenceFile{scenarioResult}, want: "viewport"},
+		{name: "unexpected viewport", captureViewport: false, files: []EvidenceFile{scenarioResult, viewport}, want: "unexpected"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			manifest := EvidenceManifest{SchemaVersion: 1, Files: test.files}
+			host := &fakeHost{evidence: evidence, manifest: &manifest}
+			intent := testIntent(t)
+			intent.Payload.Scenario.CaptureViewport = test.captureViewport
+			intent.EvidenceDir = filepath.Join(t.TempDir(), "evidence")
+			_, err := New(host).Run(context.Background(), intent)
+			if err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("Run() error = %v, want %q", err, test.want)
+			}
+			if !slices.Contains(host.operations, "settle") {
+				t.Fatalf("invalid evidence was not settled: %v", host.operations)
+			}
+		})
+	}
 }
 
 func (host *fakeHost) Fetch(_ context.Context, _ target.Target, receipt RunReceipt, file EvidenceFile) ([]byte, error) {
