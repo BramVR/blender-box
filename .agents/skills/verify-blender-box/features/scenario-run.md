@@ -5,6 +5,7 @@ Run stages one declared payload, launches Blender through the interactive task, 
 ## Sub-features
 
 - `run-id` publishes the recovery Run ID before target or payload validation.
+- `local-preflight` reserves the evidence destination without SSH; a local rejection does not attempt status recovery.
 - `payload` transfers only declared bounded regular files and verifies them on Windows.
 - `interactive-session` publishes one exact daemon Session identity, then waits for that same Session's process and socket health.
 - `start-replay` repeats only the identical fenced start request while an `IgnoreNew` task has not published an identity.
@@ -35,4 +36,5 @@ Preconditions:
 - `RUN_ID=` is stderr progress; stdout remains one JSON document.
 - A viewport capture does not prove Blender window chrome or the Windows desktop.
 - Never treat a Session name as stop authority.
+- Never reuse a Run ID whose durable receipt became terminal or lost its Host Lock.
 - Evidence directory publication is exclusive; reuse of the same Run directory fails closed.

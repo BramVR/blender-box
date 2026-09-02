@@ -568,7 +568,7 @@
         </article>
         <article class="flow-item">
           <h3>Start interactively</h3>
-          <p>Write a validated request JSON, then trigger the static Scheduled Task. The task runs as the logged-in user, sets the per-run environment, starts <code>blendersessiond</code>, publishes the exact Session identity, and polls that same Session to healthy process and socket state before calling it. The client replays only the identical fenced start request while identity is absent. If host publication is interrupted after daemon launch, settlement adopts the opaque identity from Run-isolated daemon state before exact stop.</p>
+          <p>Write a validated request JSON, then trigger the static Scheduled Task. The task runs as the logged-in user, sets the per-run environment, starts <code>blendersessiond</code>, publishes the exact Session identity, and polls that same Session to healthy process and socket state before calling it. The client replays only the identical fenced start request while identity is absent. Terminal or released receipts permanently reserve their Run ID. If host publication is interrupted after daemon launch, settlement adopts the opaque identity from Run-isolated daemon state before exact stop.</p>
         </article>
         <article class="flow-item">
           <h3>Execute</h3>
