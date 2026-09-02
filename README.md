@@ -36,7 +36,7 @@ go run ./cmd/blender-box windows check --target target.json --json
 
 The command streams one bounded, read-only PowerShell inspection over SSH and returns versioned UTF-8 JSON. It verifies the SSH and console-user SIDs, UAC limited-token policy, declared executable and work-root access, trusted path authorities through the volume root, and the complete root Scheduled Task action, principal, settings, and security descriptor. Slice 0 requires the SSH controller and interactive task users to resolve to the same Windows SID. Managed state roots and executable paths must give that identity direct mutation authority; runtime state descendants inherit only from those sealed roots. The task DACL must grant the identity direct management and launch authority so explicit repeat apply remains possible. Access inspection treats every applicable-rights deny ACE conservatively because an SSH check does not own the interactive task token; operator-managed setup paths should not use deny ACEs. A failed requirement returns `status: "fail"`; malformed or oversized transport output is an error.
 
-`session_broker_executable` and `host_executable` must be inside `work_root`. Blender may use an operator-managed installation elsewhere.
+`session_broker_executable` and `host_executable` must be inside `work_root`. Blender may use an operator-managed installation elsewhere. Because setup remains compatible with legacy SCP, `work_root` uses only an ASCII drive path with letters, digits, `.`, `_`, `-`, and `\`; spaces and remote-shell syntax are rejected before SSH.
 
 ## Explicit setup
 
@@ -83,7 +83,7 @@ go run ./cmd/blender-box stop --target target.json --run bbx_... --json
 
 The default bundle is `artifacts/blender-box/<run-id>/`. The client reserves that exclusive destination before host inspection, so a local collision fails before remote work. `manifest.json` records non-empty evidence paths, types, sizes, SHA-256 hashes, and viewport capture provenance. `evidence.json` records Run, request, deadline, exact Session identity, terminal state, and cleanup. Scenario and viewport files are fetched only from the declared manifest and published without replacement. Viewport PNG dimensions are checked independently against the declared capture dimensions on both sides of SSH.
 
-A complete Run must return exactly one Scenario Result and, when requested, exactly one viewport capture; missing, duplicate, or unsolicited evidence types fail the Run before files are fetched.
+A complete Run must return exactly one Scenario Result and, when requested, exactly one viewport capture; missing, duplicate, or unsolicited evidence types fail the Run before files are fetched. The decoded Scenario Result remains capped at 1 MiB, while the bounded daemon envelope allows worst-case nested JSON escaping plus fixed headroom.
 
 ## Boundary
 
