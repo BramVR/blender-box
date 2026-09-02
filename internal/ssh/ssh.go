@@ -8,7 +8,7 @@ import (
 )
 
 const (
-	maxStdoutBytes = 1 << 20
+	maxStdoutBytes = 24 << 20
 	maxStderrBytes = 64 << 10
 )
 

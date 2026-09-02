@@ -64,7 +64,7 @@ func (value Target) Validate() error {
 	if !userPattern.MatchString(value.SSHUser) {
 		return fmt.Errorf("target ssh_user is unsafe")
 	}
-	if !isCanonicalWindowsPath(value.WorkRoot) {
+	if !ValidateWindowsPath(value.WorkRoot) {
 		return fmt.Errorf("target work_root must be an absolute safe Windows path")
 	}
 	if !userPattern.MatchString(value.InteractiveUser) {
@@ -78,14 +78,15 @@ func (value Target) Validate() error {
 		"session_broker_executable": value.SessionBrokerExecutable,
 		"host_executable":           value.HostExecutable,
 	} {
-		if !isCanonicalWindowsPath(path) {
+		if !ValidateWindowsPath(path) {
 			return fmt.Errorf("target %s must be an absolute safe Windows file path", label)
 		}
 	}
 	return nil
 }
 
-func isCanonicalWindowsPath(path string) bool {
+// ValidateWindowsPath accepts the absolute, non-device Windows path grammar used across process boundaries.
+func ValidateWindowsPath(path string) bool {
 	if !workRootPattern.MatchString(path) || strings.Contains(path, "/") || strings.HasSuffix(path, `\`) {
 		return false
 	}

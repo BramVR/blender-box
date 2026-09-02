@@ -3,6 +3,7 @@ package orchestrator
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -149,6 +150,22 @@ func TestRunFromIntentToVerifiedEvidenceAndKnownCleanup(t *testing.T) {
 			t.Fatalf("evidence %s changed", name)
 		}
 	}
+	var storedManifest EvidenceManifest
+	manifestJSON, err := os.ReadFile(filepath.Join(evidenceDir, "manifest.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(manifestJSON, &storedManifest); err != nil || !reflect.DeepEqual(storedManifest, result.Evidence) {
+		t.Fatalf("stored manifest = %+v, error = %v", storedManifest, err)
+	}
+	var storedResult RunResult
+	resultDocument, err := os.ReadFile(filepath.Join(evidenceDir, "evidence.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(resultDocument, &storedResult); err != nil || !reflect.DeepEqual(storedResult, result) {
+		t.Fatalf("stored result = %+v, error = %v", storedResult, err)
+	}
 }
 
 func TestValidateReceiptRequiresVersionStateAndPinnedSession(t *testing.T) {
@@ -186,6 +203,25 @@ func TestValidateReceiptRequiresVersionStateAndPinnedSession(t *testing.T) {
 				t.Fatalf("error = %v, want containing %q", err, test.wantErr)
 			}
 		})
+	}
+}
+
+func TestRunRequestRejectsUnsafeHostExecutablePaths(t *testing.T) {
+	intent := testIntent(t)
+	request, err := buildRequest(intent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Body.BlenderExecutable = `C:\Blender\blender.exe`
+	request.Body.SessionBrokerExecutable = `C:\BlenderBox\bin\blendersessiond.exe`
+	request.Body.BlenderExecutable = `..\replacement.exe`
+	body, err := requestBodyHash(request.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Claim.RequestHash = body
+	if err := request.Validate(); err == nil || !strings.Contains(err.Error(), "unsafe Windows executable path") {
+		t.Fatalf("Validate() error = %v", err)
 	}
 }
 
@@ -499,6 +535,101 @@ func TestPrepareEvidenceRootCreatesExclusiveCanonicalRunDirectory(t *testing.T) 
 	}
 }
 
+type recoveryHost struct {
+	fakeHost
+}
+
+func (host *recoveryHost) Observe(_ context.Context, _ target.Target, runID RunID) (RunReceipt, error) {
+	host.operations = append(host.operations, "observe")
+	return host.receipt, nil
+}
+
+func TestStatusAndStopRecoverAndSettleExactHostReceipt(t *testing.T) {
+	claim := LockClaim{
+		SchemaVersion: 1,
+		RunID:         "bbx_01TESTRUNIDENTITY0000000000",
+		RequestID:     "req_01TESTREQUESTIDENTITY00000",
+		ControllerID:  "controller-test",
+		Deadline:      time.Now().Add(time.Hour).UTC(),
+		RequestHash:   strings.Repeat("a", 64),
+		TaskName:      "BlenderBoxTest",
+	}
+	host := &recoveryHost{fakeHost: fakeHost{receipt: RunReceipt{
+		SchemaVersion: 1,
+		Claim:         claim,
+		State:         StateRunning,
+		SessionID:     "bss_exact-fake-session-identity-123456",
+	}}}
+	selected := target.Target{SchemaVersion: 1, TaskName: "BlenderBoxTest"}
+	runner := New(host)
+
+	status, err := runner.Status(context.Background(), selected, claim.RunID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status.RunID != claim.RunID || status.RequestID != claim.RequestID || status.RequestHash != claim.RequestHash || status.Deadline != claim.Deadline || status.SessionID != host.receipt.SessionID {
+		t.Fatalf("status authority changed: %+v", status)
+	}
+	stopped, err := runner.Stop(context.Background(), selected, claim.RunID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stopped.RunID != claim.RunID || stopped.RequestID != claim.RequestID || stopped.SessionID != host.receipt.SessionID || !stopped.Cleanup.Known() {
+		t.Fatalf("stop result changed authority: %+v", stopped)
+	}
+	wantOperations := []string{"observe", "observe", "settle"}
+	if !reflect.DeepEqual(host.operations, wantOperations) {
+		t.Fatalf("operations = %v, want %v", host.operations, wantOperations)
+	}
+}
+
+func TestStatusRejectsReceiptForReplacementRun(t *testing.T) {
+	requested := RunID("bbx_01TESTRUNIDENTITY0000000000")
+	host := &recoveryHost{fakeHost: fakeHost{receipt: RunReceipt{
+		SchemaVersion: 1,
+		Claim: LockClaim{
+			SchemaVersion: 1,
+			RunID:         "bbx_01REPLACEMENTIDENTITY000000",
+			RequestID:     "req_01TESTREQUESTIDENTITY00000",
+			ControllerID:  "controller-test",
+			Deadline:      time.Now().Add(time.Hour).UTC(),
+			RequestHash:   strings.Repeat("a", 64),
+			TaskName:      "BlenderBoxTest",
+		},
+		State:     StateRunning,
+		SessionID: "bss_replacement-session-identity-123456",
+	}}}
+	_, err := New(host).Status(context.Background(), target.Target{TaskName: "BlenderBoxTest"}, requested)
+	if err == nil || !strings.Contains(err.Error(), "Run ID changed") {
+		t.Fatalf("error = %v", err)
+	}
+}
+
+func TestStatusAllowsFailedReceiptBeforeSessionStart(t *testing.T) {
+	claim := LockClaim{
+		SchemaVersion: 1,
+		RunID:         "bbx_01TESTRUNIDENTITY0000000000",
+		RequestID:     "req_01TESTREQUESTIDENTITY00000",
+		ControllerID:  "controller-test",
+		Deadline:      time.Now().Add(time.Hour).UTC(),
+		RequestHash:   strings.Repeat("a", 64),
+		TaskName:      "BlenderBoxTest",
+	}
+	host := &recoveryHost{fakeHost: fakeHost{receipt: RunReceipt{
+		SchemaVersion: 1,
+		Claim:         claim,
+		State:         StateFailed,
+		Error:         "Session start failed",
+	}}}
+	status, err := New(host).Status(context.Background(), target.Target{TaskName: claim.TaskName}, claim.RunID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status.State != StateFailed || status.SessionID != "" {
+		t.Fatalf("status = %+v", status)
+	}
+}
+
 func testIntent(t *testing.T) RunIntent {
 	t.Helper()
 	return RunIntent{
@@ -543,10 +674,16 @@ func testEvidence() map[string][]byte {
 
 func evidenceFile(path string, kind string, content []byte) EvidenceFile {
 	hash := sha256.Sum256(content)
-	return EvidenceFile{
+	file := EvidenceFile{
 		Path:   path,
 		Type:   kind,
 		Size:   int64(len(content)),
 		SHA256: fmt.Sprintf("%x", hash),
 	}
+	if kind == "viewport" {
+		file.CaptureMethod = "offscreen"
+		file.Width = 800
+		file.Height = 600
+	}
+	return file
 }
