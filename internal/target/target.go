@@ -17,6 +17,7 @@ var (
 	taskNamePattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._ -]{0,127}$`)
 	userPattern     = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._\\@-]{0,127}$`)
 	workRootPattern = regexp.MustCompile(`^[A-Za-z]:\\[^\r\n"'*?<>|]{1,238}$`)
+	scpPathPattern  = regexp.MustCompile(`^[A-Za-z]:\\[A-Za-z0-9._\\-]{1,238}$`)
 	reservedDevice  = regexp.MustCompile(`(?i)^(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])$`)
 )
 
@@ -69,6 +70,9 @@ func (value Target) Validate() error {
 	if !ValidateWindowsPath(value.WorkRoot) {
 		return fmt.Errorf("target work_root must be an absolute safe Windows path")
 	}
+	if !ValidateLegacySCPWindowsPath(value.WorkRoot) {
+		return fmt.Errorf("target work_root must use the legacy-SCP-safe Windows path grammar")
+	}
 	if !userPattern.MatchString(value.InteractiveUser) {
 		return fmt.Errorf("target interactive_user is unsafe")
 	}
@@ -111,6 +115,11 @@ func (value Target) Validate() error {
 		seenExecutables[key] = struct{}{}
 	}
 	return nil
+}
+
+// ValidateLegacySCPWindowsPath accepts paths that cannot add syntax to a legacy remote SCP command.
+func ValidateLegacySCPWindowsPath(path string) bool {
+	return scpPathPattern.MatchString(path) && ValidateWindowsPath(path)
 }
 
 // ValidateWindowsPath accepts the absolute, non-device Windows path grammar used across process boundaries.

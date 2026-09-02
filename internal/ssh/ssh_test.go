@@ -1,6 +1,9 @@
 package ssh
 
-import "testing"
+import (
+	"reflect"
+	"testing"
+)
 
 func TestBoundedBufferKeepsDrainingAfterLimit(t *testing.T) {
 	buffer := newBoundedBuffer(4)
@@ -18,5 +21,18 @@ func TestBoundedBufferKeepsDrainingAfterLimit(t *testing.T) {
 	}
 	if !buffer.exceeded {
 		t.Fatal("buffer did not record the exceeded limit")
+	}
+}
+
+func TestUploadArgumentsRejectRemoteShellSyntax(t *testing.T) {
+	for _, destination := range []string{`C:\Blender Box\.setup.bin`, `C:\Blender&Box\.setup.bin`, `C:\Blender'Box\.setup.bin`} {
+		if _, err := uploadArguments("windows-test", "/tmp/source", destination); err == nil {
+			t.Fatalf("unsafe destination %q was accepted", destination)
+		}
+	}
+	want := []string{"-q", "--", "/tmp/source", "windows-test:C:/Blender_Box/.setup-file.bin"}
+	got, err := uploadArguments("windows-test", "/tmp/source", `C:\Blender_Box\.setup-file.bin`)
+	if err != nil || !reflect.DeepEqual(got, want) {
+		t.Fatalf("upload arguments = %#v, error = %v", got, err)
 	}
 }

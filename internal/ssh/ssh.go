@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"os/exec"
 	"strings"
+
+	"github.com/BramVR/blender-box/internal/target"
 )
 
 const (
@@ -45,7 +47,10 @@ func (Runner) Run(ctx context.Context, host string, remoteArgs []string, stdin [
 }
 
 func (Runner) Upload(ctx context.Context, host, source, destination string) error {
-	arguments := []string{"-q", "--", source, host + ":" + strings.ReplaceAll(destination, `\`, "/")}
+	arguments, err := uploadArguments(host, source, destination)
+	if err != nil {
+		return err
+	}
 	command := exec.CommandContext(ctx, "scp", arguments...)
 	stdout := newBoundedBuffer(maxStdoutBytes)
 	stderr := newBoundedBuffer(maxStderrBytes)
@@ -64,6 +69,13 @@ func (Runner) Upload(ctx context.Context, host, source, destination string) erro
 		return fmt.Errorf("SCP output exceeded its limit")
 	}
 	return nil
+}
+
+func uploadArguments(host, source, destination string) ([]string, error) {
+	if !target.ValidateLegacySCPWindowsPath(destination) {
+		return nil, fmt.Errorf("SCP destination uses unsafe remote-shell syntax")
+	}
+	return []string{"-q", "--", source, host + ":" + strings.ReplaceAll(destination, `\`, "/")}, nil
 }
 
 type boundedBuffer struct {

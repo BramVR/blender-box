@@ -25,6 +25,29 @@ func TestWorkRootRejectsTrailingSeparator(t *testing.T) {
 	}
 }
 
+func TestWorkRootRejectsLegacySCPShellCharacters(t *testing.T) {
+	base := Target{
+		SchemaVersion:           1,
+		SSHAlias:                "windows-test",
+		SSHUser:                 "test-user",
+		WorkRoot:                `C:\BlenderBoxTest`,
+		InteractiveUser:         "test-user",
+		TaskName:                "BlenderBoxTest",
+		BlenderExecutable:       `C:\Program Files\Blender Foundation\Blender\blender.exe`,
+		SessionBrokerExecutable: `C:\BlenderBoxTest\bin\blendersessiond.exe`,
+		HostExecutable:          `C:\BlenderBoxTest\bin\blender-box.exe`,
+	}
+	for _, root := range []string{`C:\Blender Box`, `C:\Blender&Box`, `C:\Blender(Box)`} {
+		value := base
+		value.WorkRoot = root
+		value.SessionBrokerExecutable = root + `\bin\blendersessiond.exe`
+		value.HostExecutable = root + `\bin\blender-box.exe`
+		if err := value.Validate(); err == nil || !strings.Contains(err.Error(), "SCP") {
+			t.Fatalf("legacy-SCP-unsafe work root %q error = %v", root, err)
+		}
+	}
+}
+
 func TestTargetRejectsNonCanonicalWindowsPaths(t *testing.T) {
 	base := Target{
 		SchemaVersion:           1,
