@@ -107,6 +107,14 @@ func TestCheckRequiresProvisionedStateDirectories(t *testing.T) {
 	}
 }
 
+func TestCheckAncestorsTrustOnlyControllerAndSystemAuthority(t *testing.T) {
+	if !strings.Contains(checkScript, "function Test-TrustedAncestor([string]$Path, [string]$ControllerSid)") ||
+		!strings.Contains(checkScript, "$trustedWriters = @(\n        'S-1-5-18'") ||
+		strings.Contains(checkScript, "$trustedWriters = @(\n        $PrincipalSid,") {
+		t.Fatal("inspection trusts the interactive task user to replace a managed-path ancestor")
+	}
+}
+
 func TestCheckRequiresDeclaredControllerTaskManagementAuthority(t *testing.T) {
 	if !strings.Contains(checkScript, "$controllerCanManage") ||
 		!strings.Contains(checkScript, "($aceMask -band $genericAll) -eq $genericAll") ||

@@ -217,8 +217,8 @@ function Expand-BlenderBoxFileSystemMask([int64]$Mask) {
     if (($Mask -band 268435456) -ne 0) { $expanded = $expanded -bor 0x001F01FF }
     return $expanded
 }
-function Assert-TrustedAncestors([string]$Path, [System.Security.Principal.SecurityIdentifier]$PrincipalSid, [System.Security.Principal.SecurityIdentifier]$ControllerSid) {
-    $trusted = @($PrincipalSid.Value, $ControllerSid.Value, 'S-1-5-18', 'S-1-5-32-544', 'S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464')
+function Assert-TrustedAncestors([string]$Path, [System.Security.Principal.SecurityIdentifier]$ControllerSid) {
+    $trusted = @($ControllerSid.Value, 'S-1-5-18', 'S-1-5-32-544', 'S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464')
     $fullPath = [System.IO.Path]::GetFullPath($Path)
     $current = [System.IO.Path]::GetDirectoryName($fullPath.TrimEnd([char[]]@('\')))
     $volumeRoot = [System.IO.Path]::GetPathRoot($fullPath)
@@ -315,7 +315,7 @@ try {
     if (-not (Test-Path -LiteralPath $blenderPath -PathType Leaf)) { throw 'Declared Blender executable is missing.' }
     $interactiveSid = ([System.Security.Principal.NTAccount]::new($interactiveUser)).Translate([System.Security.Principal.SecurityIdentifier])
     $controllerSid = $authenticatedControllerSid
-    Assert-TrustedAncestors $root $interactiveSid $controllerSid
+    Assert-TrustedAncestors $root $controllerSid
     $inherit = [System.Security.AccessControl.InheritanceFlags]::ContainerInherit -bor [System.Security.AccessControl.InheritanceFlags]::ObjectInherit
     $objectInheritance = [System.Security.AccessControl.InheritanceFlags]::ObjectInherit
     $none = [System.Security.AccessControl.PropagationFlags]::None

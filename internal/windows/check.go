@@ -90,10 +90,9 @@ function Test-TrustedWriters([string]$Path, [string]$PrincipalSid, [string]$Cont
     }
     return $true
 }
-function Test-TrustedAncestor([string]$Path, [string]$PrincipalSid, [string]$ControllerSid) {
+function Test-TrustedAncestor([string]$Path, [string]$ControllerSid) {
     if (-not (Test-Path -LiteralPath $Path -PathType Container -ErrorAction SilentlyContinue)) { return $false }
     $trustedWriters = @(
-        $PrincipalSid,
         'S-1-5-18',
         'S-1-5-32-544',
         'S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464',
@@ -186,14 +185,14 @@ function Test-SafePath([string]$Path, [string]$PrincipalSid, [string]$Controller
     if ($null -eq $parent) { return $false }
     if ($RequireSealedParent) {
         if (-not (Test-TrustedWriters $parent $PrincipalSid $ControllerSid $true $AllowControllerOwner)) { return $false }
-    } elseif (-not (Test-TrustedAncestor $parent $PrincipalSid $ControllerSid)) {
+    } elseif (-not (Test-TrustedAncestor $parent $ControllerSid)) {
         return $false
     }
     $root = [System.IO.Path]::GetPathRoot($Path)
     if ($parent -ieq $root) { return $true }
     $ancestor = [System.IO.Path]::GetDirectoryName($parent)
     while ($null -ne $ancestor) {
-        if (-not (Test-TrustedAncestor $ancestor $PrincipalSid $ControllerSid)) { return $false }
+        if (-not (Test-TrustedAncestor $ancestor $ControllerSid)) { return $false }
         if ($ancestor -ieq $root) { break }
         $next = [System.IO.Path]::GetDirectoryName($ancestor)
         if ($null -eq $next -or $next -ieq $ancestor) { return $false }

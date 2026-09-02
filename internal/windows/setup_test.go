@@ -41,7 +41,7 @@ func TestSetupPlansWithoutSSHAndAppliesOneBoundedHostBinary(t *testing.T) {
 		t.Fatalf("apply = %+v, SSH calls = %d", applied, len(fake.inputs))
 	}
 	prepare := string(fake.inputs[0])
-	if !strings.Contains(prepare, "Set-Acl -LiteralPath $root") || !strings.Contains(prepare, "Configured SSH user does not match the authenticated controller SID") || !strings.Contains(prepare, "Assert-TrustedAncestors $root $interactiveSid $controllerSid") || !strings.Contains(prepare, "provision blendersessiond inside it first") || !strings.Contains(prepare, "host-lock.json") || !strings.Contains(prepare, "Assert-NoReparsePath") || !strings.Contains(prepare, "$operation.Lock(0, 1)") || strings.Contains(prepare, "Register-ScheduledTask") {
+	if !strings.Contains(prepare, "Set-Acl -LiteralPath $root") || !strings.Contains(prepare, "Configured SSH user does not match the authenticated controller SID") || !strings.Contains(prepare, "Assert-TrustedAncestors $root $controllerSid") || !strings.Contains(prepare, "provision blendersessiond inside it first") || !strings.Contains(prepare, "host-lock.json") || !strings.Contains(prepare, "Assert-NoReparsePath") || !strings.Contains(prepare, "$operation.Lock(0, 1)") || strings.Contains(prepare, "Register-ScheduledTask") {
 		t.Fatalf("unexpected setup prepare script: %s", prepare)
 	}
 	if strings.Count(prepare, "Assert-NoReparsePath $hostPath") < 2 || strings.Count(prepare, "Assert-RegularFileOrMissing $hostPath") < 2 {
@@ -107,6 +107,15 @@ func TestSetupPlansWithoutSSHAndAppliesOneBoundedHostBinary(t *testing.T) {
 		if !strings.Contains(script, required) {
 			t.Errorf("setup script missing %q", required)
 		}
+	}
+}
+
+func TestSetupAncestorsTrustOnlyControllerAndSystemAuthority(t *testing.T) {
+	prepare := prepareSetupScript(adapterTarget())
+	if !strings.Contains(prepare, "function Assert-TrustedAncestors([string]$Path, [System.Security.Principal.SecurityIdentifier]$ControllerSid)") ||
+		!strings.Contains(prepare, "$trusted = @($ControllerSid.Value, 'S-1-5-18'") ||
+		strings.Contains(prepare, "$trusted = @($PrincipalSid.Value, $ControllerSid.Value") {
+		t.Fatal("setup trusts the interactive task user to replace a work-root ancestor")
 	}
 }
 
