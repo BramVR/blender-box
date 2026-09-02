@@ -37,7 +37,7 @@ func TestSetupPlansWithoutSSHAndAppliesOneBoundedHostBinary(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if applied.Status != "applied" || !applied.Applied || len(fake.inputs) != 2 || len(fake.uploads) != 1 {
+	if applied.Status != "applied" || !applied.Applied || len(fake.inputs) != 2 || len(fake.uploads) != 2 {
 		t.Fatalf("apply = %+v, SSH calls = %d", applied, len(fake.inputs))
 	}
 	prepare := decodedAdapterScript(t, fake.arguments[0])
@@ -54,11 +54,14 @@ func TestSetupPlansWithoutSSHAndAppliesOneBoundedHostBinary(t *testing.T) {
 			t.Fatalf("setup command %d used stdin for %d bytes", index, len(input))
 		}
 	}
-	if fake.uploads[0].host != adapterTarget().SSHAlias || fake.uploads[0].source != path || !strings.HasPrefix(fake.uploads[0].destination, adapterTarget().WorkRoot+`\.setup-`) {
+	if fake.uploads[0].host != adapterTarget().SSHAlias || fake.uploads[0].source != path || !strings.HasPrefix(fake.uploads[0].destination, adapterTarget().WorkRoot+`\.setup-`) || !strings.HasSuffix(fake.uploads[0].destination, ".bin") || string(fake.uploads[0].contents) != string(binary) {
 		t.Fatalf("upload = %+v", fake.uploads[0])
 	}
+	if fake.uploads[1].host != adapterTarget().SSHAlias || !strings.HasSuffix(fake.uploads[1].destination, ".ps1") || len(fake.uploads[1].contents) == 0 {
+		t.Fatalf("script upload = %+v", fake.uploads[1])
+	}
 	finalize := decodedAdapterScript(t, fake.arguments[1])
-	if !strings.Contains(finalize, "[IO.Compression.CompressionMode]0") || !strings.Contains(finalize, "ScriptBlock") {
+	if !strings.Contains(finalize, "ReadAllBytes") || !strings.Contains(finalize, "SHA256") || !strings.Contains(finalize, "ScriptBlock") || !strings.Contains(finalize, fake.uploads[1].destination) {
 		t.Fatalf("unexpected setup finalize bootstrap: %s", finalize)
 	}
 	script := setupScript(adapterTarget(), SetupResult{HostSize: int64(len(binary)), HostSHA256: hex.EncodeToString(hash[:])}, fake.uploads[0].destination)

@@ -29,6 +29,7 @@ type scriptedUpload struct {
 	host        string
 	source      string
 	destination string
+	contents    []byte
 }
 
 func (fake *scriptedSSH) Run(_ context.Context, _ string, arguments []string, input []byte) ([]byte, error) {
@@ -40,7 +41,11 @@ func (fake *scriptedSSH) Run(_ context.Context, _ string, arguments []string, in
 }
 
 func (fake *scriptedSSH) Upload(_ context.Context, host, source, destination string) error {
-	fake.uploads = append(fake.uploads, scriptedUpload{host: host, source: source, destination: destination})
+	contents, err := os.ReadFile(source)
+	if err != nil {
+		return err
+	}
+	fake.uploads = append(fake.uploads, scriptedUpload{host: host, source: source, destination: destination, contents: contents})
 	return nil
 }
 

@@ -18,12 +18,11 @@ import (
 )
 
 type fakeSSH struct {
-	stdout            []byte
-	host              string
-	args              []string
-	stdin             []byte
-	uploadSource      string
-	uploadDestination string
+	stdout  []byte
+	host    string
+	args    []string
+	stdin   []byte
+	uploads [][2]string
 }
 
 type fakeRunService struct {
@@ -245,8 +244,8 @@ func TestWindowsSetupPlansWithoutSSHAndRequiresApplyForWrite(t *testing.T) {
 		"--apply",
 		"--json",
 	}, strings.NewReader(""), &stdout, &stderr, Dependencies{SSH: fake})
-	if exitCode != 0 || stderr.Len() != 0 || fake.host != "windows-test" || fake.uploadSource != hostBinary || !strings.HasPrefix(fake.uploadDestination, `C:\BlenderBoxTest\.setup-`) {
-		t.Fatalf("apply exit = %d, stderr = %q, SSH host = %q, upload = %q -> %q", exitCode, stderr.String(), fake.host, fake.uploadSource, fake.uploadDestination)
+	if exitCode != 0 || stderr.Len() != 0 || fake.host != "windows-test" || len(fake.uploads) != 2 || fake.uploads[0][0] != hostBinary || !strings.HasPrefix(fake.uploads[0][1], `C:\BlenderBoxTest\.setup-`) {
+		t.Fatalf("apply exit = %d, stderr = %q, SSH host = %q, uploads = %q", exitCode, stderr.String(), fake.host, fake.uploads)
 	}
 }
 
@@ -284,8 +283,7 @@ func (fake *fakeSSH) Run(
 
 func (fake *fakeSSH) Upload(_ context.Context, host, source, destination string) error {
 	fake.host = host
-	fake.uploadSource = source
-	fake.uploadDestination = destination
+	fake.uploads = append(fake.uploads, [2]string{source, destination})
 	return nil
 }
 

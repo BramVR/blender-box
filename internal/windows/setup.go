@@ -1,12 +1,9 @@
 package windows
 
 import (
-	"bytes"
-	"compress/gzip"
 	"context"
 	cryptorand "crypto/rand"
 	"crypto/sha256"
-	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -53,24 +50,33 @@ func Setup(ctx context.Context, ssh SetupSSH, selected target.Target, source str
 	}
 	ctx, cancel := context.WithTimeout(ctx, setupTimeout)
 	defer cancel()
-	if _, err := ssh.Run(ctx, selected.SSHAlias, powerShellArguments(prepareSetupScript(selected)), nil); err != nil {
-		return SetupResult{}, fmt.Errorf("prepare Windows setup: %w", err)
-	}
 	var nonce [16]byte
 	if _, err := cryptorand.Read(nonce[:]); err != nil {
 		return SetupResult{}, fmt.Errorf("create setup transfer identity: %w", err)
 	}
-	stagedBinary := fmt.Sprintf(`%s\.setup-%s.bin`, selected.WorkRoot, hex.EncodeToString(nonce[:]))
+	transferID := hex.EncodeToString(nonce[:])
+	stagedBinary := fmt.Sprintf(`%s\.setup-%s.bin`, selected.WorkRoot, transferID)
+	stagedScript := fmt.Sprintf(`%s\.setup-%s.ps1`, selected.WorkRoot, transferID)
+	script := setupScript(selected, result, stagedBinary)
+	localScript, err := writeSetupScript(script)
+	if err != nil {
+		return SetupResult{}, err
+	}
+	defer os.Remove(localScript)
+	if _, err := ssh.Run(ctx, selected.SSHAlias, powerShellArguments(prepareSetupScript(selected)), nil); err != nil {
+		return SetupResult{}, fmt.Errorf("prepare Windows setup: %w", err)
+	}
 	if err := ssh.Upload(ctx, selected.SSHAlias, source, stagedBinary); err != nil {
-		return SetupResult{}, cleanupSetupUpload(ctx, ssh, selected, stagedBinary, fmt.Errorf("upload Windows host binary: %w", err))
+		return SetupResult{}, cleanupSetupUploads(ctx, ssh, selected, []string{stagedBinary, stagedScript}, fmt.Errorf("upload Windows host binary: %w", err))
 	}
-	encodedScript, err := encodeCompressedPowerShell(setupScript(selected, result, stagedBinary))
-	if err != nil {
-		return SetupResult{}, cleanupSetupUpload(ctx, ssh, selected, stagedBinary, err)
+	if err := ssh.Upload(ctx, selected.SSHAlias, localScript, stagedScript); err != nil {
+		return SetupResult{}, cleanupSetupUploads(ctx, ssh, selected, []string{stagedBinary, stagedScript}, fmt.Errorf("upload Windows setup script: %w", err))
 	}
-	output, err := ssh.Run(ctx, selected.SSHAlias, powerShellArgumentsEncoded(encodedScript), nil)
+	scriptHash := sha256.Sum256([]byte(script))
+	bootstrap := setupScriptBootstrap(stagedScript, int64(len(script)), hex.EncodeToString(scriptHash[:]))
+	output, err := ssh.Run(ctx, selected.SSHAlias, powerShellArguments(bootstrap), nil)
 	if err != nil {
-		return SetupResult{}, cleanupSetupUpload(ctx, ssh, selected, stagedBinary, fmt.Errorf("apply Windows setup: %w", err))
+		return SetupResult{}, cleanupSetupUploads(ctx, ssh, selected, []string{stagedBinary, stagedScript}, fmt.Errorf("apply Windows setup: %w", err))
 	}
 	if err := json.Unmarshal(output, &result); err != nil {
 		return SetupResult{}, fmt.Errorf("decode Windows setup result: %w", err)
@@ -82,40 +88,68 @@ func Setup(ctx context.Context, ssh SetupSSH, selected target.Target, source str
 }
 
 func powerShellArguments(script string) []string {
-	return powerShellArgumentsEncoded(encodePowerShell(script))
+	return []string{"powershell.exe", "-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand", encodePowerShell(script)}
 }
 
-func powerShellArgumentsEncoded(encoded string) []string {
-	return []string{"powershell.exe", "-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand", encoded}
-}
-
-func encodeCompressedPowerShell(script string) (string, error) {
+func writeSetupScript(script string) (string, error) {
 	if len(script) == 0 || len(script) > maxSetupScript {
 		return "", fmt.Errorf("setup script exceeds its limit")
 	}
-	var compressed bytes.Buffer
-	writer := gzip.NewWriter(&compressed)
-	if _, err := writer.Write([]byte(script)); err != nil {
-		return "", fmt.Errorf("compress setup script: %w", err)
+	file, err := os.CreateTemp("", "blender-box-setup-*.ps1")
+	if err != nil {
+		return "", fmt.Errorf("create local setup script: %w", err)
 	}
-	if err := writer.Close(); err != nil {
-		return "", fmt.Errorf("compress setup script: %w", err)
+	path := file.Name()
+	ok := false
+	defer func() {
+		file.Close()
+		if !ok {
+			os.Remove(path)
+		}
+	}()
+	if err := file.Chmod(0o600); err != nil {
+		return "", fmt.Errorf("secure local setup script: %w", err)
 	}
-	bootstrap := fmt.Sprintf(`$b=[Convert]::FromBase64String('%s')
-$m=[IO.MemoryStream]::new($b)
-$g=[IO.Compression.GzipStream]::new($m,[IO.Compression.CompressionMode]0)
-$r=[IO.StreamReader]::new($g)
-&([ScriptBlock]::Create($r.ReadToEnd()))`, base64.StdEncoding.EncodeToString(compressed.Bytes()))
-	return encodePowerShell(bootstrap), nil
+	if _, err := file.WriteString(script); err != nil {
+		return "", fmt.Errorf("write local setup script: %w", err)
+	}
+	if err := file.Sync(); err != nil {
+		return "", fmt.Errorf("sync local setup script: %w", err)
+	}
+	if err := file.Close(); err != nil {
+		return "", fmt.Errorf("close local setup script: %w", err)
+	}
+	ok = true
+	return path, nil
 }
 
-func cleanupSetupUpload(ctx context.Context, ssh SetupSSH, selected target.Target, stagedBinary string, cause error) error {
+func setupScriptBootstrap(path string, size int64, expectedHash string) string {
+	return fmt.Sprintf(`$ErrorActionPreference = 'Stop'
+$path = '%s'
+try {
+    $bytes = [IO.File]::ReadAllBytes($path)
+    if ($bytes.Length -ne %d) { throw 'Setup script size changed in transfer.' }
+    $sha = [Security.Cryptography.SHA256]::Create()
+    try { $actualHash = [BitConverter]::ToString($sha.ComputeHash($bytes)).Replace('-', '').ToLowerInvariant() }
+    finally { $sha.Dispose() }
+    if ($actualHash -cne '%s') { throw 'Setup script SHA256 changed in transfer.' }
+    $script = [Text.Encoding]::UTF8.GetString($bytes)
+    Remove-Item -Force -LiteralPath $path
+    & ([ScriptBlock]::Create($script))
+} finally {
+    if (Test-Path -LiteralPath $path -PathType Leaf) { Remove-Item -Force -LiteralPath $path }
+}`, path, size, expectedHash)
+}
+
+func cleanupSetupUploads(ctx context.Context, ssh SetupSSH, selected target.Target, paths []string, cause error) error {
 	cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
 	defer cancel()
-	cleanupScript := fmt.Sprintf(`$ErrorActionPreference = 'Stop'
-if (Test-Path -LiteralPath '%s' -PathType Leaf) { Remove-Item -Force -LiteralPath '%s' }`, stagedBinary, stagedBinary)
+	cleanupScript := "$ErrorActionPreference = 'Stop'\n"
+	for _, path := range paths {
+		cleanupScript += fmt.Sprintf("if (Test-Path -LiteralPath '%s' -PathType Leaf) { Remove-Item -Force -LiteralPath '%s' }\n", path, path)
+	}
 	if _, err := ssh.Run(cleanupCtx, selected.SSHAlias, powerShellArguments(cleanupScript), nil); err != nil {
-		return errors.Join(cause, fmt.Errorf("clean setup upload: %w", err))
+		return errors.Join(cause, fmt.Errorf("clean setup uploads: %w", err))
 	}
 	return cause
 }
