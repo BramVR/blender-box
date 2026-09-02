@@ -163,7 +163,7 @@ func TestRunCommandEmitsVersionedJSONAndPassesBoundedIntent(t *testing.T) {
 		},
 	})
 
-	if exitCode != 0 || stderr.Len() != 0 {
+	if exitCode != 0 || stderr.String() != "RUN_ID=bbx_01CLIRUNIDENTITY000000000000\n" {
 		t.Fatalf("exit = %d, stderr = %q", exitCode, stderr.String())
 	}
 	if service.runIntent.RunID != "bbx_01CLIRUNIDENTITY000000000000" || service.runIntent.RequestID != "req_01CLIREQUESTIDENTITY000000" {
@@ -181,6 +181,21 @@ func TestRunCommandEmitsVersionedJSONAndPassesBoundedIntent(t *testing.T) {
 	}
 	if result.SchemaVersion != 1 || result.RunID != service.runIntent.RunID || result.SessionID == "" || !result.Cleanup.Known() {
 		t.Fatalf("result = %+v", result)
+	}
+}
+
+func TestRunPublishesRunIDBeforeTargetValidation(t *testing.T) {
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	exitCode := Run(context.Background(), []string{
+		"run", "--target", filepath.Join(t.TempDir(), "missing.json"), "--payload", "missing.json", "--json",
+	}, strings.NewReader(""), &stdout, &stderr, Dependencies{
+		NewIdentities: func() (orchestrator.RunID, orchestrator.RequestID, string, error) {
+			return "bbx_01EARLYRUNIDENTITY00000000000", "req_01EARLYREQUESTIDENTITY00000", "ctl_cli-test", nil
+		},
+	})
+	if exitCode != 1 || !strings.HasPrefix(stderr.String(), "RUN_ID=bbx_01EARLYRUNIDENTITY00000000000\n") {
+		t.Fatalf("exit = %d, stderr = %q", exitCode, stderr.String())
 	}
 }
 

@@ -176,6 +176,7 @@ func runCommand(ctx context.Context, args []string, stdout io.Writer, stderr io.
 	if err != nil {
 		return fail(stderr, "create Run identity", err)
 	}
+	fmt.Fprintf(stderr, "RUN_ID=%s\n", runID)
 	selected, err := target.Load(*targetPath)
 	if err != nil {
 		return failRun(stderr, runID, err)
