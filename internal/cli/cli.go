@@ -179,14 +179,15 @@ func runCommand(ctx context.Context, args []string, stdout io.Writer, stderr io.
 	fmt.Fprintf(stderr, "RUN_ID=%s\n", runID)
 	selected, err := target.Load(*targetPath)
 	if err != nil {
-		return failRun(stderr, runID, err)
+		return failRunResult(stdout, stderr, *asJSON, orchestrator.RunResult{SchemaVersion: 1, RunID: runID, State: orchestrator.StateFailed, Error: err.Error()}, err)
 	}
 	loaded, err := payload.Load(*payloadPath)
 	if err != nil {
-		return failRun(stderr, runID, err)
+		return failRunResult(stdout, stderr, *asJSON, orchestrator.RunResult{SchemaVersion: 1, RunID: runID, State: orchestrator.StateFailed, Error: err.Error()}, err)
 	}
 	if dependencies.Runner == nil {
-		return failRun(stderr, runID, fmt.Errorf("Run service is unavailable"))
+		err := fmt.Errorf("Run service is unavailable")
+		return failRunResult(stdout, stderr, *asJSON, orchestrator.RunResult{SchemaVersion: 1, RunID: runID, State: orchestrator.StateFailed, Error: err.Error()}, err)
 	}
 	root := *evidenceDir
 	if root == "" {
@@ -206,7 +207,16 @@ func runCommand(ctx context.Context, args []string, stdout io.Writer, stderr io.
 		EvidenceDir:  root,
 	})
 	if err != nil {
-		return failRun(stderr, runID, err)
+		failure := orchestrator.RunResult{SchemaVersion: 1, RunID: runID, State: orchestrator.StateFailed, Error: err.Error()}
+		if *asJSON {
+			recoveryCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+			defer cancel()
+			if status, statusErr := dependencies.Runner.Status(recoveryCtx, selected, runID); statusErr == nil {
+				failure = runResultFromStatus(status)
+				failure.Error = err.Error()
+			}
+		}
+		return failRunResult(stdout, stderr, *asJSON, failure, err)
 	}
 	if *asJSON {
 		return writeJSON(stdout, stderr, result)
@@ -340,4 +350,28 @@ func fail(output io.Writer, action string, err error) int {
 func failRun(output io.Writer, runID orchestrator.RunID, err error) int {
 	fmt.Fprintf(output, "ERROR [%s]: %v\n", runID, err)
 	return 1
+}
+
+func failRunResult(stdout, stderr io.Writer, asJSON bool, result orchestrator.RunResult, err error) int {
+	if asJSON {
+		if exitCode := writeJSON(stdout, stderr, result); exitCode != 0 {
+			return exitCode
+		}
+	}
+	return failRun(stderr, result.RunID, err)
+}
+
+func runResultFromStatus(status orchestrator.StatusResult) orchestrator.RunResult {
+	return orchestrator.RunResult{
+		SchemaVersion: status.SchemaVersion,
+		RunID:         status.RunID,
+		RequestID:     status.RequestID,
+		RequestHash:   status.RequestHash,
+		Deadline:      status.Deadline,
+		SessionID:     status.SessionID,
+		State:         status.State,
+		Evidence:      status.Evidence,
+		Cleanup:       status.Cleanup,
+		Error:         status.Error,
+	}
 }

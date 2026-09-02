@@ -196,6 +196,7 @@ type RunResult struct {
 	State         RunState         `json:"state"`
 	Evidence      EvidenceManifest `json:"evidence"`
 	Cleanup       CleanupState     `json:"cleanup"`
+	Error         string           `json:"error,omitempty"`
 }
 
 type StatusResult struct {

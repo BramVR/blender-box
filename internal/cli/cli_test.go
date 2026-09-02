@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/binary"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -33,11 +34,12 @@ type fakeRunService struct {
 	stopDeadline   time.Time
 	statusResult   orchestrator.StatusResult
 	stopResult     orchestrator.StopResult
+	runErr         error
 }
 
 func (fake *fakeRunService) Run(_ context.Context, intent orchestrator.RunIntent) (orchestrator.RunResult, error) {
 	fake.runIntent = intent
-	return orchestrator.RunResult{
+	result := orchestrator.RunResult{
 		SchemaVersion: 1,
 		RunID:         intent.RunID,
 		RequestID:     intent.RequestID,
@@ -50,7 +52,8 @@ func (fake *fakeRunService) Run(_ context.Context, intent orchestrator.RunIntent
 			RunRootRemoved: true,
 			LockReleased:   true,
 		},
-	}, nil
+	}
+	return result, fake.runErr
 }
 
 func (fake *fakeRunService) Status(ctx context.Context, _ target.Target, runID orchestrator.RunID) (orchestrator.StatusResult, error) {
@@ -197,6 +200,53 @@ func TestRunPublishesRunIDBeforeTargetValidation(t *testing.T) {
 	})
 	if exitCode != 1 || !strings.HasPrefix(stderr.String(), "RUN_ID=bbx_01EARLYRUNIDENTITY00000000000\n") {
 		t.Fatalf("exit = %d, stderr = %q", exitCode, stderr.String())
+	}
+}
+
+func TestFailedJSONRunEmitsRecoveredReceiptAndCleanup(t *testing.T) {
+	root := t.TempDir()
+	targetPath := writeTarget(t, root)
+	if err := os.WriteFile(filepath.Join(root, "scenario.py"), []byte("raise RuntimeError('expected')\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	payloadPath := filepath.Join(root, "payload.json")
+	if err := os.WriteFile(payloadPath, []byte(`{"schema_version":1,"files":[{"source":"scenario.py","destination":"scenario.py"}],"scenario":{"script":"scenario.py"}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	runID := orchestrator.RunID("bbx_01FAILEDJSONRUNIDENTITY000000")
+	service := &fakeRunService{
+		runErr: errors.New("Scenario call failed"),
+		statusResult: orchestrator.StatusResult{
+			SchemaVersion: 1,
+			RunID:         runID,
+			RequestID:     "req_01FAILEDJSONREQUESTIDENTITY0",
+			RequestHash:   strings.Repeat("a", 64),
+			Deadline:      time.Now().Add(time.Hour),
+			SessionID:     "bss_exact-failed-cli-session-identity-123456",
+			State:         orchestrator.StateFailed,
+			Cleanup:       orchestrator.CleanupState{SessionStopped: true, PayloadRemoved: true, RunRootRemoved: true, LockReleased: true},
+			Error:         "Scenario call failed",
+		},
+	}
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	exitCode := Run(context.Background(), []string{
+		"run", "--target", targetPath, "--payload", payloadPath, "--json",
+	}, strings.NewReader(""), &stdout, &stderr, Dependencies{
+		Runner: service,
+		NewIdentities: func() (orchestrator.RunID, orchestrator.RequestID, string, error) {
+			return runID, "req_01FAILEDJSONREQUESTIDENTITY0", "ctl_cli-test", nil
+		},
+	})
+	if exitCode != 1 || service.statusRun != runID {
+		t.Fatalf("exit = %d, status Run = %q", exitCode, service.statusRun)
+	}
+	var result orchestrator.RunResult
+	if err := json.Unmarshal(stdout.Bytes(), &result); err != nil {
+		t.Fatalf("stdout is not failure JSON: %v\n%s", err, stdout.String())
+	}
+	if result.RunID != runID || result.SessionID != service.statusResult.SessionID || !result.Cleanup.Known() || result.Error == "" {
+		t.Fatalf("failure result = %+v", result)
 	}
 }
 
