@@ -193,17 +193,37 @@ func (runtime *Runtime) Stop(ctx context.Context, request DaemonStop) error {
 		"--expect-session-id", string(request.SessionID),
 		"--json",
 	}, request.Environment)
-	if err != nil {
-		return err
-	}
 	var result struct {
 		SchemaVersion int    `json:"schema_version"`
 		Status        string `json:"status"`
+		Session       struct {
+			SessionID orchestrator.SessionID `json:"session_id"`
+		} `json:"session"`
 	}
-	if err := decodeExtensibleJSON(output, &result, maxProcessOutput); err != nil || result.SchemaVersion != 1 || result.Status != "stopped" {
+	if decodeErr := decodeExtensibleJSON(output, &result, maxProcessOutput); decodeErr != nil {
+		if err != nil {
+			return err
+		}
 		return fmt.Errorf("blendersessiond stop returned an invalid contract")
 	}
-	return nil
+	if result.SchemaVersion != 1 {
+		return fmt.Errorf("blendersessiond stop returned an invalid contract")
+	}
+	switch result.Status {
+	case "stopped":
+		if err != nil {
+			return err
+		}
+		return nil
+	case "not-found":
+		if err != nil && result.Session.SessionID == "" {
+			return nil
+		}
+	}
+	if err != nil {
+		return err
+	}
+	return fmt.Errorf("blendersessiond stop returned an invalid contract")
 }
 
 type ExecProcessRunner struct{}

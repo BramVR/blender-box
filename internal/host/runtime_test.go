@@ -3,6 +3,7 @@ package host
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"reflect"
 	"strings"
 	"testing"
@@ -12,9 +13,44 @@ import (
 
 type fakeProcessRunner struct {
 	outputs      [][]byte
+	errors       []error
 	executables  []string
 	arguments    [][]string
 	environments []map[string]string
+}
+
+func TestRuntimeTreatsExactStoppedSessionAbsenceAsIdempotent(t *testing.T) {
+	fake := &fakeProcessRunner{
+		outputs: [][]byte{[]byte(`{"schema_version":1,"status":"not-found","session":{"name":"blender-box-test","status":"not-found"}}`)},
+		errors:  []error{errors.New("exit status 1")},
+	}
+	runtime := NewRuntime(fake)
+	err := runtime.Stop(context.Background(), DaemonStop{
+		Executable:  `C:\Bin\blendersessiond.exe`,
+		Name:        "blender-box-test",
+		SessionID:   "bss_exact-runtime-session-identity-123456",
+		Environment: map[string]string{"BLENDERSESSIOND_STATE_DIR": `C:\Run\daemon`},
+	})
+	if err != nil {
+		t.Fatalf("Stop() error = %v", err)
+	}
+	assertArguments(t, fake.arguments[0], "stop", "--name", "blender-box-test", "--expect-session-id", "bss_exact-runtime-session-identity-123456", "--json")
+}
+
+func TestRuntimeRejectsNotFoundWithAReplacementIdentity(t *testing.T) {
+	fake := &fakeProcessRunner{
+		outputs: [][]byte{[]byte(`{"schema_version":1,"status":"not-found","session":{"session_id":"bss_replacement-runtime-session-identity-123456"}}`)},
+		errors:  []error{errors.New("exit status 1")},
+	}
+	runtime := NewRuntime(fake)
+	err := runtime.Stop(context.Background(), DaemonStop{
+		Executable: `C:\Bin\blendersessiond.exe`,
+		Name:       "blender-box-test",
+		SessionID:  "bss_exact-runtime-session-identity-123456",
+	})
+	if err == nil {
+		t.Fatal("Stop() accepted not-found for a replacement Session identity")
+	}
 }
 
 func TestRuntimeRejectsReadinessFromReplacementSession(t *testing.T) {
@@ -63,7 +99,12 @@ func (fake *fakeProcessRunner) Run(_ context.Context, executable string, argumen
 	fake.environments = append(fake.environments, copyEnvironment)
 	output := fake.outputs[0]
 	fake.outputs = fake.outputs[1:]
-	return output, nil
+	var err error
+	if len(fake.errors) > 0 {
+		err = fake.errors[0]
+		fake.errors = fake.errors[1:]
+	}
+	return output, err
 }
 
 func TestRuntimeFencesEveryDaemonOperationAndLaunchesExactTask(t *testing.T) {
