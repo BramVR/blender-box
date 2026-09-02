@@ -208,10 +208,12 @@ function Test-SafeStateTree([string]$Path, [string]$PrincipalSid, [string]$Contr
     $pending = [System.Collections.Generic.Stack[System.IO.DirectoryInfo]]::new()
     $pending.Push($rootItem)
     $modify = [System.Security.AccessControl.FileSystemRights]::Modify
+    $fullControl = [System.Security.AccessControl.FileSystemRights]::FullControl
     while ($pending.Count -gt 0) {
         $directory = $pending.Pop()
         if (([int64]$directory.Attributes -band [int64][System.IO.FileAttributes]::ReparsePoint) -ne 0) { return $false }
         if (-not (Test-SafePath $directory.FullName $PrincipalSid $ControllerSid $modify $false $true $true $true)) { return $false }
+        if (-not (Test-ConservativePathAccess $directory.FullName $ControllerSid $fullControl $true)) { return $false }
         try { $children = @($directory.EnumerateFileSystemInfos()) } catch { return $false }
         foreach ($child in $children) {
             if (([int64]$child.Attributes -band [int64][System.IO.FileAttributes]::ReparsePoint) -ne 0) { return $false }
@@ -220,10 +222,31 @@ function Test-SafeStateTree([string]$Path, [string]$PrincipalSid, [string]$Contr
                 $pending.Push($child)
             } elseif (-not (Test-SafePath $child.FullName $PrincipalSid $ControllerSid $modify $false $true $false $true)) {
                 return $false
+            } elseif (-not (Test-ConservativePathAccess $child.FullName $ControllerSid $fullControl $true)) {
+                return $false
             }
         }
     }
     return $true
+}
+function Test-RootStateFileInheritance([string]$Path, [string]$PrincipalSid, [string]$ControllerSid) {
+    try {
+        $acl = Get-Acl -LiteralPath $Path -ErrorAction Stop
+        $rules = $acl.GetAccessRules($true, $true, [System.Security.Principal.SecurityIdentifier])
+    } catch {
+        return $false
+    }
+    $objectInheritance = [System.Security.AccessControl.InheritanceFlags]::ObjectInherit
+    $inheritOnly = [System.Security.AccessControl.PropagationFlags]::InheritOnly
+    $modify = [int64][System.Security.AccessControl.FileSystemRights]::Modify
+    foreach ($rule in $rules) {
+        if ($rule.IdentityReference.Value -ne $PrincipalSid -or $rule.AccessControlType -ne [System.Security.AccessControl.AccessControlType]::Allow) { continue }
+        if (($rule.InheritanceFlags -band $objectInheritance) -eq 0) { continue }
+        if ($PrincipalSid -ne $ControllerSid -and ($rule.PropagationFlags -band $inheritOnly) -eq 0) { continue }
+        $ruleMask = Expand-FileSystemMask ([int64]$rule.FileSystemRights)
+        if (($ruleMask -band $modify) -eq $modify) { return $true }
+    }
+    return $false
 }
 $os = Get-CimInstance -ClassName Win32_OperatingSystem -ErrorAction SilentlyContinue
 Add-Check 'host.windows' ($null -ne $os) $true $os.Caption 'Windows' 'Windows host detected.'
@@ -247,15 +270,16 @@ $daemonPath = [string]$config.session_broker_executable
 $hostPath = [string]$config.host_executable
 $readExecute = [System.Security.AccessControl.FileSystemRights]::ReadAndExecute
 $modify = [System.Security.AccessControl.FileSystemRights]::Modify
+$fullControl = [System.Security.AccessControl.FileSystemRights]::FullControl
 $rootAccess = $readExecute -bor [System.Security.AccessControl.FileSystemRights]::WriteData
 $blenderOK = Test-Path -LiteralPath $blenderPath -PathType Leaf -ErrorAction SilentlyContinue
 $daemonOK = Test-Path -LiteralPath $daemonPath -PathType Leaf -ErrorAction SilentlyContinue
 $hostOK = Test-Path -LiteralPath $hostPath -PathType Leaf -ErrorAction SilentlyContinue
 Add-Check 'blender.executable' ($blenderOK -and (Test-SafePath $blenderPath $expectedSid $sshSid $readExecute $false $true $false $false)) $true $blenderPath 'existing executable with safe readers, owner, and writers' 'The configured Blender executable and parent must reject untrusted writers.'
-Add-Check 'daemon.executable' ($daemonOK -and (Test-SafePath $daemonPath $expectedSid $sshSid $readExecute $true $true $false $true)) $true $daemonPath 'existing executable with explicit task-principal access and trusted controller-owned update authority' 'The staged session broker and parent must carry the setup ACL.'
-Add-Check 'host.executable' ($hostOK -and (Test-SafePath $hostPath $expectedSid $sshSid $readExecute $true $true $false $true)) $true $hostPath 'existing executable with explicit task-principal access and trusted controller-owned update authority' 'The staged Blender Box host binary and parent must carry the setup ACL.'
+Add-Check 'daemon.executable' ($daemonOK -and (Test-SafePath $daemonPath $expectedSid $sshSid $readExecute $true $true $false $true) -and (Test-ConservativePathAccess $daemonPath $sshSid $fullControl $true) -and (Test-ConservativePathAccess ([System.IO.Path]::GetDirectoryName($daemonPath)) $sshSid $fullControl $true)) $true $daemonPath 'existing executable with task execution and controller update authority' 'The staged session broker and parent must carry the setup ACL.'
+Add-Check 'host.executable' ($hostOK -and (Test-SafePath $hostPath $expectedSid $sshSid $readExecute $true $true $false $true) -and (Test-ConservativePathAccess $hostPath $sshSid $fullControl $true) -and (Test-ConservativePathAccess ([System.IO.Path]::GetDirectoryName($hostPath)) $sshSid $fullControl $true)) $true $hostPath 'existing executable with task execution and controller update authority' 'The staged Blender Box host binary and parent must carry the setup ACL.'
 $rootExists = Test-Path -LiteralPath ([string]$config.work_root) -PathType Container -ErrorAction SilentlyContinue
-Add-Check 'work-root.access' ($rootExists -and (Test-SafePath ([string]$config.work_root) $expectedSid $sshSid $rootAccess $true $false $true $true)) $true ([string]$config.work_root) 'controller-owned root with task file creation but no child replacement authority' 'The operator-managed work root must separate task file creation from executable-directory replacement authority.'
+Add-Check 'work-root.access' ($rootExists -and (Test-SafePath ([string]$config.work_root) $expectedSid $sshSid $rootAccess $true $false $true $true) -and (Test-ConservativePathAccess ([string]$config.work_root) $sshSid $fullControl $true) -and (Test-RootStateFileInheritance ([string]$config.work_root) $expectedSid $sshSid)) $true ([string]$config.work_root) 'controller-owned root with controller update authority and inherited task state-file access' 'The operator-managed work root must separate task file creation from executable-directory replacement authority.'
 $stateTreeOK = $rootExists -and (Test-SafeStateTree ([System.IO.Path]::Combine([string]$config.work_root, 'runs')) $expectedSid $sshSid) -and (Test-SafeStateTree ([System.IO.Path]::Combine([string]$config.work_root, 'receipts')) $expectedSid $sshSid)
 Add-Check 'work-root.state-tree' $stateTreeOK $true $stateTreeOK $true 'Existing Run and receipt trees must contain no reparse points and only declared writers.'
 $task = Get-ScheduledTask -TaskPath '\' -TaskName ([string]$config.task_name) -ErrorAction SilentlyContinue

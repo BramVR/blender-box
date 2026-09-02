@@ -112,3 +112,21 @@ func TestCheckRequiresDeclaredControllerTaskManagementAuthority(t *testing.T) {
 		t.Fatal("task inspection does not require controller update and launch authority")
 	}
 }
+
+func TestCheckRequiresControllerMutationAndTaskRootFileInheritance(t *testing.T) {
+	for _, required := range []string{
+		"function Test-RootStateFileInheritance",
+		"$objectInheritance",
+		"$inheritOnly",
+		"Test-ConservativePathAccess $directory.FullName $ControllerSid $fullControl $true",
+		"Test-ConservativePathAccess $child.FullName $ControllerSid $fullControl $true",
+		"Test-ConservativePathAccess ([System.IO.Path]::GetDirectoryName($daemonPath)) $sshSid $fullControl $true",
+		"Test-ConservativePathAccess ([System.IO.Path]::GetDirectoryName($hostPath)) $sshSid $fullControl $true",
+		"Test-ConservativePathAccess ([string]$config.work_root) $sshSid $fullControl $true",
+		"Test-RootStateFileInheritance ([string]$config.work_root) $expectedSid $sshSid",
+	} {
+		if !strings.Contains(checkScript, required) {
+			t.Fatalf("Windows check missing %q", required)
+		}
+	}
+}
