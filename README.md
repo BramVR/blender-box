@@ -4,7 +4,7 @@
 
 Run declared Blender Scenarios on an owned Windows desktop from a developer checkout.
 
-Blender Box sends a bounded Run Payload over SSH and starts Blender through a fixed interactive Scheduled Task. A host-local `blendersessiond` owns the Blender process. The client returns a verified Evidence Bundle, then cleans up the exact Session that it started.
+Blender Box sends a bounded Run Payload over SSH and starts Blender through a fixed interactive Scheduled Task. A host-local [`blendersessiond`](https://github.com/BramVR/blendersessiond) owns the Blender process. The client returns a verified Evidence Bundle, then cleans up the exact Session that it started.
 
 Tailscale can provide private reachability, but Blender Box connects through a configured SSH alias. Blender's MCP add-on stays bound to Windows loopback.
 
