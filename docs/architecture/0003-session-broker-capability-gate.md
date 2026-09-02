@@ -18,16 +18,18 @@ Blender Box requires `blendersessiond` to return an opaque Session identity, req
 
 Design A pins a package version. It is small, but it cannot describe the current compatibility boundary because compatible and incompatible builds share that version.
 
-Design B probes the existing command help surface. It runs no Blender lifecycle command and checks the exact call and stop options Blender Box will later require.
+Design B probes the existing command help surface. It runs no Blender lifecycle command, but Python argument parsing exits on `--help` before rejecting unknown options. Capturing arbitrary help text also adds a hostile-output boundary to setup and inspection.
+
+Design C gives `blendersessiond` one versioned capability command with a required contract name. A known command and contract return zero without reading or changing Session state; an older daemon or unknown contract returns nonzero.
 
 ## Decision
 
-Slice 0 uses Design B. After proving the daemon path is trusted, `windows check` runs bounded `call --help` and `stop --help` subprocesses and requires `--expect-session-id` on both relevant operations plus `--read-timeout` on call. Explicit setup applies the daemon ACL, runs the same probe, and registers the Scheduled Task only after it passes.
+Slice 0 uses Design C. After proving the daemon path is trusted, `windows check` runs `blendersessiond capabilities --require blender-box-v1`. That contract means the daemon returns opaque Session identities, requires them for call and stop, and accepts bounded call read timeouts. Explicit setup applies the daemon ACL, runs the same probe, and registers the Scheduled Task only after it passes.
 
-The probe has a ten-second process deadline and rejects more than 64 KiB of combined help output. Failure is readiness failure; it never falls back to an unfenced call or stop.
+The probe has a ten-second process deadline and gives stdout and stderr distinct spellings of the Windows null device, so output never enters PowerShell or client memory. It touches the process handle before waiting because Windows PowerShell otherwise may not retain the exit code for a redirected `Start-Process`. Failure is readiness failure; it never falls back to an unfenced call or stop.
 
 ## Consequences
 
 - An old daemon is rejected before Blender launch.
 - Setup still requires the operator to provision `blendersessiond`; it does not deploy or upgrade it.
-- A future daemon may replace help-text probing with a versioned machine-readable capability command, but Blender Box must keep fail-closed exact identity and timeout checks through that migration.
+- Changing the required daemon contract needs a new named capability version and coordinated producer/consumer updates.

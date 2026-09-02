@@ -4,7 +4,7 @@ Windows inspection checks whether the declared host is ready without changing re
 
 ## Sub-features
 
-- `check-contract` returns versioned JSON with every required check.
+- `check-contract` returns versioned JSON with every required check and requires the non-launching `blendersessiond` `blender-box-v1` capability contract.
 - `check-identity` validates SSH and interactive-user SIDs.
 - `check-authority` validates path ACLs and exact Scheduled Task authority.
 - `check-no-write` performs no setup, launch, or cleanup mutation.

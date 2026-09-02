@@ -137,17 +137,16 @@ func TestCheckRequiresRegularSealedOperationAndLaunchLocks(t *testing.T) {
 	}
 }
 
-func TestCheckProbesExactSessionAndTimeoutDaemonContract(t *testing.T) {
+func TestCheckRequiresBlenderBoxSessionBrokerContract(t *testing.T) {
 	for _, required := range []string{
 		"function Test-SessionBrokerContract",
 		"function Invoke-SessionBrokerProbe",
-		"call', '--help'",
-		"stop', '--help'",
-		"--expect-session-id",
-		"--read-timeout",
+		"'capabilities', '--require', 'blender-box-v1'",
+		"Start-Process -FilePath $Path",
+		"-RedirectStandardOutput 'NUL'",
+		"-RedirectStandardError '\\\\.\\NUL'",
+		"$null = $process.Handle",
 		"WaitForExit(10000)",
-		"WaitAll([System.Threading.Tasks.Task[]]@($stdoutTask, $stderrTask), 1000)",
-		"65536",
 		"$daemonContractOK = $daemonSafe -and (Test-SessionBrokerContract $daemonPath)",
 		"$daemonOK -and $daemonContractOK",
 	} {
@@ -155,8 +154,10 @@ func TestCheckProbesExactSessionAndTimeoutDaemonContract(t *testing.T) {
 			t.Fatalf("inspection does not enforce daemon contract: missing %q", required)
 		}
 	}
-	if strings.Contains(checkScript, "$process.WaitForExit()") || strings.Contains(checkScript, ".GetAwaiter().GetResult()") {
-		t.Fatal("inspection contains an unbounded daemon probe wait")
+	for _, forbidden := range []string{"$process.WaitForExit()", ".GetAwaiter().GetResult()", "ReadToEndAsync", "CopyToAsync", "MemoryStream"} {
+		if strings.Contains(checkScript, forbidden) {
+			t.Fatalf("inspection contains unbounded daemon probe operation %q", forbidden)
+		}
 	}
 }
 

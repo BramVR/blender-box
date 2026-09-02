@@ -190,7 +190,7 @@ func readHostBinary(path string) ([]byte, error) {
 	return contents, nil
 }
 
-const setupOperationFunctions = `function Assert-NoReparsePath([string]$Path) {
+const setupOperationFunctions = sessionBrokerProbeFunctions + `function Assert-NoReparsePath([string]$Path) {
     $fullPath = [System.IO.Path]::GetFullPath($Path)
     $volumeRoot = [System.IO.Path]::GetPathRoot($fullPath)
     if ($volumeRoot -notmatch '^[A-Za-z]:\\$') { throw 'Setup paths must use a local drive.' }
@@ -212,45 +212,9 @@ function Assert-RegularFileOrMissing([string]$Path) {
         throw 'Managed executable destination is not a regular file.'
     }
 }
-function Invoke-SessionBrokerProbe([string]$Path, [string[]]$Arguments) {
-    $start = [System.Diagnostics.ProcessStartInfo]::new()
-    $start.FileName = $Path
-    $start.Arguments = [string]::Join(' ', $Arguments)
-    $start.UseShellExecute = $false
-    $start.CreateNoWindow = $true
-    $start.RedirectStandardOutput = $true
-    $start.RedirectStandardError = $true
-    $process = [System.Diagnostics.Process]::new()
-    $process.StartInfo = $start
-    try {
-        if (-not $process.Start()) { return $null }
-        $stdoutTask = $process.StandardOutput.ReadToEndAsync()
-        $stderrTask = $process.StandardError.ReadToEndAsync()
-        if (-not $process.WaitForExit(10000)) {
-            try { $process.Kill() } catch {}
-            [void]$process.WaitForExit(1000)
-            return $null
-        }
-        if (-not [System.Threading.Tasks.Task]::WaitAll([System.Threading.Tasks.Task[]]@($stdoutTask, $stderrTask), 1000)) { return $null }
-        $stdout = [string]$stdoutTask.Result
-        $stderr = [string]$stderrTask.Result
-        if ($stdout.Length + $stderr.Length -gt 65536) { return $null }
-        return [ordered]@{exit_code=$process.ExitCode; text=($stdout + [System.Environment]::NewLine + $stderr)}
-    } catch {
-        return $null
-    } finally {
-        $process.Dispose()
-    }
-}
 function Assert-CompatibleSessionBroker([string]$Path) {
-    $call = Invoke-SessionBrokerProbe $Path @('call', '--help')
-    $stop = Invoke-SessionBrokerProbe $Path @('stop', '--help')
-    if ($null -eq $call -or [int]$call.exit_code -ne 0 -or -not ([string]$call.text).Contains('--expect-session-id') -or -not ([string]$call.text).Contains('--read-timeout')) {
-        throw 'Declared blendersessiond does not support exact Session identity and bounded calls.'
-    }
-    if ($null -eq $stop -or [int]$stop.exit_code -ne 0 -or -not ([string]$stop.text).Contains('--expect-session-id')) {
-        throw 'Declared blendersessiond does not support exact Session identity for stop.'
-    }
+    $result = Invoke-SessionBrokerProbe $Path @('capabilities', '--require', 'blender-box-v1')
+    if ($null -eq $result -or [int]$result -ne 0) { throw 'Declared blendersessiond does not support the required Blender Box contract.' }
 }
 function Expand-BlenderBoxFileSystemMask([int64]$Mask) {
     [int64]$expanded = $Mask

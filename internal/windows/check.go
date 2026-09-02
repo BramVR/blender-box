@@ -31,40 +31,10 @@ function Normalize-Path([string]$Path) {
     if ([string]::IsNullOrWhiteSpace($Path)) { return $null }
     try { return [System.IO.Path]::GetFullPath($Path) } catch { return $null }
 }
-function Invoke-SessionBrokerProbe([string]$Path, [string[]]$Arguments) {
-    $start = [System.Diagnostics.ProcessStartInfo]::new()
-    $start.FileName = $Path
-    $start.Arguments = [string]::Join(' ', $Arguments)
-    $start.UseShellExecute = $false
-    $start.CreateNoWindow = $true
-    $start.RedirectStandardOutput = $true
-    $start.RedirectStandardError = $true
-    $process = [System.Diagnostics.Process]::new()
-    $process.StartInfo = $start
-    try {
-        if (-not $process.Start()) { return $null }
-        $stdoutTask = $process.StandardOutput.ReadToEndAsync()
-        $stderrTask = $process.StandardError.ReadToEndAsync()
-        if (-not $process.WaitForExit(10000)) {
-            try { $process.Kill() } catch {}
-            [void]$process.WaitForExit(1000)
-            return $null
-        }
-        if (-not [System.Threading.Tasks.Task]::WaitAll([System.Threading.Tasks.Task[]]@($stdoutTask, $stderrTask), 1000)) { return $null }
-        $stdout = [string]$stdoutTask.Result
-        $stderr = [string]$stderrTask.Result
-        if ($stdout.Length + $stderr.Length -gt 65536) { return $null }
-        return [ordered]@{exit_code=$process.ExitCode; text=($stdout + [System.Environment]::NewLine + $stderr)}
-    } catch {
-        return $null
-    } finally {
-        $process.Dispose()
-    }
-}
+` + sessionBrokerProbeFunctions + `
 function Test-SessionBrokerContract([string]$Path) {
-    $call = Invoke-SessionBrokerProbe $Path @('call', '--help')
-    $stop = Invoke-SessionBrokerProbe $Path @('stop', '--help')
-    return $null -ne $call -and [int]$call.exit_code -eq 0 -and ([string]$call.text).Contains('--expect-session-id') -and ([string]$call.text).Contains('--read-timeout') -and $null -ne $stop -and [int]$stop.exit_code -eq 0 -and ([string]$stop.text).Contains('--expect-session-id')
+    $result = Invoke-SessionBrokerProbe $Path @('capabilities', '--require', 'blender-box-v1')
+    return $null -ne $result -and [int]$result -eq 0
 }
 function Expand-FileSystemMask([int64]$Mask) {
     [int64]$genericRead = 2147483648

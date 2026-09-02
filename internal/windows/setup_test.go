@@ -162,21 +162,22 @@ func TestSetupRequiresCompatibleSessionBrokerBeforeTaskRegistration(t *testing.T
 		for _, required := range []string{
 			"function Assert-CompatibleSessionBroker",
 			"function Invoke-SessionBrokerProbe",
-			"call', '--help'",
-			"stop', '--help'",
-			"--expect-session-id",
-			"--read-timeout",
+			"'capabilities', '--require', 'blender-box-v1'",
+			"Start-Process -FilePath $Path",
+			"-RedirectStandardOutput 'NUL'",
+			"-RedirectStandardError '\\\\.\\NUL'",
+			"$null = $process.Handle",
 			"WaitForExit(10000)",
-			"WaitAll([System.Threading.Tasks.Task[]]@($stdoutTask, $stderrTask), 1000)",
-			"65536",
 			"Assert-CompatibleSessionBroker $daemonPath",
 		} {
 			if !strings.Contains(script, required) {
 				t.Fatalf("%s script does not enforce daemon contract: missing %q", name, required)
 			}
 		}
-		if strings.Contains(script, "$process.WaitForExit()") || strings.Contains(script, ".GetAwaiter().GetResult()") {
-			t.Fatalf("%s script contains an unbounded probe wait", name)
+		for _, forbidden := range []string{"$process.WaitForExit()", ".GetAwaiter().GetResult()", "ReadToEndAsync", "CopyToAsync", "MemoryStream"} {
+			if strings.Contains(script, forbidden) {
+				t.Fatalf("%s script contains unbounded probe operation %q", name, forbidden)
+			}
 		}
 	}
 }
