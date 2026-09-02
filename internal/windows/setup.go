@@ -104,13 +104,7 @@ $expectedArguments = '%s'
 $expectedSize = [int64]%d
 $expectedHash = '%s'
 $temporary = $hostPath + '.setup-' + [Guid]::NewGuid().ToString('N')
-try {
-    New-Item -ItemType Directory -Force -Path $root | Out-Null
-    New-Item -ItemType Directory -Force -Path ([System.IO.Path]::GetDirectoryName($hostPath)) | Out-Null
-    if (-not (Test-Path -LiteralPath $daemonPath -PathType Leaf)) { throw 'Declared blendersessiond executable is missing.' }
-    if (-not (Test-Path -LiteralPath $blenderPath -PathType Leaf)) { throw 'Declared Blender executable is missing.' }
-    $interactiveSid = ([System.Security.Principal.NTAccount]::new($interactiveUser)).Translate([System.Security.Principal.SecurityIdentifier])
-    $controllerSid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User
+function New-BlenderBoxDirectoryAcl {
     $inherit = [System.Security.AccessControl.InheritanceFlags]::ContainerInherit -bor [System.Security.AccessControl.InheritanceFlags]::ObjectInherit
     $none = [System.Security.AccessControl.PropagationFlags]::None
     $allow = [System.Security.AccessControl.AccessControlType]::Allow
@@ -123,7 +117,35 @@ try {
     }
     $acl.AddAccessRule([System.Security.AccessControl.FileSystemAccessRule]::new([System.Security.Principal.SecurityIdentifier]::new('S-1-5-18'), [System.Security.AccessControl.FileSystemRights]::FullControl, $inherit, $none, $allow))
     $acl.AddAccessRule([System.Security.AccessControl.FileSystemAccessRule]::new([System.Security.Principal.SecurityIdentifier]::new('S-1-5-32-544'), [System.Security.AccessControl.FileSystemRights]::FullControl, $inherit, $none, $allow))
-    Set-Acl -LiteralPath $root -AclObject $acl
+    return $acl
+}
+function New-BlenderBoxFileAcl {
+    $noneInheritance = [System.Security.AccessControl.InheritanceFlags]::None
+    $nonePropagation = [System.Security.AccessControl.PropagationFlags]::None
+    $allow = [System.Security.AccessControl.AccessControlType]::Allow
+    $acl = [System.Security.AccessControl.FileSecurity]::new()
+    $acl.SetAccessRuleProtection($true, $false)
+    $acl.SetOwner($interactiveSid)
+    $acl.AddAccessRule([System.Security.AccessControl.FileSystemAccessRule]::new($interactiveSid, [System.Security.AccessControl.FileSystemRights]::ReadAndExecute, $noneInheritance, $nonePropagation, $allow))
+    if ($controllerSid -ne $interactiveSid) {
+        $acl.AddAccessRule([System.Security.AccessControl.FileSystemAccessRule]::new($controllerSid, [System.Security.AccessControl.FileSystemRights]::ReadAndExecute, $noneInheritance, $nonePropagation, $allow))
+    }
+    $acl.AddAccessRule([System.Security.AccessControl.FileSystemAccessRule]::new([System.Security.Principal.SecurityIdentifier]::new('S-1-5-18'), [System.Security.AccessControl.FileSystemRights]::FullControl, $noneInheritance, $nonePropagation, $allow))
+    $acl.AddAccessRule([System.Security.AccessControl.FileSystemAccessRule]::new([System.Security.Principal.SecurityIdentifier]::new('S-1-5-32-544'), [System.Security.AccessControl.FileSystemRights]::FullControl, $noneInheritance, $nonePropagation, $allow))
+    return $acl
+}
+try {
+    New-Item -ItemType Directory -Force -Path $root | Out-Null
+    $hostDirectory = [System.IO.Path]::GetDirectoryName($hostPath)
+    $daemonDirectory = [System.IO.Path]::GetDirectoryName($daemonPath)
+    New-Item -ItemType Directory -Force -Path $hostDirectory | Out-Null
+    if (-not (Test-Path -LiteralPath $daemonPath -PathType Leaf)) { throw 'Declared blendersessiond executable is missing.' }
+    if (-not (Test-Path -LiteralPath $blenderPath -PathType Leaf)) { throw 'Declared Blender executable is missing.' }
+    $interactiveSid = ([System.Security.Principal.NTAccount]::new($interactiveUser)).Translate([System.Security.Principal.SecurityIdentifier])
+    $controllerSid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User
+    Set-Acl -LiteralPath $root -AclObject (New-BlenderBoxDirectoryAcl)
+    Set-Acl -LiteralPath $hostDirectory -AclObject (New-BlenderBoxDirectoryAcl)
+    if ($daemonDirectory -ine $hostDirectory) { Set-Acl -LiteralPath $daemonDirectory -AclObject (New-BlenderBoxDirectoryAcl) }
     $inputStream = [Console]::OpenStandardInput()
     $outputStream = [System.IO.File]::Open($temporary, [System.IO.FileMode]::CreateNew, [System.IO.FileAccess]::Write, [System.IO.FileShare]::None)
     try {
@@ -151,6 +173,8 @@ try {
     } else {
         [System.IO.File]::Move($temporary, $hostPath)
     }
+    Set-Acl -LiteralPath $hostPath -AclObject (New-BlenderBoxFileAcl)
+    Set-Acl -LiteralPath $daemonPath -AclObject (New-BlenderBoxFileAcl)
     $action = New-ScheduledTaskAction -Execute $hostPath -Argument $expectedArguments -WorkingDirectory ([System.IO.Path]::GetDirectoryName($hostPath))
     $principal = New-ScheduledTaskPrincipal -UserId $interactiveUser -LogonType Interactive -RunLevel Limited
     $settings = New-ScheduledTaskSettingsSet -MultipleInstances IgnoreNew -ExecutionTimeLimit ([TimeSpan]::Zero) -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries

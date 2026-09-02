@@ -79,3 +79,29 @@ func TestLoadRejectsTrailingJSONValue(t *testing.T) {
 		t.Fatal("target with a trailing JSON value was accepted")
 	}
 }
+
+func TestManagedExecutablesMustStayUnderWorkRoot(t *testing.T) {
+	base := Target{
+		SchemaVersion:           1,
+		SSHAlias:                "windows-test",
+		SSHUser:                 "test-user",
+		WorkRoot:                `C:\BlenderBoxTest`,
+		InteractiveUser:         "test-user",
+		TaskName:                "BlenderBoxTest",
+		BlenderExecutable:       `C:\Program Files\Blender Foundation\Blender\blender.exe`,
+		SessionBrokerExecutable: `C:\BlenderBoxTest\bin\blendersessiond.exe`,
+		HostExecutable:          `C:\BlenderBoxTest\bin\blender-box.exe`,
+	}
+	for name, mutate := range map[string]func(*Target){
+		"host":   func(value *Target) { value.HostExecutable = `C:\Other\blender-box.exe` },
+		"daemon": func(value *Target) { value.SessionBrokerExecutable = `D:\Other\blendersessiond.exe` },
+	} {
+		t.Run(name, func(t *testing.T) {
+			value := base
+			mutate(&value)
+			if err := value.Validate(); err == nil {
+				t.Fatal("managed executable outside work root was accepted")
+			}
+		})
+	}
+}

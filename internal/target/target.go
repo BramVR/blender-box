@@ -8,6 +8,8 @@ import (
 	"os"
 	"regexp"
 	"strings"
+
+	"github.com/BramVR/blender-box/internal/safepath"
 )
 
 var (
@@ -80,6 +82,14 @@ func (value Target) Validate() error {
 	} {
 		if !ValidateWindowsPath(path) {
 			return fmt.Errorf("target %s must be an absolute safe Windows file path", label)
+		}
+	}
+	for label, path := range map[string]string{
+		"session_broker_executable": value.SessionBrokerExecutable,
+		"host_executable":           value.HostExecutable,
+	} {
+		if !strings.HasPrefix(safepath.WindowsKey(path), safepath.WindowsKey(value.WorkRoot)+`\`) {
+			return fmt.Errorf("target %s must be inside work_root", label)
 		}
 	}
 	return nil
