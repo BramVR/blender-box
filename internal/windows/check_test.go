@@ -94,7 +94,9 @@ func TestCheckAcceptsCompleteFailedEvidence(t *testing.T) {
 func TestCheckStateTreeAcceptsControllerOwnedInheritedRuntimeState(t *testing.T) {
 	if !strings.Contains(checkScript, "[bool]$AllowControllerOwner") ||
 		!strings.Contains(checkScript, "if ($AllowControllerOwner) { $trustedOwners += $ControllerSid }") ||
-		!strings.Contains(checkScript, "$modify $false $true $true $true") {
+		!strings.Contains(checkScript, "$modify $false $true $true $true") ||
+		!strings.Contains(checkScript, "Test-ConservativePathAccess $directory.FullName $ControllerSid $fullControl $isRoot") ||
+		!strings.Contains(checkScript, "Test-ConservativePathAccess $child.FullName $ControllerSid $fullControl $false") {
 		t.Fatal("state-tree inspection does not accept runtime state owned by the declared controller with inherited task access")
 	}
 }
@@ -118,8 +120,8 @@ func TestCheckRequiresControllerMutationAndTaskRootFileInheritance(t *testing.T)
 		"function Test-RootStateFileInheritance",
 		"$objectInheritance",
 		"$inheritOnly",
-		"Test-ConservativePathAccess $directory.FullName $ControllerSid $fullControl $true",
-		"Test-ConservativePathAccess $child.FullName $ControllerSid $fullControl $true",
+		"Test-ConservativePathAccess $directory.FullName $ControllerSid $fullControl $isRoot",
+		"Test-ConservativePathAccess $child.FullName $ControllerSid $fullControl $false",
 		"Test-ConservativePathAccess ([System.IO.Path]::GetDirectoryName($daemonPath)) $sshSid $fullControl $true",
 		"Test-ConservativePathAccess ([System.IO.Path]::GetDirectoryName($hostPath)) $sshSid $fullControl $true",
 		"Test-ConservativePathAccess ([string]$config.work_root) $sshSid $fullControl $true",

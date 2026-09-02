@@ -211,9 +211,10 @@ function Test-SafeStateTree([string]$Path, [string]$PrincipalSid, [string]$Contr
     $fullControl = [System.Security.AccessControl.FileSystemRights]::FullControl
     while ($pending.Count -gt 0) {
         $directory = $pending.Pop()
+        $isRoot = $directory.FullName -ieq $rootItem.FullName
         if (([int64]$directory.Attributes -band [int64][System.IO.FileAttributes]::ReparsePoint) -ne 0) { return $false }
         if (-not (Test-SafePath $directory.FullName $PrincipalSid $ControllerSid $modify $false $true $true $true)) { return $false }
-        if (-not (Test-ConservativePathAccess $directory.FullName $ControllerSid $fullControl $true)) { return $false }
+        if (-not (Test-ConservativePathAccess $directory.FullName $ControllerSid $fullControl $isRoot)) { return $false }
         try { $children = @($directory.EnumerateFileSystemInfos()) } catch { return $false }
         foreach ($child in $children) {
             if (([int64]$child.Attributes -band [int64][System.IO.FileAttributes]::ReparsePoint) -ne 0) { return $false }
@@ -222,7 +223,7 @@ function Test-SafeStateTree([string]$Path, [string]$PrincipalSid, [string]$Contr
                 $pending.Push($child)
             } elseif (-not (Test-SafePath $child.FullName $PrincipalSid $ControllerSid $modify $false $true $false $true)) {
                 return $false
-            } elseif (-not (Test-ConservativePathAccess $child.FullName $ControllerSid $fullControl $true)) {
+            } elseif (-not (Test-ConservativePathAccess $child.FullName $ControllerSid $fullControl $false)) {
                 return $false
             }
         }
