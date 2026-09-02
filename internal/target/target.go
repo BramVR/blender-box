@@ -96,6 +96,10 @@ func (value Target) Validate() error {
 		if safepath.WindowsKey(parent) == rootKey {
 			return fmt.Errorf("target %s must be inside a dedicated executable directory", label)
 		}
+		pathKey := safepath.WindowsKey(path)
+		if strings.HasPrefix(pathKey, safepath.WindowsKey(value.WorkRoot+`\runs\`)) || strings.HasPrefix(pathKey, safepath.WindowsKey(value.WorkRoot+`\receipts\`)) {
+			return fmt.Errorf("target %s must not use a reserved state directory", label)
+		}
 	}
 	executables := []string{value.BlenderExecutable, value.SessionBrokerExecutable, value.HostExecutable}
 	seenExecutables := make(map[string]struct{}, len(executables))
