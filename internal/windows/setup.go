@@ -101,10 +101,9 @@ func encodeCompressedPowerShell(script string) (string, error) {
 	if err := writer.Close(); err != nil {
 		return "", fmt.Errorf("compress setup script: %w", err)
 	}
-	bootstrap := fmt.Sprintf(`$ErrorActionPreference = 'Stop'
-$b = [Convert]::FromBase64String('%s')
+	bootstrap := fmt.Sprintf(`$b = [Convert]::FromBase64String('%s')
 $m = [IO.MemoryStream]::new($b)
-$g = [IO.Compression.GzipStream]::new($m, 0)
+$g = [IO.Compression.GzipStream]::new($m, [IO.Compression.CompressionMode]::Decompress)
 $r = [IO.StreamReader]::new($g)
 & ([ScriptBlock]::Create($r.ReadToEnd()))`, base64.StdEncoding.EncodeToString(compressed.Bytes()))
 	return encodePowerShell(bootstrap), nil

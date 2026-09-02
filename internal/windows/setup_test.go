@@ -58,7 +58,7 @@ func TestSetupPlansWithoutSSHAndAppliesOneBoundedHostBinary(t *testing.T) {
 		t.Fatalf("upload = %+v", fake.uploads[0])
 	}
 	finalize := decodedAdapterScript(t, fake.arguments[1])
-	if !strings.Contains(finalize, "GzipStream") || !strings.Contains(finalize, "ScriptBlock") {
+	if !strings.Contains(finalize, "[IO.Compression.CompressionMode]::Decompress") || !strings.Contains(finalize, "ScriptBlock") {
 		t.Fatalf("unexpected setup finalize bootstrap: %s", finalize)
 	}
 	script := setupScript(adapterTarget(), SetupResult{HostSize: int64(len(binary)), HostSHA256: hex.EncodeToString(hash[:])}, fake.uploads[0].destination)
