@@ -30,9 +30,42 @@ type stoppingDaemon struct {
 	stops   []DaemonStop
 }
 
+type waitingDaemon struct {
+	readyStarted chan struct{}
+	stopped      chan struct{}
+	once         sync.Once
+	stops        []DaemonStop
+}
+
+func (daemon *waitingDaemon) Start(context.Context, DaemonStart) (orchestrator.SessionID, error) {
+	return "bss_exact-waiting-session-identity-123456", nil
+}
+
+func (daemon *waitingDaemon) WaitReady(ctx context.Context, _ DaemonReady) error {
+	close(daemon.readyStarted)
+	select {
+	case <-daemon.stopped:
+		return errors.New("Session stopped")
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func (daemon *waitingDaemon) Call(context.Context, DaemonCall) (json.RawMessage, error) {
+	return nil, errors.New("unexpected call before readiness")
+}
+
+func (daemon *waitingDaemon) Stop(_ context.Context, request DaemonStop) error {
+	daemon.stops = append(daemon.stops, request)
+	daemon.once.Do(func() { close(daemon.stopped) })
+	return nil
+}
+
 func (daemon *stoppingDaemon) Start(context.Context, DaemonStart) (orchestrator.SessionID, error) {
 	return "bss_exact-stoppable-session-identity-123456", nil
 }
+
+func (daemon *stoppingDaemon) WaitReady(context.Context, DaemonReady) error { return nil }
 
 func (daemon *stoppingDaemon) Call(ctx context.Context, request DaemonCall) (json.RawMessage, error) {
 	if request.Command != "execute_code" {
@@ -61,6 +94,7 @@ func (fake *fakeTaskLauncher) Launch(_ context.Context, taskName string) error {
 
 type fakeDaemon struct {
 	starts          []DaemonStart
+	readies         []DaemonReady
 	calls           []DaemonCall
 	stops           []DaemonStop
 	captureResponse json.RawMessage
@@ -69,6 +103,11 @@ type fakeDaemon struct {
 func (fake *fakeDaemon) Start(_ context.Context, request DaemonStart) (orchestrator.SessionID, error) {
 	fake.starts = append(fake.starts, request)
 	return "bss_exact-host-session-identity-123456", nil
+}
+
+func (fake *fakeDaemon) WaitReady(_ context.Context, request DaemonReady) error {
+	fake.readies = append(fake.readies, request)
+	return nil
 }
 
 func (fake *fakeDaemon) Call(_ context.Context, request DaemonCall) (json.RawMessage, error) {
@@ -197,6 +236,9 @@ func TestServiceRunsFencedScenarioAndReturnsEvidenceBeforeExactCleanup(t *testin
 	}
 	if len(daemon.starts) != 1 || daemon.starts[0].Name != body.SessionName {
 		t.Fatalf("daemon starts = %+v", daemon.starts)
+	}
+	if len(daemon.readies) != 1 || daemon.readies[0].SessionID != receipt.SessionID || daemon.readies[0].Name != body.SessionName {
+		t.Fatalf("daemon readiness = %+v", daemon.readies)
 	}
 	if len(daemon.calls) != 2 {
 		t.Fatalf("daemon calls = %+v", daemon.calls)
@@ -445,6 +487,37 @@ func TestExactStopCanInterruptLongScenarioCall(t *testing.T) {
 	receipt, err := service.Status(root, StatusRequest{SchemaVersion: 1, RunID: request.Claim.RunID})
 	if err != nil || !receipt.Cleanup.Known() {
 		t.Fatalf("final receipt = %+v, error = %v", receipt, err)
+	}
+}
+
+func TestExactStopCanInterruptSessionReadiness(t *testing.T) {
+	root := t.TempDir()
+	now := time.Now().UTC()
+	daemon := &waitingDaemon{readyStarted: make(chan struct{}), stopped: make(chan struct{})}
+	service := NewService(Dependencies{Tasks: &fakeTaskLauncher{}, Daemon: daemon, Now: func() time.Time { return now }})
+	request := stageHostTestRun(t, service, root, now, false)
+	starting, err := service.Start(context.Background(), root, request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	executionDone := make(chan error, 1)
+	go func() { executionDone <- service.ExecutePending(context.Background(), root) }()
+	select {
+	case <-daemon.readyStarted:
+	case <-time.After(time.Second):
+		t.Fatal("Session readiness did not start")
+	}
+	cleanup, err := service.Settle(context.Background(), root, SettleRequest{SchemaVersion: 1, Receipt: starting})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cleanup.Known() || len(daemon.stops) != 1 || daemon.stops[0].SessionID != "bss_exact-waiting-session-identity-123456" {
+		t.Fatalf("cleanup = %+v, stops = %+v", cleanup, daemon.stops)
+	}
+	select {
+	case <-executionDone:
+	case <-time.After(time.Second):
+		t.Fatal("Scheduled Task did not observe exact stop during readiness")
 	}
 }
 

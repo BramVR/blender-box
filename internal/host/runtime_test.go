@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/BramVR/blender-box/internal/orchestrator"
@@ -14,6 +15,21 @@ type fakeProcessRunner struct {
 	executables  []string
 	arguments    [][]string
 	environments []map[string]string
+}
+
+func TestRuntimeRejectsReadinessFromReplacementSession(t *testing.T) {
+	fake := &fakeProcessRunner{outputs: [][]byte{
+		[]byte(`{"schema_version":1,"status":"healthy","session":{"session_id":"bss_replacement-runtime-session-identity-123456","health":{"status":"healthy","process":{"alive":true},"socket":{"answered":true}}}}`),
+	}}
+	runtime := NewRuntime(fake)
+	err := runtime.WaitReady(context.Background(), DaemonReady{
+		Executable: `C:\Bin\blendersessiond.exe`,
+		Name:       "blender-box-test",
+		SessionID:  "bss_expected-runtime-session-identity-123456",
+	})
+	if err == nil || !strings.Contains(err.Error(), "different Session identity") {
+		t.Fatalf("WaitReady() error = %v", err)
+	}
 }
 
 func (fake *fakeProcessRunner) Run(_ context.Context, executable string, arguments []string, environment map[string]string) ([]byte, error) {
@@ -34,10 +50,13 @@ func TestRuntimeFencesEveryDaemonOperationAndLaunchesExactTask(t *testing.T) {
 	fake := &fakeProcessRunner{outputs: [][]byte{
 		[]byte("SUCCESS: task started"),
 		[]byte(`{"schema_version":1,"status":"started","session":{"session_id":"bss_exact-runtime-session-identity-123456"}}`),
+		[]byte(`{"schema_version":1,"status":"unhealthy","session":{"session_id":"bss_exact-runtime-session-identity-123456","health":{"status":"unhealthy","process":{"alive":true},"socket":{"answered":false}}}}`),
+		[]byte(`{"schema_version":1,"status":"healthy","session":{"session_id":"bss_exact-runtime-session-identity-123456","health":{"status":"healthy","process":{"alive":true},"socket":{"answered":true}}}}`),
 		[]byte(`{"executed":true,"result":"{}"}`),
 		[]byte(`{"schema_version":1,"status":"stopped"}`),
 	}}
 	runtime := NewRuntime(fake)
+	runtime.readyPollInterval = 0
 	environment := map[string]string{"BLENDERSESSIOND_STATE_DIR": `C:\Run\daemon`}
 
 	if err := runtime.Launch(context.Background(), "BlenderBoxTest"); err != nil {
@@ -54,6 +73,14 @@ func TestRuntimeFencesEveryDaemonOperationAndLaunchesExactTask(t *testing.T) {
 	}
 	if started != sessionID {
 		t.Fatalf("Session ID = %q", started)
+	}
+	if err := runtime.WaitReady(context.Background(), DaemonReady{
+		Executable:  `C:\Bin\blendersessiond.exe`,
+		Name:        "blender-box-test",
+		SessionID:   sessionID,
+		Environment: environment,
+	}); err != nil {
+		t.Fatal(err)
 	}
 	parameters := json.RawMessage(`{"code":"pass"}`)
 	if _, err := runtime.Call(context.Background(), DaemonCall{
@@ -76,7 +103,7 @@ func TestRuntimeFencesEveryDaemonOperationAndLaunchesExactTask(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	wantExecutables := []string{"schtasks.exe", `C:\Bin\blendersessiond.exe`, `C:\Bin\blendersessiond.exe`, `C:\Bin\blendersessiond.exe`}
+	wantExecutables := []string{"schtasks.exe", `C:\Bin\blendersessiond.exe`, `C:\Bin\blendersessiond.exe`, `C:\Bin\blendersessiond.exe`, `C:\Bin\blendersessiond.exe`, `C:\Bin\blendersessiond.exe`}
 	if !reflect.DeepEqual(fake.executables, wantExecutables) {
 		t.Fatalf("executables = %v", fake.executables)
 	}
@@ -84,9 +111,11 @@ func TestRuntimeFencesEveryDaemonOperationAndLaunchesExactTask(t *testing.T) {
 		t.Fatalf("task arguments = %v", fake.arguments[0])
 	}
 	assertArguments(t, fake.arguments[1], "start", "--name", "blender-box-test", "--blender", `C:\Blender\blender.exe`, "--json")
-	assertArguments(t, fake.arguments[2], "call", "execute_code", "--name", "blender-box-test", "--expect-session-id", string(sessionID), "--read-timeout", "600", "--params", string(parameters), "--json")
-	assertArguments(t, fake.arguments[3], "stop", "--name", "blender-box-test", "--expect-session-id", string(sessionID), "--json")
-	for index := 1; index < 4; index++ {
+	assertArguments(t, fake.arguments[2], "status", "--name", "blender-box-test", "--json")
+	assertArguments(t, fake.arguments[3], "status", "--name", "blender-box-test", "--json")
+	assertArguments(t, fake.arguments[4], "call", "execute_code", "--name", "blender-box-test", "--expect-session-id", string(sessionID), "--read-timeout", "600", "--params", string(parameters), "--json")
+	assertArguments(t, fake.arguments[5], "stop", "--name", "blender-box-test", "--expect-session-id", string(sessionID), "--json")
+	for index := 1; index < 6; index++ {
 		if fake.environments[index]["BLENDERSESSIOND_STATE_DIR"] != environment["BLENDERSESSIOND_STATE_DIR"] {
 			t.Fatalf("operation %d lost environment: %v", index, fake.environments[index])
 		}

@@ -35,6 +35,7 @@ type TaskLauncher interface {
 
 type Daemon interface {
 	Start(context.Context, DaemonStart) (orchestrator.SessionID, error)
+	WaitReady(context.Context, DaemonReady) error
 	Call(context.Context, DaemonCall) (json.RawMessage, error)
 	Stop(context.Context, DaemonStop) error
 }
@@ -54,6 +55,13 @@ type DaemonCall struct {
 	Parameters         json.RawMessage
 	ReadTimeoutSeconds int
 	Environment        map[string]string
+}
+
+type DaemonReady struct {
+	Executable  string
+	Name        string
+	SessionID   orchestrator.SessionID
+	Environment map[string]string
 }
 
 type DaemonStop struct {
@@ -409,10 +417,6 @@ func (service *Service) ExecutePending(ctx context.Context, root string) error {
 		_ = service.writeReceipt(root, receipt)
 		return err
 	}
-	receipt.State = orchestrator.StateCalling
-	if err := service.writeReceipt(root, receipt); err != nil {
-		return err
-	}
 	resultDirectory := filepath.Join(runPath(root, request.Claim.RunID), "evidence", "result")
 	if err := os.MkdirAll(resultDirectory, 0o700); err != nil {
 		return service.failReceipt(root, receipt, "Scenario evidence directory failed")
@@ -421,6 +425,32 @@ func (service *Service) ExecutePending(ctx context.Context, root string) error {
 		if err := os.MkdirAll(filepath.Join(runPath(root, request.Claim.RunID), "evidence", "screenshots"), 0o700); err != nil {
 			return service.failReceipt(root, receipt, "Viewport evidence directory failed")
 		}
+	}
+	locked = false
+	release()
+	if err := service.daemon.WaitReady(runCtx, DaemonReady{
+		Executable:  request.Body.SessionBrokerExecutable,
+		Name:        request.Body.SessionName,
+		SessionID:   sessionID,
+		Environment: environment,
+	}); err != nil {
+		return service.failActiveExecution(ctx, root, request, sessionID, "Session readiness failed")
+	}
+	release, err = acquireOperation(runCtx, root)
+	if err != nil {
+		return err
+	}
+	locked = true
+	receipt, err = service.activeReceipt(root, request, sessionID)
+	if errors.Is(err, errRunSettled) {
+		return fmt.Errorf("Run was settled during Session readiness")
+	}
+	if err != nil {
+		return err
+	}
+	receipt.State = orchestrator.StateCalling
+	if err := service.writeReceipt(root, receipt); err != nil {
+		return err
 	}
 	locked = false
 	release()

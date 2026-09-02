@@ -10,22 +10,28 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/BramVR/blender-box/internal/orchestrator"
 )
 
-const maxProcessOutput = 2 << 20
+const (
+	maxProcessOutput        = 2 << 20
+	defaultReadyPoll        = 250 * time.Millisecond
+	defaultReadinessTimeout = 2 * time.Minute
+)
 
 type ProcessRunner interface {
 	Run(context.Context, string, []string, map[string]string) ([]byte, error)
 }
 
 type Runtime struct {
-	processes ProcessRunner
+	processes         ProcessRunner
+	readyPollInterval time.Duration
 }
 
 func NewRuntime(processes ProcessRunner) *Runtime {
-	return &Runtime{processes: processes}
+	return &Runtime{processes: processes, readyPollInterval: defaultReadyPoll}
 }
 
 func (runtime *Runtime) Launch(ctx context.Context, taskName string) error {
@@ -57,6 +63,66 @@ func (runtime *Runtime) Start(ctx context.Context, request DaemonStart) (orchest
 		return "", err
 	}
 	return result.Session.SessionID, nil
+}
+
+func (runtime *Runtime) WaitReady(ctx context.Context, request DaemonReady) error {
+	if err := request.SessionID.Validate(); err != nil {
+		return err
+	}
+	readyCtx, cancel := context.WithTimeout(ctx, defaultReadinessTimeout)
+	defer cancel()
+	for {
+		if err := readyCtx.Err(); err != nil {
+			return fmt.Errorf("blendersessiond readiness: %w", err)
+		}
+		output, runErr := runtime.processes.Run(readyCtx, request.Executable, []string{
+			"status", "--name", request.Name, "--json",
+		}, request.Environment)
+		var result struct {
+			SchemaVersion int    `json:"schema_version"`
+			Status        string `json:"status"`
+			Session       struct {
+				SessionID orchestrator.SessionID `json:"session_id"`
+				Health    struct {
+					Status  string `json:"status"`
+					Process struct {
+						Alive bool `json:"alive"`
+					} `json:"process"`
+					Socket struct {
+						Answered bool `json:"answered"`
+					} `json:"socket"`
+				} `json:"health"`
+			} `json:"session"`
+		}
+		if err := decodeExtensibleJSON(output, &result, maxProcessOutput); err != nil {
+			if runErr != nil {
+				return runErr
+			}
+			return fmt.Errorf("blendersessiond status returned invalid JSON")
+		}
+		if result.SchemaVersion != 1 || result.Session.SessionID != request.SessionID {
+			return fmt.Errorf("blendersessiond status returned a different Session identity")
+		}
+		if result.Status == "healthy" && result.Session.Health.Status == "healthy" && result.Session.Health.Process.Alive && result.Session.Health.Socket.Answered {
+			if runErr != nil {
+				return runErr
+			}
+			return nil
+		}
+		if !result.Session.Health.Process.Alive {
+			return fmt.Errorf("blendersessiond Session stopped before readiness")
+		}
+		if runtime.readyPollInterval <= 0 {
+			continue
+		}
+		timer := time.NewTimer(runtime.readyPollInterval)
+		select {
+		case <-readyCtx.Done():
+			timer.Stop()
+			return fmt.Errorf("blendersessiond readiness: %w", readyCtx.Err())
+		case <-timer.C:
+		}
+	}
 }
 
 func (runtime *Runtime) Call(ctx context.Context, request DaemonCall) (json.RawMessage, error) {
@@ -121,13 +187,14 @@ func (ExecProcessRunner) Run(ctx context.Context, executable string, arguments [
 	command.Stdout = stdout
 	command.Stderr = stderr
 	if err := command.Run(); err != nil {
+		output := append([]byte(nil), stdout.buffer.Bytes()...)
 		if stdout.exceeded || stderr.exceeded {
-			return nil, fmt.Errorf("process output exceeded its limit")
+			return output, fmt.Errorf("process output exceeded its limit")
 		}
 		if message := strings.TrimSpace(stderr.buffer.String()); message != "" {
-			return nil, fmt.Errorf("process failed: %s", message)
+			return output, fmt.Errorf("process failed: %s", message)
 		}
-		return nil, fmt.Errorf("process failed: %w", err)
+		return output, fmt.Errorf("process failed: %w", err)
 	}
 	if stdout.exceeded || stderr.exceeded {
 		return nil, fmt.Errorf("process output exceeded its limit")
