@@ -169,11 +169,19 @@ func (runner *Runner) Run(ctx context.Context, intent RunIntent) (_ RunResult, r
 	if err := runner.host.Inspect(runCtx, intent.Target); err != nil {
 		return RunResult{}, fmt.Errorf("inspect host: %w", err)
 	}
+	receipt := RunReceipt{SchemaVersion: 1, Claim: request.Claim, State: StateAccepted}
 	if err := runner.host.Acquire(runCtx, intent.Target, request.Claim); err != nil {
-		return RunResult{}, fmt.Errorf("acquire Host Lock: %w", err)
+		acquireErr := fmt.Errorf("acquire Host Lock: %w", err)
+		cleanup, settleErr := runner.settle(ctx, intent.Target, receipt)
+		if settleErr != nil {
+			return RunResult{}, errors.Join(acquireErr, fmt.Errorf("settle ambiguous Host Lock acquisition: %w", settleErr))
+		}
+		if !cleanup.Known() {
+			return RunResult{}, errors.Join(acquireErr, fmt.Errorf("settle ambiguous Host Lock acquisition: cleanup state is not known"))
+		}
+		return RunResult{}, acquireErr
 	}
 
-	receipt := RunReceipt{SchemaVersion: 1, Claim: request.Claim, State: StateAccepted}
 	settled := false
 	defer func() {
 		if settled {

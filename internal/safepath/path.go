@@ -34,7 +34,14 @@ func windowsReservedName(component string) bool {
 	case "CON", "PRN", "AUX", "NUL", "CLOCK$":
 		return true
 	}
-	return len(base) == 4 &&
-		(strings.HasPrefix(base, "COM") || strings.HasPrefix(base, "LPT")) &&
-		base[3] >= '1' && base[3] <= '9'
+	runes := []rune(base)
+	if len(runes) != 4 || (string(runes[:3]) != "COM" && string(runes[:3]) != "LPT") {
+		return false
+	}
+	switch runes[3] {
+	case '1', '2', '3', '4', '5', '6', '7', '8', '9', '¹', '²', '³':
+		return true
+	default:
+		return false
+	}
 }

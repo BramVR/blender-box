@@ -194,6 +194,33 @@ type startErrorHost struct {
 	settledClaim LockClaim
 }
 
+type acquireErrorHost struct {
+	fakeHost
+	settledClaim LockClaim
+}
+
+func (host *acquireErrorHost) Acquire(_ context.Context, _ target.Target, claim LockClaim) error {
+	host.receipt.Claim = claim
+	return errors.New("response lost after lock creation")
+}
+
+func (host *acquireErrorHost) Settle(_ context.Context, _ target.Target, receipt RunReceipt) (CleanupState, error) {
+	host.settledClaim = receipt.Claim
+	return CleanupState{SessionStopped: true, PayloadRemoved: true, RunRootRemoved: true, LockReleased: true}, nil
+}
+
+func TestAcquireErrorAttemptsExactClaimOnlySettlement(t *testing.T) {
+	host := &acquireErrorHost{fakeHost: fakeHost{evidence: testEvidence()}}
+	intent := testIntent(t)
+	_, err := New(host).Run(context.Background(), intent)
+	if err == nil || !strings.Contains(err.Error(), "acquire Host Lock") {
+		t.Fatalf("error = %v", err)
+	}
+	if host.settledClaim.RunID != intent.RunID || host.settledClaim.RequestID != intent.RequestID || host.settledClaim.RequestHash == "" {
+		t.Fatalf("ambiguous acquisition lost cleanup authority: %+v", host.settledClaim)
+	}
+}
+
 func (host *startErrorHost) Start(context.Context, target.Target, RunRequest) (RunReceipt, error) {
 	return RunReceipt{}, errors.New("connection dropped")
 }
