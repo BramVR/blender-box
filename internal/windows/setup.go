@@ -300,6 +300,8 @@ Assert-NoReparsePath $operationPath
 $expectedControllerSid = ([System.Security.Principal.NTAccount]::new($expectedControllerUser)).Translate([System.Security.Principal.SecurityIdentifier])
 $authenticatedControllerSid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User
 if ($authenticatedControllerSid -ne $expectedControllerSid) { throw 'Configured SSH user does not match the authenticated controller SID.' }
+$interactiveSid = ([System.Security.Principal.NTAccount]::new($interactiveUser)).Translate([System.Security.Principal.SecurityIdentifier])
+if ($interactiveSid -ne $authenticatedControllerSid) { throw 'Slice 0 requires the SSH controller and interactive task to use the same Windows identity.' }
 $operation = Enter-BlenderBoxOperation $operationPath
 try {
     Assert-NoReparsePath $root
@@ -313,23 +315,15 @@ try {
     if (Test-Path -LiteralPath $lockPath) { throw 'Cannot apply setup while a Host Lock exists.' }
     if (-not (Test-Path -LiteralPath $daemonPath -PathType Leaf)) { throw 'Declared blendersessiond executable is missing.' }
     if (-not (Test-Path -LiteralPath $blenderPath -PathType Leaf)) { throw 'Declared Blender executable is missing.' }
-    $interactiveSid = ([System.Security.Principal.NTAccount]::new($interactiveUser)).Translate([System.Security.Principal.SecurityIdentifier])
     $controllerSid = $authenticatedControllerSid
     Assert-TrustedAncestors $root $controllerSid
     $inherit = [System.Security.AccessControl.InheritanceFlags]::ContainerInherit -bor [System.Security.AccessControl.InheritanceFlags]::ObjectInherit
-    $objectInheritance = [System.Security.AccessControl.InheritanceFlags]::ObjectInherit
     $none = [System.Security.AccessControl.PropagationFlags]::None
-    $inheritOnly = [System.Security.AccessControl.PropagationFlags]::InheritOnly
     $allow = [System.Security.AccessControl.AccessControlType]::Allow
     $rootAcl = [System.Security.AccessControl.DirectorySecurity]::new()
     $rootAcl.SetAccessRuleProtection($true, $false)
     $rootAcl.SetOwner($controllerSid)
     $rootAcl.AddAccessRule([System.Security.AccessControl.FileSystemAccessRule]::new($controllerSid, [System.Security.AccessControl.FileSystemRights]::FullControl, $inherit, $none, $allow))
-    if ($controllerSid -ne $interactiveSid) {
-        $rootRights = [System.Security.AccessControl.FileSystemRights]::ReadAndExecute -bor [System.Security.AccessControl.FileSystemRights]::WriteData
-        $rootAcl.AddAccessRule([System.Security.AccessControl.FileSystemAccessRule]::new($interactiveSid, $rootRights, [System.Security.AccessControl.InheritanceFlags]::None, $none, $allow))
-        $rootAcl.AddAccessRule([System.Security.AccessControl.FileSystemAccessRule]::new($interactiveSid, [System.Security.AccessControl.FileSystemRights]::Modify, $objectInheritance, $inheritOnly, $allow))
-    }
     $rootAcl.AddAccessRule([System.Security.AccessControl.FileSystemAccessRule]::new([System.Security.Principal.SecurityIdentifier]::new('S-1-5-18'), [System.Security.AccessControl.FileSystemRights]::FullControl, $inherit, $none, $allow))
     $rootAcl.AddAccessRule([System.Security.AccessControl.FileSystemAccessRule]::new([System.Security.Principal.SecurityIdentifier]::new('S-1-5-32-544'), [System.Security.AccessControl.FileSystemRights]::FullControl, $inherit, $none, $allow))
     Set-Acl -LiteralPath $root -AclObject $rootAcl
@@ -338,7 +332,6 @@ try {
     $executableDirectoryAcl.SetAccessRuleProtection($true, $false)
     $executableDirectoryAcl.SetOwner($controllerSid)
     $executableDirectoryAcl.AddAccessRule([System.Security.AccessControl.FileSystemAccessRule]::new($controllerSid, [System.Security.AccessControl.FileSystemRights]::FullControl, $inherit, $none, $allow))
-    if ($controllerSid -ne $interactiveSid) { $executableDirectoryAcl.AddAccessRule([System.Security.AccessControl.FileSystemAccessRule]::new($interactiveSid, [System.Security.AccessControl.FileSystemRights]::ReadAndExecute, $inherit, $none, $allow)) }
     $executableDirectoryAcl.AddAccessRule([System.Security.AccessControl.FileSystemAccessRule]::new([System.Security.Principal.SecurityIdentifier]::new('S-1-5-18'), [System.Security.AccessControl.FileSystemRights]::FullControl, $inherit, $none, $allow))
     $executableDirectoryAcl.AddAccessRule([System.Security.AccessControl.FileSystemAccessRule]::new([System.Security.Principal.SecurityIdentifier]::new('S-1-5-32-544'), [System.Security.AccessControl.FileSystemRights]::FullControl, $inherit, $none, $allow))
     Set-BlenderBoxDirectoryPath $root $hostDirectory $executableDirectoryAcl
@@ -348,7 +341,6 @@ try {
     $stateFileAcl.SetAccessRuleProtection($true, $false)
     $stateFileAcl.SetOwner($controllerSid)
     $stateFileAcl.AddAccessRule([System.Security.AccessControl.FileSystemAccessRule]::new($controllerSid, [System.Security.AccessControl.FileSystemRights]::FullControl, [System.Security.AccessControl.InheritanceFlags]::None, $none, $allow))
-    if ($controllerSid -ne $interactiveSid) { $stateFileAcl.AddAccessRule([System.Security.AccessControl.FileSystemAccessRule]::new($interactiveSid, [System.Security.AccessControl.FileSystemRights]::Modify, [System.Security.AccessControl.InheritanceFlags]::None, $none, $allow)) }
     $stateFileAcl.AddAccessRule([System.Security.AccessControl.FileSystemAccessRule]::new([System.Security.Principal.SecurityIdentifier]::new('S-1-5-18'), [System.Security.AccessControl.FileSystemRights]::FullControl, [System.Security.AccessControl.InheritanceFlags]::None, $none, $allow))
     $stateFileAcl.AddAccessRule([System.Security.AccessControl.FileSystemAccessRule]::new([System.Security.Principal.SecurityIdentifier]::new('S-1-5-32-544'), [System.Security.AccessControl.FileSystemRights]::FullControl, [System.Security.AccessControl.InheritanceFlags]::None, $none, $allow))
     Set-Acl -LiteralPath $operationPath -AclObject $stateFileAcl
@@ -357,7 +349,6 @@ try {
     $fileAcl.SetAccessRuleProtection($true, $false)
     $fileAcl.SetOwner($controllerSid)
     $fileAcl.AddAccessRule([System.Security.AccessControl.FileSystemAccessRule]::new($controllerSid, [System.Security.AccessControl.FileSystemRights]::FullControl, [System.Security.AccessControl.InheritanceFlags]::None, $none, $allow))
-    if ($controllerSid -ne $interactiveSid) { $fileAcl.AddAccessRule([System.Security.AccessControl.FileSystemAccessRule]::new($interactiveSid, [System.Security.AccessControl.FileSystemRights]::ReadAndExecute, [System.Security.AccessControl.InheritanceFlags]::None, $none, $allow)) }
     $fileAcl.AddAccessRule([System.Security.AccessControl.FileSystemAccessRule]::new([System.Security.Principal.SecurityIdentifier]::new('S-1-5-18'), [System.Security.AccessControl.FileSystemRights]::FullControl, [System.Security.AccessControl.InheritanceFlags]::None, $none, $allow))
     $fileAcl.AddAccessRule([System.Security.AccessControl.FileSystemAccessRule]::new([System.Security.Principal.SecurityIdentifier]::new('S-1-5-32-544'), [System.Security.AccessControl.FileSystemRights]::FullControl, [System.Security.AccessControl.InheritanceFlags]::None, $none, $allow))
     Set-Acl -LiteralPath $daemonPath -AclObject $fileAcl
@@ -392,19 +383,12 @@ $operationPath = [System.IO.Path]::Combine($root, '.operation.lock')
 %s
 function New-BlenderBoxRootAcl {
     $inherit = [System.Security.AccessControl.InheritanceFlags]::ContainerInherit -bor [System.Security.AccessControl.InheritanceFlags]::ObjectInherit
-    $objectInheritance = [System.Security.AccessControl.InheritanceFlags]::ObjectInherit
     $none = [System.Security.AccessControl.PropagationFlags]::None
-    $inheritOnly = [System.Security.AccessControl.PropagationFlags]::InheritOnly
     $allow = [System.Security.AccessControl.AccessControlType]::Allow
     $acl = [System.Security.AccessControl.DirectorySecurity]::new()
     $acl.SetAccessRuleProtection($true, $false)
     $acl.SetOwner($controllerSid)
     $acl.AddAccessRule([System.Security.AccessControl.FileSystemAccessRule]::new($controllerSid, [System.Security.AccessControl.FileSystemRights]::FullControl, $inherit, $none, $allow))
-    if ($controllerSid -ne $interactiveSid) {
-        $rootRights = [System.Security.AccessControl.FileSystemRights]::ReadAndExecute -bor [System.Security.AccessControl.FileSystemRights]::WriteData
-        $acl.AddAccessRule([System.Security.AccessControl.FileSystemAccessRule]::new($interactiveSid, $rootRights, [System.Security.AccessControl.InheritanceFlags]::None, $none, $allow))
-        $acl.AddAccessRule([System.Security.AccessControl.FileSystemAccessRule]::new($interactiveSid, [System.Security.AccessControl.FileSystemRights]::Modify, $objectInheritance, $inheritOnly, $allow))
-    }
     $acl.AddAccessRule([System.Security.AccessControl.FileSystemAccessRule]::new([System.Security.Principal.SecurityIdentifier]::new('S-1-5-18'), [System.Security.AccessControl.FileSystemRights]::FullControl, $inherit, $none, $allow))
     $acl.AddAccessRule([System.Security.AccessControl.FileSystemAccessRule]::new([System.Security.Principal.SecurityIdentifier]::new('S-1-5-32-544'), [System.Security.AccessControl.FileSystemRights]::FullControl, $inherit, $none, $allow))
     return $acl
@@ -417,9 +401,6 @@ function New-BlenderBoxStateDirectoryAcl {
     $acl.SetAccessRuleProtection($true, $false)
     $acl.SetOwner($controllerSid)
     $acl.AddAccessRule([System.Security.AccessControl.FileSystemAccessRule]::new($controllerSid, [System.Security.AccessControl.FileSystemRights]::FullControl, $inherit, $none, $allow))
-    if ($controllerSid -ne $interactiveSid) {
-        $acl.AddAccessRule([System.Security.AccessControl.FileSystemAccessRule]::new($interactiveSid, [System.Security.AccessControl.FileSystemRights]::Modify, $inherit, $none, $allow))
-    }
     $acl.AddAccessRule([System.Security.AccessControl.FileSystemAccessRule]::new([System.Security.Principal.SecurityIdentifier]::new('S-1-5-18'), [System.Security.AccessControl.FileSystemRights]::FullControl, $inherit, $none, $allow))
     $acl.AddAccessRule([System.Security.AccessControl.FileSystemAccessRule]::new([System.Security.Principal.SecurityIdentifier]::new('S-1-5-32-544'), [System.Security.AccessControl.FileSystemRights]::FullControl, $inherit, $none, $allow))
     return $acl
@@ -432,9 +413,6 @@ function New-BlenderBoxExecutableDirectoryAcl {
     $acl.SetAccessRuleProtection($true, $false)
     $acl.SetOwner($controllerSid)
     $acl.AddAccessRule([System.Security.AccessControl.FileSystemAccessRule]::new($controllerSid, [System.Security.AccessControl.FileSystemRights]::FullControl, $inherit, $none, $allow))
-    if ($controllerSid -ne $interactiveSid) {
-        $acl.AddAccessRule([System.Security.AccessControl.FileSystemAccessRule]::new($interactiveSid, [System.Security.AccessControl.FileSystemRights]::ReadAndExecute, $inherit, $none, $allow))
-    }
     $acl.AddAccessRule([System.Security.AccessControl.FileSystemAccessRule]::new([System.Security.Principal.SecurityIdentifier]::new('S-1-5-18'), [System.Security.AccessControl.FileSystemRights]::FullControl, $inherit, $none, $allow))
     $acl.AddAccessRule([System.Security.AccessControl.FileSystemAccessRule]::new([System.Security.Principal.SecurityIdentifier]::new('S-1-5-32-544'), [System.Security.AccessControl.FileSystemRights]::FullControl, $inherit, $none, $allow))
     return $acl
@@ -447,9 +425,6 @@ function New-BlenderBoxStateFileAcl {
     $acl.SetAccessRuleProtection($true, $false)
     $acl.SetOwner($controllerSid)
     $acl.AddAccessRule([System.Security.AccessControl.FileSystemAccessRule]::new($controllerSid, [System.Security.AccessControl.FileSystemRights]::FullControl, $noneInheritance, $nonePropagation, $allow))
-    if ($controllerSid -ne $interactiveSid) {
-        $acl.AddAccessRule([System.Security.AccessControl.FileSystemAccessRule]::new($interactiveSid, [System.Security.AccessControl.FileSystemRights]::Modify, $noneInheritance, $nonePropagation, $allow))
-    }
     $acl.AddAccessRule([System.Security.AccessControl.FileSystemAccessRule]::new([System.Security.Principal.SecurityIdentifier]::new('S-1-5-18'), [System.Security.AccessControl.FileSystemRights]::FullControl, $noneInheritance, $nonePropagation, $allow))
     $acl.AddAccessRule([System.Security.AccessControl.FileSystemAccessRule]::new([System.Security.Principal.SecurityIdentifier]::new('S-1-5-32-544'), [System.Security.AccessControl.FileSystemRights]::FullControl, $noneInheritance, $nonePropagation, $allow))
     return $acl
@@ -479,9 +454,6 @@ function New-BlenderBoxFileAcl {
     $acl.SetAccessRuleProtection($true, $false)
     $acl.SetOwner($controllerSid)
     $acl.AddAccessRule([System.Security.AccessControl.FileSystemAccessRule]::new($controllerSid, [System.Security.AccessControl.FileSystemRights]::FullControl, $noneInheritance, $nonePropagation, $allow))
-    if ($controllerSid -ne $interactiveSid) {
-        $acl.AddAccessRule([System.Security.AccessControl.FileSystemAccessRule]::new($interactiveSid, [System.Security.AccessControl.FileSystemRights]::ReadAndExecute, $noneInheritance, $nonePropagation, $allow))
-    }
     $acl.AddAccessRule([System.Security.AccessControl.FileSystemAccessRule]::new([System.Security.Principal.SecurityIdentifier]::new('S-1-5-18'), [System.Security.AccessControl.FileSystemRights]::FullControl, $noneInheritance, $nonePropagation, $allow))
     $acl.AddAccessRule([System.Security.AccessControl.FileSystemAccessRule]::new([System.Security.Principal.SecurityIdentifier]::new('S-1-5-32-544'), [System.Security.AccessControl.FileSystemRights]::FullControl, $noneInheritance, $nonePropagation, $allow))
     return $acl
@@ -489,6 +461,8 @@ function New-BlenderBoxFileAcl {
 $expectedControllerSid = ([System.Security.Principal.NTAccount]::new($expectedControllerUser)).Translate([System.Security.Principal.SecurityIdentifier])
 $authenticatedControllerSid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User
 if ($authenticatedControllerSid -ne $expectedControllerSid) { throw 'Configured SSH user does not match the authenticated controller SID.' }
+$interactiveSid = ([System.Security.Principal.NTAccount]::new($interactiveUser)).Translate([System.Security.Principal.SecurityIdentifier])
+if ($interactiveSid -ne $authenticatedControllerSid) { throw 'Slice 0 requires the SSH controller and interactive task to use the same Windows identity.' }
 $operation = $null
 try {
     Assert-NoReparsePath $root
@@ -513,7 +487,6 @@ try {
     if (Test-Path -LiteralPath $lockPath) { throw 'Cannot apply setup while a Host Lock exists.' }
     if (-not (Test-Path -LiteralPath $daemonPath -PathType Leaf)) { throw 'Declared blendersessiond executable is missing.' }
     if (-not (Test-Path -LiteralPath $blenderPath -PathType Leaf)) { throw 'Declared Blender executable is missing.' }
-    $interactiveSid = ([System.Security.Principal.NTAccount]::new($interactiveUser)).Translate([System.Security.Principal.SecurityIdentifier])
     $controllerSid = $authenticatedControllerSid
     Assert-TrustedAncestors $root $controllerSid
     Set-Acl -LiteralPath $root -AclObject (New-BlenderBoxRootAcl)

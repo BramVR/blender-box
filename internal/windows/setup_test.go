@@ -85,7 +85,7 @@ func TestSetupPlansWithoutSSHAndAppliesOneBoundedHostBinary(t *testing.T) {
 		"ExecutionTimeLimit ([TimeSpan]::Zero)",
 		"SetSecurityDescriptor",
 		"(A;;GA;;;",
-		"$controllerSid -ne $interactiveSid",
+		"Slice 0 requires the SSH controller and interactive task to use the same Windows identity",
 		"[System.IO.File]::Replace($temporary, $hostPath, $backup)",
 		"Remove-Item -Force -LiteralPath $backup",
 		"FileSecurity",
@@ -122,44 +122,44 @@ func TestSetupAncestorsTrustOnlyControllerAndSystemAuthority(t *testing.T) {
 	}
 }
 
-func TestSetupPreservesExecutableUpdateAuthorityForSameAndSplitUsers(t *testing.T) {
-	for _, test := range []struct {
-		name        string
-		interactive string
-		controller  string
-	}{
-		{name: "same user", interactive: "test-user", controller: "test-user"},
-		{name: "split user", interactive: "blender-user", controller: "ssh-controller"},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			selected := adapterTarget()
-			selected.InteractiveUser = test.interactive
-			selected.SSHUser = test.controller
-			prepare := prepareSetupScript(selected)
-			script := setupScript(selected, SetupResult{HostSize: 1, HostSHA256: strings.Repeat("a", 64)}, `C:\BlenderBoxTest\.setup-host.bin`)
+func TestSetupRequiresControllerToOwnInteractiveTaskIdentityBeforeMutation(t *testing.T) {
+	selected := adapterTarget()
+	selected.InteractiveUser = "task-user"
+	selected.SSHUser = "controller-user"
+	prepare := prepareSetupScript(selected)
+	apply := setupScript(selected, SetupResult{HostSize: 1, HostSHA256: strings.Repeat("a", 64)}, `C:\BlenderBoxTest\.setup-host.bin`)
+	guard := "if ($interactiveSid -ne $authenticatedControllerSid) { throw 'Slice 0 requires the SSH controller and interactive task to use the same Windows identity.' }"
+	for name, script := range map[string]string{"prepare": prepare, "apply": apply} {
+		guardIndex := strings.Index(script, guard)
+		mutationIndex := strings.Index(script, "$operation = Enter-BlenderBoxOperation $operationPath")
+		if guardIndex < 0 || mutationIndex < 0 || guardIndex > mutationIndex {
+			t.Fatalf("%s script does not reject a split identity before mutation", name)
+		}
+	}
+}
 
-			if !strings.Contains(prepare, "$fileAcl.SetOwner($controllerSid)") || !strings.Contains(prepare, "$controllerSid, [System.Security.AccessControl.FileSystemRights]::FullControl") {
-				t.Fatal("setup prepare does not preserve existing executable update authority")
-			}
-			if !strings.Contains(prepare, "$executableDirectoryAcl.SetOwner($controllerSid)") || !strings.Contains(prepare, "Set-BlenderBoxDirectoryPath $root $hostDirectory $executableDirectoryAcl") || !strings.Contains(prepare, "Set-BlenderBoxDirectoryPath $root $daemonDirectory $executableDirectoryAcl") {
-				t.Fatal("setup prepare does not isolate executable directory authority")
-			}
-			if !strings.Contains(script, "$acl.SetOwner($controllerSid)") {
-				t.Fatal("managed executable owner is not the authenticated controller")
-			}
-			if !strings.Contains(script, "$controllerSid, [System.Security.AccessControl.FileSystemRights]::FullControl") {
-				t.Fatal("managed executable ACL does not preserve controller update authority")
-			}
-			if !strings.Contains(script, "$controllerSid -ne $interactiveSid") || !strings.Contains(script, "$interactiveSid, [System.Security.AccessControl.FileSystemRights]::ReadAndExecute") {
-				t.Fatal("managed executable ACL does not preserve split-user task execution")
-			}
-			if !strings.Contains(script, "function New-BlenderBoxExecutableDirectoryAcl") || !strings.Contains(script, "Set-BlenderBoxDirectoryPath $root $hostDirectory (New-BlenderBoxExecutableDirectoryAcl)") || !strings.Contains(script, "Set-BlenderBoxDirectoryPath $root $daemonDirectory (New-BlenderBoxExecutableDirectoryAcl)") {
-				t.Fatal("setup apply does not isolate executable directory authority")
-			}
-			if !strings.Contains(script, "Set-Acl -LiteralPath $root -AclObject (New-BlenderBoxRootAcl)") || !strings.Contains(script, "[System.Security.AccessControl.FileSystemRights]::WriteData") {
-				t.Fatal("work root does not separate task file creation from child replacement authority")
-			}
-		})
+func TestSetupPreservesSingleIdentityUpdateAuthority(t *testing.T) {
+	selected := adapterTarget()
+	prepare := prepareSetupScript(selected)
+	script := setupScript(selected, SetupResult{HostSize: 1, HostSHA256: strings.Repeat("a", 64)}, `C:\BlenderBoxTest\.setup-host.bin`)
+
+	if !strings.Contains(prepare, "$fileAcl.SetOwner($controllerSid)") || !strings.Contains(prepare, "$controllerSid, [System.Security.AccessControl.FileSystemRights]::FullControl") {
+		t.Fatal("setup prepare does not preserve existing executable update authority")
+	}
+	if !strings.Contains(prepare, "$executableDirectoryAcl.SetOwner($controllerSid)") || !strings.Contains(prepare, "Set-BlenderBoxDirectoryPath $root $hostDirectory $executableDirectoryAcl") || !strings.Contains(prepare, "Set-BlenderBoxDirectoryPath $root $daemonDirectory $executableDirectoryAcl") {
+		t.Fatal("setup prepare does not isolate executable directory authority")
+	}
+	if !strings.Contains(script, "$acl.SetOwner($controllerSid)") || !strings.Contains(script, "$controllerSid, [System.Security.AccessControl.FileSystemRights]::FullControl") {
+		t.Fatal("managed paths do not preserve controller update authority")
+	}
+	if strings.Contains(script, "$controllerSid -ne $interactiveSid") || strings.Contains(script, "$interactiveSid, [System.Security.AccessControl.FileSystemRights]") {
+		t.Fatal("setup retains unreachable split-user ACL grants")
+	}
+	if !strings.Contains(script, "function New-BlenderBoxExecutableDirectoryAcl") || !strings.Contains(script, "Set-BlenderBoxDirectoryPath $root $hostDirectory (New-BlenderBoxExecutableDirectoryAcl)") || !strings.Contains(script, "Set-BlenderBoxDirectoryPath $root $daemonDirectory (New-BlenderBoxExecutableDirectoryAcl)") {
+		t.Fatal("setup apply does not isolate executable directory authority")
+	}
+	if !strings.Contains(script, "Set-Acl -LiteralPath $root -AclObject (New-BlenderBoxRootAcl)") {
+		t.Fatal("work root does not receive the single-identity ACL")
 	}
 }
 

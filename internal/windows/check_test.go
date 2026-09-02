@@ -115,6 +115,13 @@ func TestCheckAncestorsTrustOnlyControllerAndSystemAuthority(t *testing.T) {
 	}
 }
 
+func TestCheckRequiresSSHControllerAndInteractiveTaskToShareSID(t *testing.T) {
+	if !strings.Contains(checkScript, "$sshSid -eq $expectedSSHSid -and $sshSid -eq $expectedSid") ||
+		!strings.Contains(checkScript, "Slice 0 requires the SSH controller and interactive task to use the same Windows identity") {
+		t.Fatal("inspection accepts separate controller and interactive task identities")
+	}
+}
+
 func TestCheckRequiresDeclaredControllerTaskManagementAuthority(t *testing.T) {
 	if !strings.Contains(checkScript, "$controllerCanManage") ||
 		!strings.Contains(checkScript, "($aceMask -band $genericAll) -eq $genericAll") ||

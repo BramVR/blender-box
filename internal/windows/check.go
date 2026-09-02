@@ -261,7 +261,7 @@ $sshUser = [string]$sshIdentity.Name
 $sshSid = [string]$sshIdentity.User.Value
 $expectedSSHUser = [string]$config.ssh_user
 $expectedSSHSid = Resolve-Sid $expectedSSHUser
-Add-Check 'host.ssh-user' ($null -ne $expectedSSHSid -and $sshSid -eq $expectedSSHSid) $true ([ordered]@{identity=$sshUser; sid=$sshSid}) ([ordered]@{identity=$expectedSSHUser; sid=$expectedSSHSid}) 'The SSH process SID must match the declared controller identity.'
+Add-Check 'host.ssh-user' ($null -ne $expectedSSHSid -and $sshSid -eq $expectedSSHSid -and $sshSid -eq $expectedSid) $true ([ordered]@{identity=$sshUser; sid=$sshSid}) ([ordered]@{identity=$expectedSSHUser; sid=$expectedSSHSid; interactive_sid=$expectedSid}) 'The SSH process must match the declared controller. Slice 0 requires the SSH controller and interactive task to use the same Windows identity.'
 $enableLUA = Get-ItemPropertyValue -LiteralPath 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System' -Name EnableLUA -ErrorAction SilentlyContinue
 $builtInAdministrator = $null -ne $expectedSid -and $expectedSid -match '-500$'
 Add-Check 'host.limited-token-policy' ([int]$enableLUA -eq 1 -and -not $builtInAdministrator) $true ([ordered]@{enable_lua=[int]$enableLUA; built_in_administrator=$builtInAdministrator}) ([ordered]@{enable_lua=1; built_in_administrator=$false}) 'UAC filtering must be enabled and the task principal must not be a RID-500 Administrator account.'
