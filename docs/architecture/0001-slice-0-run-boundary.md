@@ -102,6 +102,8 @@ Recovery reads the receipt through the same SSH adapter. A dropped connection do
 
 This interface is deep because four user operations hide transport quoting, atomic host state, identity comparison, transfer bounds, task polling, daemon JSON, evidence verification, reconnect, and settlement. The public CLI does not expose those phases as switches.
 
+Before either setup connection writes, the authenticated Windows SID must equal the target's declared SSH user SID. Setup never turns an alias-selected account into controller authority by observation. Lock acquisition checks cancellation before touching a free lock, and deadline-caused readiness, Scenario, or capture failures persist as `timed-out` rather than generic failure.
+
 ## Synthesis decision
 
 Candidate A, one Run state machine behind `Runner`, is the base. Candidate B split planning, lock management, transfer, task launch, daemon calls, evidence, and cleanup into command-layer services that the CLI coordinated. That made each component locally simple, but it leaked execution order and fencing rules into every caller. Candidate A keeps Candidate B's explicit typed boundary adapters for tests while refusing its public phase orchestration.
