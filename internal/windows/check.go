@@ -135,6 +135,7 @@ function Test-TrustedTaskAuthorities([string]$Sddl, [string]$ControllerSid) {
     [int64]$taskWriteMask = $genericAll -bor $genericWrite -bor 0x00010000 -bor 0x00040000 -bor 0x00080000 -bor $taskWrite
     [int64]$taskExecuteMask = $genericAll -bor $genericExecute -bor $taskExecute
     $controllerCanExecute = $false
+    $controllerCanManage = $false
     foreach ($ace in $descriptor.DiscretionaryAcl) {
         if (([int]$ace.AceFlags -band [int][System.Security.AccessControl.AceFlags]::InheritOnly) -ne 0) { continue }
         if ($null -eq $ace.SecurityIdentifier) { continue }
@@ -145,13 +146,13 @@ function Test-TrustedTaskAuthorities([string]$Sddl, [string]$ControllerSid) {
         if ($ace.AceQualifier -ne [System.Security.AccessControl.AceQualifier]::AccessAllowed) { continue }
         if ($trustedManagers -contains $ace.SecurityIdentifier.Value) { continue }
         if ($ace.SecurityIdentifier.Value -eq $ControllerSid) {
-            if (($aceMask -band $taskWriteMask) -ne 0) { return $false }
+            if (($aceMask -band $genericAll) -eq $genericAll) { $controllerCanManage = $true }
             if (($aceMask -band $taskExecuteMask) -ne 0) { $controllerCanExecute = $true }
             continue
         }
         if (($aceMask -band ($taskWriteMask -bor $taskExecuteMask)) -ne 0) { return $false }
     }
-    return $controllerCanExecute
+    return $controllerCanExecute -and $controllerCanManage
 }
 function Test-LocalVolumeRoot([string]$Root) {
     if ($Root -notmatch '^[A-Za-z]:\\$') { return $false }

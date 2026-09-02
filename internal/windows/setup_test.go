@@ -78,6 +78,7 @@ func TestSetupPlansWithoutSSHAndAppliesOneBoundedHostBinary(t *testing.T) {
 		"MultipleInstances IgnoreNew",
 		"ExecutionTimeLimit ([TimeSpan]::Zero)",
 		"SetSecurityDescriptor",
+		"(A;;GA;;;",
 		"$controllerSid -ne $interactiveSid",
 		"[System.IO.File]::Replace($temporary, $hostPath, $backup)",
 		"Remove-Item -Force -LiteralPath $backup",

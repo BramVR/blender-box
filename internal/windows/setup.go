@@ -551,7 +551,7 @@ try {
     $taskService = New-Object -ComObject 'Schedule.Service'
     $taskService.Connect()
     $registeredTask = $taskService.GetFolder('\').GetTask($taskName)
-    $taskSddl = 'O:SYG:SYD:P(A;;FA;;;SY)(A;;FA;;;BA)(A;;GRGX;;;' + $controllerSid.Value + ')'
+    $taskSddl = 'O:SYG:SYD:P(A;;FA;;;SY)(A;;FA;;;BA)(A;;GA;;;' + $controllerSid.Value + ')'
     $registeredTask.SetSecurityDescriptor($taskSddl, 0)
     [ordered]@{schema_version=1; status='applied'; applied=$true; host_size=$expectedSize; host_sha256=$expectedHash} | ConvertTo-Json -Compress
 } finally {

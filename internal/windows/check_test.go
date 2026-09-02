@@ -98,3 +98,11 @@ func TestCheckStateTreeAcceptsControllerOwnedInheritedRuntimeState(t *testing.T)
 		t.Fatal("state-tree inspection does not accept runtime state owned by the declared controller with inherited task access")
 	}
 }
+
+func TestCheckRequiresDeclaredControllerTaskManagementAuthority(t *testing.T) {
+	if !strings.Contains(checkScript, "$controllerCanManage") ||
+		!strings.Contains(checkScript, "($aceMask -band $genericAll) -eq $genericAll") ||
+		!strings.Contains(checkScript, "return $controllerCanExecute -and $controllerCanManage") {
+		t.Fatal("task inspection does not require controller update and launch authority")
+	}
+}
