@@ -294,15 +294,28 @@ func (runner *Runner) Stop(ctx context.Context, selected target.Target, runID Ru
 	if !cleanup.Known() {
 		return StopResult{}, fmt.Errorf("settle Run: cleanup state is not known")
 	}
+	settledReceipt, err := runner.recoverReceipt(ctx, selected, runID)
+	if err != nil {
+		return StopResult{}, fmt.Errorf("observe settled Run: %w", err)
+	}
+	if !claimsEqual(settledReceipt.Claim, receipt.Claim) {
+		return StopResult{}, fmt.Errorf("observe settled Run: Host Lock claim changed")
+	}
+	if receipt.SessionID != "" && settledReceipt.SessionID != receipt.SessionID {
+		return StopResult{}, fmt.Errorf("observe settled Run: Session identity changed")
+	}
+	if !settledReceipt.Cleanup.Known() {
+		return StopResult{}, fmt.Errorf("observe settled Run: cleanup state is not known")
+	}
 	return StopResult{
 		SchemaVersion: 1,
-		RunID:         receipt.Claim.RunID,
-		RequestID:     receipt.Claim.RequestID,
-		RequestHash:   receipt.Claim.RequestHash,
-		Deadline:      receipt.Claim.Deadline,
-		SessionID:     receipt.SessionID,
+		RunID:         settledReceipt.Claim.RunID,
+		RequestID:     settledReceipt.Claim.RequestID,
+		RequestHash:   settledReceipt.Claim.RequestHash,
+		Deadline:      settledReceipt.Claim.Deadline,
+		SessionID:     settledReceipt.SessionID,
 		Status:        "settled",
-		Cleanup:       cleanup,
+		Cleanup:       settledReceipt.Cleanup,
 	}, nil
 }
 

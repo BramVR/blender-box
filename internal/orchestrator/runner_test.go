@@ -86,12 +86,13 @@ func (host *fakeHost) Settle(_ context.Context, _ target.Target, receipt RunRece
 	if receipt.SessionID != host.receipt.SessionID || receipt.Claim != host.receipt.Claim {
 		return CleanupState{}, fmt.Errorf("settle authority changed")
 	}
-	return CleanupState{
+	host.receipt.Cleanup = CleanupState{
 		SessionStopped: true,
 		PayloadRemoved: true,
 		RunRootRemoved: true,
 		LockReleased:   true,
-	}, nil
+	}
+	return host.receipt.Cleanup, nil
 }
 
 func TestRunFromIntentToVerifiedEvidenceAndKnownCleanup(t *testing.T) {
@@ -622,7 +623,57 @@ func TestStatusAndStopRecoverAndSettleExactHostReceipt(t *testing.T) {
 	if stopped.RunID != claim.RunID || stopped.RequestID != claim.RequestID || stopped.SessionID != host.receipt.SessionID || !stopped.Cleanup.Known() {
 		t.Fatalf("stop result changed authority: %+v", stopped)
 	}
-	wantOperations := []string{"observe", "observe", "settle"}
+	wantOperations := []string{"observe", "observe", "settle", "observe"}
+	if !reflect.DeepEqual(host.operations, wantOperations) {
+		t.Fatalf("operations = %v, want %v", host.operations, wantOperations)
+	}
+}
+
+type startupRecoveryHost struct {
+	fakeHost
+	recovered SessionID
+}
+
+func (host *startupRecoveryHost) Observe(_ context.Context, _ target.Target, runID RunID) (RunReceipt, error) {
+	host.operations = append(host.operations, "observe")
+	if runID != host.receipt.Claim.RunID {
+		return RunReceipt{}, fmt.Errorf("observe run changed")
+	}
+	return host.receipt, nil
+}
+
+func (host *startupRecoveryHost) Settle(_ context.Context, _ target.Target, receipt RunReceipt) (CleanupState, error) {
+	host.operations = append(host.operations, "settle")
+	if receipt.Claim != host.receipt.Claim || receipt.SessionID != "" {
+		return CleanupState{}, fmt.Errorf("startup settlement authority changed")
+	}
+	host.receipt.SessionID = host.recovered
+	host.receipt.Cleanup = CleanupState{SessionStopped: true, PayloadRemoved: true, RunRootRemoved: true, LockReleased: true}
+	return host.receipt.Cleanup, nil
+}
+
+func TestStopReturnsSessionIdentityRecoveredDuringSettlement(t *testing.T) {
+	claim := LockClaim{
+		SchemaVersion: 1,
+		RunID:         "bbx_01RECOVERYRUNIDENTITY00000000",
+		RequestID:     "req_01RECOVERYREQUESTIDENTITY000",
+		ControllerID:  "controller-test",
+		Deadline:      time.Now().Add(time.Hour).UTC(),
+		RequestHash:   strings.Repeat("a", 64),
+		TaskName:      "BlenderBoxTest",
+	}
+	host := &startupRecoveryHost{
+		fakeHost:  fakeHost{receipt: RunReceipt{SchemaVersion: 1, Claim: claim, State: StateStarting}},
+		recovered: "bss_recovered-startup-session-identity-123456",
+	}
+	result, err := New(host).Stop(context.Background(), target.Target{SchemaVersion: 1, TaskName: claim.TaskName}, claim.RunID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.SessionID != host.recovered || !result.Cleanup.Known() {
+		t.Fatalf("stop result = %+v", result)
+	}
+	wantOperations := []string{"observe", "settle", "observe"}
 	if !reflect.DeepEqual(host.operations, wantOperations) {
 		t.Fatalf("operations = %v, want %v", host.operations, wantOperations)
 	}
