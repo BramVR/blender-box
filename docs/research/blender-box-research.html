@@ -744,7 +744,7 @@ blender-box stop bbx_...</code></pre>
         </article>
         <article class="card blue">
           <h3>Bounded transport grammar</h3>
-          <p>The implemented setup keeps compatibility with legacy SCP by restricting the work root to an ASCII drive path with no spaces or remote-shell syntax, enforced by both target validation and the upload adapter. Blender paths outside the work root may still contain spaces. The daemon process-output cap accounts for worst-case nested JSON escaping while retaining the 1 MiB decoded Scenario Result limit.</p>
+          <p>The implemented setup keeps compatibility with legacy SCP by restricting the work root to an ASCII drive path with no spaces or remote-shell syntax, enforced by both target validation and the upload adapter. Blender paths outside the work root may still contain spaces. Setup and inspection seal both OS-released lock files, including the separate launch fence, as regular non-reparse files. The daemon process-output cap accounts for worst-case nested JSON escaping while retaining the 1 MiB decoded Scenario Result limit.</p>
         </article>
         <article class="card green">
           <h3>Focused daemon changes landed</h3>
