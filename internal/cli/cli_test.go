@@ -393,7 +393,7 @@ func TestWindowsSetupPlansWithoutSSHAndRequiresApplyForWrite(t *testing.T) {
 		"--apply",
 		"--json",
 	}, strings.NewReader(""), &stdout, &stderr, Dependencies{SSH: fake})
-	if exitCode != 0 || stderr.Len() != 0 || fake.host != "windows-test" || len(fake.uploads) != 2 || fake.uploads[0][0] != hostBinary || !strings.HasPrefix(fake.uploads[0][1], `C:\BlenderBoxTest\.setup-`) {
+	if exitCode != 0 || stderr.Len() != 0 || fake.host != "windows-test" || len(fake.uploads) != 2 || fake.uploads[0][0] == hostBinary || filepath.Base(fake.uploads[0][0]) != "blender-box.exe" || !strings.HasPrefix(fake.uploads[0][1], `C:\BlenderBoxTest\.setup-`) {
 		t.Fatalf("apply exit = %d, stderr = %q, SSH host = %q, uploads = %q", exitCode, stderr.String(), fake.host, fake.uploads)
 	}
 }

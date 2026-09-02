@@ -58,8 +58,11 @@ func TestSetupPlansWithoutSSHAndAppliesOneBoundedHostBinary(t *testing.T) {
 	if len(fake.inputs[1]) != 0 {
 		t.Fatalf("setup finalize used stdin for %d bytes", len(fake.inputs[1]))
 	}
-	if fake.uploads[0].host != adapterTarget().SSHAlias || fake.uploads[0].source != path || !strings.HasPrefix(fake.uploads[0].destination, adapterTarget().WorkRoot+`\.setup-`) || !strings.HasSuffix(fake.uploads[0].destination, ".bin") || string(fake.uploads[0].contents) != string(binary) {
+	if fake.uploads[0].host != adapterTarget().SSHAlias || fake.uploads[0].source == path || !strings.HasPrefix(fake.uploads[0].destination, adapterTarget().WorkRoot+`\.setup-`) || !strings.HasSuffix(fake.uploads[0].destination, ".bin") || string(fake.uploads[0].contents) != string(binary) {
 		t.Fatalf("upload = %+v", fake.uploads[0])
+	}
+	if _, err := os.Lstat(fake.uploads[0].source); !os.IsNotExist(err) {
+		t.Fatalf("local binary snapshot remains after setup: %v", err)
 	}
 	if fake.uploads[1].host != adapterTarget().SSHAlias || !strings.HasSuffix(fake.uploads[1].destination, ".ps1") || len(fake.uploads[1].contents) == 0 {
 		t.Fatalf("script upload = %+v", fake.uploads[1])
@@ -107,6 +110,35 @@ func TestSetupPlansWithoutSSHAndAppliesOneBoundedHostBinary(t *testing.T) {
 		if !strings.Contains(script, required) {
 			t.Errorf("setup script missing %q", required)
 		}
+	}
+}
+
+func TestSetupUploadsTheValidatedBinarySnapshot(t *testing.T) {
+	original := []byte("validated-host-binary")
+	changed := []byte("changed-after-validation")
+	path := filepath.Join(t.TempDir(), "blender-box.exe")
+	if err := os.WriteFile(path, original, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	hash := sha256.Sum256(original)
+	fake := &scriptedSSH{outputs: [][]byte{nil, mustJSON(t, SetupResult{
+		SchemaVersion: 1,
+		Status:        "applied",
+		Applied:       true,
+		HostSize:      int64(len(original)),
+		HostSHA256:    hex.EncodeToString(hash[:]),
+	})}}
+	fake.runHook = func() {
+		if err := os.WriteFile(path, changed, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if _, err := Setup(context.Background(), fake, adapterTarget(), path, true); err != nil {
+		t.Fatal(err)
+	}
+	if len(fake.uploads) != 2 || string(fake.uploads[0].contents) != string(original) || fake.uploads[0].source == path {
+		t.Fatalf("binary upload did not use validated snapshot: %+v", fake.uploads)
 	}
 }
 

@@ -8,11 +8,16 @@ import (
 	"os"
 	"regexp"
 	"strings"
+	"unicode/utf16"
 
 	"github.com/BramVR/blender-box/internal/safepath"
 )
 
-const maxSetupWorkRootTail = 238 - len(`\.setup-`) - 32 - len(`.ps1`)
+const (
+	maxWindowsPathTail         = 238
+	maxSetupWorkRootTail       = maxWindowsPathTail - len(`\.setup-`) - 32 - len(`.ps1`)
+	maxSetupHostExecutableTail = maxWindowsPathTail - len(`.setup-backup-`) - 32
+)
 
 var (
 	sshAliasPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$`)
@@ -93,6 +98,9 @@ func (value Target) Validate() error {
 			return fmt.Errorf("target %s must be an absolute safe Windows file path", label)
 		}
 	}
+	if windowsPathTailUnits(value.HostExecutable) > maxSetupHostExecutableTail {
+		return fmt.Errorf("target host_executable must reserve space for setup replacement paths")
+	}
 	for label, path := range map[string]string{
 		"session_broker_executable": value.SessionBrokerExecutable,
 		"host_executable":           value.HostExecutable,
@@ -129,7 +137,7 @@ func ValidateLegacySCPWindowsPath(path string) bool {
 
 // ValidateWindowsPath accepts the absolute, non-device Windows path grammar used across process boundaries.
 func ValidateWindowsPath(path string) bool {
-	if !workRootPattern.MatchString(path) || strings.Contains(path, "/") || strings.HasSuffix(path, `\`) {
+	if !workRootPattern.MatchString(path) || windowsPathTailUnits(path) > maxWindowsPathTail || strings.Contains(path, "/") || strings.HasSuffix(path, `\`) {
 		return false
 	}
 	for _, segment := range strings.Split(path[3:], `\`) {
@@ -150,4 +158,11 @@ func ValidateWindowsPath(path string) bool {
 		}
 	}
 	return true
+}
+
+func windowsPathTailUnits(path string) int {
+	if len(path) < 3 {
+		return 0
+	}
+	return len(utf16.Encode([]rune(path[3:])))
 }

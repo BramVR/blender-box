@@ -23,6 +23,7 @@ type scriptedSSH struct {
 	arguments [][]string
 	inputs    [][]byte
 	uploads   []scriptedUpload
+	runHook   func()
 }
 
 type scriptedUpload struct {
@@ -33,6 +34,11 @@ type scriptedUpload struct {
 }
 
 func (fake *scriptedSSH) Run(_ context.Context, _ string, arguments []string, input []byte) ([]byte, error) {
+	if fake.runHook != nil {
+		hook := fake.runHook
+		fake.runHook = nil
+		hook()
+	}
 	fake.arguments = append(fake.arguments, append([]string(nil), arguments...))
 	fake.inputs = append(fake.inputs, append([]byte(nil), input...))
 	output := fake.outputs[0]

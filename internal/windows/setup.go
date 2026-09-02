@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/BramVR/blender-box/internal/target"
@@ -60,6 +61,14 @@ func Setup(ctx context.Context, ssh SetupSSH, selected target.Target, source str
 	transferID := hex.EncodeToString(nonce[:])
 	stagedBinary := fmt.Sprintf(`%s\.setup-%s.bin`, selected.WorkRoot, transferID)
 	stagedScript := fmt.Sprintf(`%s\.setup-%s.ps1`, selected.WorkRoot, transferID)
+	localBinary, err := writeHostBinarySnapshot(contents)
+	if err != nil {
+		return SetupResult{}, err
+	}
+	defer func() {
+		_ = os.Remove(localBinary)
+		_ = os.Remove(filepath.Dir(localBinary))
+	}()
 	script := setupScript(selected, result, stagedBinary)
 	localScript, err := writeSetupScript(script)
 	if err != nil {
@@ -73,7 +82,7 @@ func Setup(ctx context.Context, ssh SetupSSH, selected target.Target, source str
 	if _, err := ssh.Run(ctx, selected.SSHAlias, powerShellInputArguments(), []byte(prepare)); err != nil {
 		return SetupResult{}, fmt.Errorf("prepare Windows setup: %w", err)
 	}
-	if err := ssh.Upload(ctx, selected.SSHAlias, source, stagedBinary); err != nil {
+	if err := ssh.Upload(ctx, selected.SSHAlias, localBinary, stagedBinary); err != nil {
 		return SetupResult{}, cleanupSetupUploads(ctx, ssh, selected, []string{stagedBinary, stagedScript}, fmt.Errorf("upload Windows host binary: %w", err))
 	}
 	if err := ssh.Upload(ctx, selected.SSHAlias, localScript, stagedScript); err != nil {
@@ -93,6 +102,41 @@ func Setup(ctx context.Context, ssh SetupSSH, selected target.Target, source str
 		return SetupResult{}, fmt.Errorf("Windows setup returned an invalid contract")
 	}
 	return applied, nil
+}
+
+func writeHostBinarySnapshot(contents []byte) (string, error) {
+	directory, err := os.MkdirTemp("", "blender-box-host-*")
+	if err != nil {
+		return "", fmt.Errorf("create local host snapshot directory: %w", err)
+	}
+	path := filepath.Join(directory, "blender-box.exe")
+	ok := false
+	defer func() {
+		if !ok {
+			_ = os.Remove(path)
+			_ = os.Remove(directory)
+		}
+	}()
+	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		return "", fmt.Errorf("create local host snapshot: %w", err)
+	}
+	if written, err := file.Write(contents); err != nil || written != len(contents) {
+		file.Close()
+		if err == nil {
+			err = io.ErrShortWrite
+		}
+		return "", fmt.Errorf("write local host snapshot: %w", err)
+	}
+	if err := file.Sync(); err != nil {
+		file.Close()
+		return "", fmt.Errorf("sync local host snapshot: %w", err)
+	}
+	if err := file.Close(); err != nil {
+		return "", fmt.Errorf("close local host snapshot: %w", err)
+	}
+	ok = true
+	return path, nil
 }
 
 func powerShellArguments(script string) []string {

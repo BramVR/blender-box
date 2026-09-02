@@ -49,36 +49,57 @@ func TestWorkRootRejectsLegacySCPShellCharacters(t *testing.T) {
 }
 
 func TestWorkRootReservesLegacySCPSetupStagingSuffix(t *testing.T) {
-	base := Target{
+	value := Target{
 		SchemaVersion:     1,
 		SSHAlias:          "windows-test",
 		SSHUser:           "test-user",
+		WorkRoot:          `C:\` + strings.Repeat("a", 195),
 		InteractiveUser:   "test-user",
 		TaskName:          "BlenderBoxTest",
 		BlenderExecutable: `C:\Program Files\Blender Foundation\Blender\blender.exe`,
+	}
+	value.SessionBrokerExecutable = value.WorkRoot + `\bin\blendersessiond.exe`
+	value.HostExecutable = value.WorkRoot + `\bin\blender-box.exe`
+	if err := value.Validate(); err == nil || !strings.Contains(err.Error(), "staging") {
+		t.Fatalf("unstageable root error = %v", err)
+	}
+	maximumStageable := `C:\` + strings.Repeat("a", 194) + `\.setup-` + strings.Repeat("0", 32) + `.ps1`
+	if !ValidateLegacySCPWindowsPath(maximumStageable) {
+		t.Fatal("documented staging boundary is not accepted by the upload grammar")
+	}
+}
+
+func TestHostExecutableReservesLongestReplacementSuffix(t *testing.T) {
+	base := Target{
+		SchemaVersion:           1,
+		SSHAlias:                "windows-test",
+		SSHUser:                 "test-user",
+		WorkRoot:                `C:\B`,
+		InteractiveUser:         "test-user",
+		TaskName:                "BlenderBoxTest",
+		BlenderExecutable:       `C:\Program Files\Blender Foundation\Blender\blender.exe`,
+		SessionBrokerExecutable: `C:\B\bin\blendersessiond.exe`,
 	}
 	for _, test := range []struct {
 		name    string
 		tailLen int
 		valid   bool
 	}{
-		{name: "maximum stageable root", tailLen: 194, valid: true},
-		{name: "one byte too long", tailLen: 195, valid: false},
+		{name: "maximum replaceable host path", tailLen: 192, valid: true},
+		{name: "one byte too long", tailLen: 193, valid: false},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			value := base
-			value.WorkRoot = `C:\` + strings.Repeat("a", test.tailLen)
-			value.SessionBrokerExecutable = value.WorkRoot + `\bin\blendersessiond.exe`
-			value.HostExecutable = value.WorkRoot + `\bin\blender-box.exe`
+			value.HostExecutable = `C:\B\d\` + strings.Repeat("a", test.tailLen-len(`B\d\`))
 			err := value.Validate()
 			if test.valid && err != nil {
-				t.Fatalf("stageable root rejected: %v", err)
+				t.Fatalf("replaceable host path rejected: %v", err)
 			}
-			if !test.valid && (err == nil || !strings.Contains(err.Error(), "staging")) {
-				t.Fatalf("unstageable root error = %v", err)
+			if !test.valid && (err == nil || !strings.Contains(err.Error(), "replacement")) {
+				t.Fatalf("unreplaceable host path error = %v", err)
 			}
-			if test.valid && !ValidateLegacySCPWindowsPath(value.WorkRoot+`\.setup-`+strings.Repeat("0", 32)+`.ps1`) {
-				t.Fatal("maximum accepted root cannot carry the generated setup suffix")
+			if test.valid && !ValidateWindowsPath(value.HostExecutable+`.setup-backup-`+strings.Repeat("0", 32)) {
+				t.Fatal("maximum accepted host path cannot carry its longest replacement suffix")
 			}
 		})
 	}
