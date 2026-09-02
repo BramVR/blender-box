@@ -16,6 +16,7 @@ The user supplies one non-secret target file and one explicit Run Payload. Slice
 
 ```console
 blender-box windows check --target target.json --json
+blender-box windows setup --target target.json --host-binary blender-box.exe --json
 blender-box run --target target.json --payload payload.json --json
 blender-box status --target target.json --run bbx_... --json
 blender-box stop --target target.json --run bbx_... --json
@@ -38,8 +39,8 @@ The client uses one deep orchestration interface:
 ```go
 type Runner interface {
     Run(context.Context, RunIntent) (RunResult, error)
-    Recover(context.Context, RunRef) (RunStatus, error)
-    Stop(context.Context, StopIntent) (StopResult, error)
+    Status(context.Context, Target, RunID) (StatusResult, error)
+    Stop(context.Context, Target, RunID) (StopResult, error)
 }
 
 type RunIntent struct {
@@ -93,7 +94,9 @@ Payload transfer canonicalizes the declared document root, accepts regular files
 
 The controller filesystem belongs to the invoking user. Blender Box rejects static symlinks, snapshots validated payload bytes, creates evidence atomically, and detects ordinary source changes; it does not claim isolation from an actively hostile process running concurrently as that same OS user. Such a process can already read and replace controller-owned files. Consuming automation must use a private payload and evidence tree when other local users are in scope.
 
-The Windows task runs as the logged-in user with `LogonType=Interactive`, limited rights, no trigger, `IgnoreNew`, and no execution time limit. It starts the host entry point, which validates the request and lease again before invoking `blendersessiond`. Blender's MCP port remains Windows-loopback-only.
+The Windows task runs as the logged-in user with `LogonType=Interactive`, limited rights, no trigger, `IgnoreNew`, and no execution time limit. Explicit setup installs one bounded, hash-verified host binary and applies matching path and task ACLs; it is plan-only unless `--apply` is present. The task starts the host entry point, which validates the request and lease again before invoking `blendersessiond`. Blender's MCP port remains Windows-loopback-only.
+
+Host mutations use an OS-released file lock rather than a crash-sticky sentinel. The task holds it only while publishing or comparing authority and durable state. Long Scenario and capture calls run outside that lock, then reacquire it and revalidate the complete claim and exact Session identity before committing evidence. This lets `stop` interrupt a running call without allowing the interrupted task to recreate settled state.
 
 Recovery reads the receipt through the same SSH adapter. A dropped connection does not release the Host Lock. `status` can report accepted, staged, starting, running, calling, collecting, settling, complete, failed, timed-out, or cleanup-failed. `stop` requires the Run ID, request identity, request hash, deadline, and Session identity from the receipt. Cleanup records Session stop, Run-root cleanup, and lock release separately.
 
@@ -122,15 +125,16 @@ A Python-only client and host helper would make the first code quick to write, b
 
 ## Open questions and risks
 
-- Does `blendersessiond` need one dependency PR or separate identity and timeout PRs to keep each change reviewable?
-- Which hard maximum for a Scenario call is high enough for a real render while still bounding a stuck add-on?
-- Does Windows OpenSSH on the proof host support the chosen bounded archive stream without an extra tool, or should slice 0 transfer files one at a time through standard input?
-- Which evidence capture types can the first real proof support without claiming Blender-window or desktop proof from viewport pixels?
+- Failure runs currently return their durable receipt and cleanup state, but full failure Evidence Bundles remain later work.
+- A Scenario read timeout is capped at 3,600 seconds; later render workloads may justify a different bounded contract.
+- Slice 0 proves viewport evidence only. It does not claim Blender-window chrome or Windows-desktop proof.
 
 ## Implementation status
 
-The first landed seam is `windows check --target <file> --json`. One Go binary serves both the client and the future static task entry point; Python remains inside Blender-owned Scenario scripts. The check streams a bounded read-only PowerShell program over SSH, resolves the configured console user to an SID, and validates declared paths and the root Scheduled Task without relying on the SSH user's `PATH`.
+The first landed seam is `windows check --target <file> --json`. One Go binary serves both the client and the static task entry point; Python remains inside Blender-owned Scenario scripts. The check streams a bounded read-only PowerShell program over SSH, resolves the configured console user to an SID, and validates declared paths and the root Scheduled Task without relying on the SSH user's `PATH`.
 
 The Run contract and deterministic orchestration core are implemented behind `Runner`. A strict Payload loader snapshots the validated bytes, computes transfer size and SHA-256 locally, rejects unsafe Windows paths and symlinks, and enforces file and aggregate bounds. The integrated fake-host test proves the full ordering from inspection and Host Lock acquisition through an exact versioned Session receipt, hash-verified evidence, and known settlement without exposing adapter phases in the CLI. The Run deadline bounds every normal adapter operation; settlement has a separate 30-second attempt bound and retains the last trusted authority after cancellation or transport failure.
 
-The remaining `run`, `status`, and `stop` commands and Windows adapter must enter through the `Runner` boundary above. They must not expose host adapter phases as public CLI switches.
+The public `windows setup`, `run`, `status`, and `stop` commands now enter through the boundaries above. Setup is plan-only by default. The Windows adapter carries versioned JSON over SSH; the static task invokes the same binary's private `host run-request` entry point. The host rehashes published payload bytes before launch, stores the exact daemon Session identity in the Host Lock, and fences every daemon call and stop with it.
+
+`run` publishes its Run ID on stderr before validation or remote work while reserving stdout for one terminal JSON document. The returned Evidence Bundle contains a no-replace `manifest.json`, terminal `evidence.json`, the Scenario Result, and optional viewport capture with dimensions and capture method. `status` provides a reconnect view; `stop` recovers the exact claim and Session authority from the host-owned receipt, including interrupted receipt publication and partial acquisition.

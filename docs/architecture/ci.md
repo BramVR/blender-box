@@ -8,7 +8,7 @@ read_when:
 
 ## Problem
 
-Blender Box needs useful pull-request checks before its Go CLI and Python host helper exist. The same checks must run from a developer checkout and on Linux, macOS, and Windows. Live Blender proof is a separate, host-sensitive gate and must never run for untrusted pull-request code.
+Blender Box needs useful pull-request checks for its Go client and Windows host entry point. The same checks must run from a developer checkout and on Linux, macOS, and Windows. Live Blender proof is a separate, host-sensitive gate and must never run for untrusted pull-request code.
 
 ## Usage
 
@@ -31,9 +31,9 @@ The GitHub workflows call these same commands. A language implementation extends
 
 `scripts/ci` owns repository checks and test selection. It detects the committed Go and Python project files, then runs the matching format, static-analysis, dependency, and test commands. `.github/workflows/ci.yml` supplies clean hosted runners, bounded execution, read-only permissions, stable job names, and cancellation. `.github/workflows/security.yml` scans changed content for verified and unknown secrets. Dependabot keeps pinned action revisions current.
 
-The public interface is three commands. Runner setup and language detection stay behind it. CI contract tests protect the parts GitHub cannot validate for us: triggers, permissions, timeouts, stable job names, supported operating systems, pinned actions, and the secret scan.
+The repository gate's public interface is three commands. Runner setup and language detection stay behind it. CI contract tests protect the parts GitHub cannot validate for us: triggers, permissions, timeouts, stable job names, supported operating systems, pinned actions, and the secret scan.
 
-Real Windows Blender proof does not belong in these workflows. Add it after the first end-to-end Scenario exists, behind an explicit protected trigger and a project-local verification skill. It must record the exact commit, Run ID, Session identity, evidence, and cleanup result.
+Real Windows Blender proof does not belong in these workflows. The project-local `verify-blender-box` skill drives it only against an explicitly authorized owned host. Proof records the exact commit, Run ID, Session identity, evidence, and cleanup result without publishing private host details.
 
 ## Synthesis decision
 
@@ -57,6 +57,6 @@ A custom composite action would reuse steps across jobs, but it adds an action m
 - Which protected GitHub environment should own credentials for opt-in live Windows proof?
 - Should macOS remain an every-commit gate once test duration becomes material, or become path-gated?
 
-## Next implementation step
+## Live-proof boundary
 
-The first Go and Python implementation PRs must add their exact commands to `scripts/ci` in the same commit as their project files.
+Hosted pull-request jobs never receive host credentials or network access to an owned Windows machine. A maintainer runs the verification skill locally after checking the exact hostname and operator state. The live proof may apply only the declared Blender Box setup and must clean only the exact Run and Session it created.

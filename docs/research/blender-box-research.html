@@ -671,12 +671,12 @@ hosts:
       <div class="mt-14">
 <pre><code># setup is a read-only preview unless --apply is present
 blender-box windows check --target target.json --json
-blender-box windows setup --host-config hosts.yaml
-blender-box windows setup --host-config hosts.yaml --apply
+blender-box windows setup --target target.json --host-binary blender-box.exe --json
+blender-box windows setup --target target.json --host-binary blender-box.exe --apply --json
 
 blender-box plan addon-smoke
 blender-box doctor --scenario addon-smoke
-blender-box run addon-smoke
+blender-box run --target target.json --payload payload.json --json
 
 blender-box run --keep-on-failure addon-smoke
 blender-box status --run bbx_...
@@ -708,20 +708,20 @@ blender-box stop bbx_...</code></pre>
 
       <div class="grid two">
         <article class="card red">
-          <h3><span class="priority p0">P0</span>Exact public Session identity</h3>
-          <p>Add an opaque <code>session_id</code> to start and status JSON. Let call and stop require <code>--expect-session-id</code>. A stale Run must never stop a newer Session that reused the same name.</p>
+          <h3><span class="priority p0">Landed</span>Exact public Session identity</h3>
+          <p><code>blendersessiond</code> start and status JSON return an opaque <code>session_id</code>. Call and stop require <code>--expect-session-id</code>. A stale Run cannot stop a newer Session that reused the same name.</p>
         </article>
         <article class="card red">
-          <h3><span class="priority p0">P0</span>Bounded long Scenario calls</h3>
-          <p>Expose a read-timeout flag above 180 seconds, with a hard maximum. Blender renders and add-on flows can exceed the current wire ceiling. The Stall still owns the Scenario deadline.</p>
+          <h3><span class="priority p0">Landed</span>Bounded long Scenario calls</h3>
+          <p><code>blendersessiond call --read-timeout</code> accepts 1 through 3,600 seconds. Blender Box carries the declared bound while the Run deadline remains authoritative.</p>
         </article>
         <article class="card red">
-          <h3><span class="priority p0">P0</span>Interactive task bridge</h3>
-          <p>Install one static task that calls <code>blender-box host run-request</code> against a fixed state root. Use <code>LogonType=Interactive</code>, limited rights, no trigger, <code>IgnoreNew</code>, and no execution time limit. SSH atomically writes the fenced request, then starts the task.</p>
+          <h3><span class="priority p0">Implemented</span>Interactive task bridge</h3>
+          <p>Explicit setup installs one static task that calls <code>blender-box host run-request</code> against a fixed state root. It uses <code>LogonType=Interactive</code>, limited rights, no trigger, <code>IgnoreNew</code>, and no execution time limit. SSH atomically writes the fenced request, then starts the task.</p>
         </article>
         <article class="card red">
-          <h3><span class="priority p0">P0</span>Host Lock and request fence</h3>
-          <p>Store shared host authority on Windows. Bind the Run ID, controller, deadline, request hash, task name, and returned Session identity. A stale SSH client cannot replace or clean a newer run.</p>
+          <h3><span class="priority p0">Implemented</span>Host Lock and request fence</h3>
+          <p>Windows stores shared host authority bound to the Run ID, controller, deadline, request hash, task name, and returned Session identity. Host mutations use an OS-released lock, and stale clients cannot replace or clean a newer Run.</p>
         </article>
         <article class="card blue">
           <h3><span class="priority p1">P1</span>Capability and version report</h3>
@@ -740,17 +740,17 @@ blender-box stop bbx_...</code></pre>
         </article>
         <article class="card orange">
           <h3>Explicit setup apply</h3>
-          <p>Apply creates declared work directories, installs the versioned Windows helper, and registers the exact interactive task. It does not install Blender, change Tailscale, change <code>sshd</code>, edit the firewall, store a password, or launch Blender.</p>
+          <p>The implemented command is plan-only unless <code>--apply</code> is present. Apply creates declared work directories, streams and hashes the versioned Windows helper, applies matching ACLs, and registers the exact interactive task. It does not install Blender, change Tailscale, change <code>sshd</code>, edit the firewall, store a password, or launch Blender.</p>
         </article>
         <article class="card green">
-          <h3>No daemon change needed</h3>
+          <h3>Focused daemon changes landed</h3>
           <ul>
+            <li>Start and status expose the opaque Session identity.</li>
+            <li>Call and stop require the expected exact Session identity.</li>
+            <li>Call accepts a bounded read timeout through 3,600 seconds.</li>
             <li>Per-run Blender user roots can enter through the environment inherited at start.</li>
-            <li>The interactive task can set those roots from the validated request before start.</li>
-            <li>Unique names already isolate ports and Session state.</li>
             <li>Raw <code>execute_code</code> can run a small staged-script wrapper.</li>
             <li>Viewport capture already writes a file and reports its method.</li>
-            <li>Stop already checks daemon ownership before touching a process tree.</li>
           </ul>
         </article>
         <article class="card orange">

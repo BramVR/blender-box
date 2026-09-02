@@ -8,9 +8,9 @@ Tailscale currently provides private host reachability through the configured SS
 
 ## Status
 
-Slice 0 implementation is in progress. The public CLI currently provides a read-only Windows target check. Run orchestration, setup apply, Host Locks, evidence, and exact stop are not available yet.
+Slice 0 provides read-only inspection, explicit setup, a fenced remote Scenario run, reconnect status, exact stop, and a local Evidence Bundle. The default test suite uses fake SSH, Scheduled Task, daemon, filesystem, and Blender boundaries. Real Windows Blender proof is opt-in.
 
-## Windows target check
+## Windows target
 
 Create a non-secret target file with absolute Windows paths and a safe SSH config alias:
 
@@ -36,7 +36,52 @@ go run ./cmd/blender-box windows check --target target.json --json
 
 The command streams one bounded, read-only PowerShell inspection over SSH and returns versioned UTF-8 JSON. It verifies the SSH and console-user SIDs, UAC limited-token policy, declared executable and work-root access, trusted path authorities through the volume root, and the complete root Scheduled Task action, principal, settings, and security descriptor. The task DACL must grant the declared SSH user direct launch authority; the SSH and interactive users may be the same account. Access inspection treats every applicable-rights deny ACE conservatively because an SSH check does not own the interactive task token; operator-managed setup paths should not use deny ACEs. A failed requirement returns `status: "fail"`; malformed or oversized transport output is an error.
 
-## Proposed boundary
+`session_broker_executable` and `host_executable` must be inside `work_root`. Blender may use an operator-managed installation elsewhere.
+
+## Explicit setup
+
+Build the Windows host binary, inspect the plan, then add `--apply` only for the verified owned host:
+
+```sh
+GOOS=windows GOARCH=amd64 go build -o /tmp/blender-box.exe ./cmd/blender-box
+go run ./cmd/blender-box windows setup --target target.json --host-binary /tmp/blender-box.exe --json
+go run ./cmd/blender-box windows setup --target target.json --host-binary /tmp/blender-box.exe --apply --json
+go run ./cmd/blender-box windows check --target target.json --json
+```
+
+Plan mode makes no SSH call. Apply streams one bounded binary, verifies its size and SHA-256 on Windows, applies the declared ACLs, and registers the exact no-trigger interactive task with limited rights, `IgnoreNew`, and no execution time limit. It requires the declared Blender and compatible `blendersessiond` executables to exist. It does not install Blender, launch it, change SSH, Tailscale, or firewall settings, or expose Blender's loopback MCP port.
+
+## Run a Scenario
+
+A slice 0 payload declares regular files, one Python Scenario entry point, a bounded daemon read timeout, and viewport evidence policy:
+
+```json
+{
+  "schema_version": 1,
+  "files": [
+    {"source": "scenario.py", "destination": "scenario.py"}
+  ],
+  "scenario": {
+    "script": "scenario.py",
+    "read_timeout_seconds": 600,
+    "capture_viewport": true
+  }
+}
+```
+
+Run and recover through the public commands:
+
+```sh
+go run ./cmd/blender-box run --target target.json --payload payload.json --timeout 20m --json
+go run ./cmd/blender-box status --target target.json --run bbx_... --json
+go run ./cmd/blender-box stop --target target.json --run bbx_... --json
+```
+
+`run` writes `RUN_ID=bbx_...` to stderr before validation or remote work; stdout remains one versioned JSON result. The client acquires the host-owned lock, transfers and rehashes bounded payload files, triggers the static task, pins the exact returned `blendersessiond` Session identity, and applies the Run deadline to the Scenario call. `stop` recovers the full request and Session fence from the host receipt. It never stops Blender by name, port, path, or guessed PID.
+
+The default bundle is `artifacts/blender-box/<run-id>/`. `manifest.json` records evidence paths, types, sizes, SHA-256 hashes, and viewport capture provenance. `evidence.json` records Run, request, deadline, exact Session identity, terminal state, and cleanup. Scenario and viewport files are fetched only from the declared manifest and published without replacement.
+
+## Boundary
 
 - `blender-box` owns SSH, Windows setup checks, Host Locks, payload transfer, Scenarios, evidence, validation, and cleanup.
 - `blendersessiond` runs on Windows and owns Blender discovery, launch, health, MCP calls, and exact process-tree stop.
