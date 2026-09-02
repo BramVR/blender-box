@@ -106,7 +106,12 @@ func (adapter *Adapter) Fetch(ctx context.Context, selected target.Target, recei
 
 func (adapter *Adapter) Settle(ctx context.Context, selected target.Target, receipt orchestrator.RunReceipt) (orchestrator.CleanupState, error) {
 	var response host.SettleResponse
-	if err := adapter.invokeJSON(ctx, selected, "settle", host.SettleRequest{SchemaVersion: 1, Receipt: receipt}, &response); err != nil {
+	if err := adapter.invokeJSON(ctx, selected, "settle", host.SettleRequest{
+		SchemaVersion:           1,
+		Receipt:                 receipt,
+		SessionBrokerExecutable: selected.SessionBrokerExecutable,
+		SessionName:             orchestrator.SessionNameForRun(receipt.Claim.RunID),
+	}, &response); err != nil {
 		return orchestrator.CleanupState{}, err
 	}
 	if response.SchemaVersion != 1 {

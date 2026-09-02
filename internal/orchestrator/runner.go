@@ -453,7 +453,7 @@ func buildRequest(intent RunIntent) (RunRequest, error) {
 	}
 	body := RequestBody{
 		SchemaVersion:           1,
-		SessionName:             sessionName(intent.RunID),
+		SessionName:             SessionNameForRun(intent.RunID),
 		BlenderExecutable:       intent.Target.BlenderExecutable,
 		SessionBrokerExecutable: intent.Target.SessionBrokerExecutable,
 		Payload:                 intent.Payload,
@@ -483,7 +483,8 @@ func requestBodyHash(body RequestBody) (string, error) {
 	return hex.EncodeToString(hash[:]), nil
 }
 
-func sessionName(runID RunID) string {
+// SessionNameForRun returns the deterministic daemon routing name for one Run.
+func SessionNameForRun(runID RunID) string {
 	hash := sha256.Sum256([]byte(runID))
 	return "blender-box-" + hex.EncodeToString(hash[:8])
 }

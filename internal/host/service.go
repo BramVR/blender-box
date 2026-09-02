@@ -20,6 +20,7 @@ import (
 
 	"github.com/BramVR/blender-box/internal/orchestrator"
 	"github.com/BramVR/blender-box/internal/safepath"
+	"github.com/BramVR/blender-box/internal/target"
 )
 
 const (
@@ -670,7 +671,7 @@ func (service *Service) Fetch(root string, request FetchRequest) ([]byte, error)
 }
 
 func (service *Service) Settle(ctx context.Context, root string, request SettleRequest) (orchestrator.CleanupState, error) {
-	if request.SchemaVersion != 1 || request.Receipt.Claim.Validate() != nil {
+	if request.SchemaVersion != 1 || request.Receipt.Claim.Validate() != nil || !target.ValidateWindowsPath(request.SessionBrokerExecutable) || request.SessionName != orchestrator.SessionNameForRun(request.Receipt.Claim.RunID) {
 		return orchestrator.CleanupState{}, fmt.Errorf("invalid settle contract")
 	}
 	release, err := acquireOperation(ctx, root)
@@ -695,7 +696,10 @@ func (service *Service) Settle(ctx context.Context, root string, request SettleR
 		return orchestrator.CleanupState{}, fmt.Errorf("settle claim does not match host receipt")
 	}
 	if stored.Cleanup.Known() {
-		return stored.Cleanup, nil
+		cleanup, recovered, recoveryErr := service.recoverReleasedCleanup(root, stored)
+		if recovered || recoveryErr != nil {
+			return cleanup, recoveryErr
+		}
 	}
 	lock, err := service.authorizeClaim(root, stored.Claim)
 	if err != nil {
@@ -705,11 +709,14 @@ func (service *Service) Settle(ctx context.Context, root string, request SettleR
 		}
 		return orchestrator.CleanupState{}, fmt.Errorf("settle authority does not match Host Lock")
 	}
+	// The interactive task can write receipts. Physical authority still exists, so
+	// repeat exact cleanup instead of trusting any persisted cleanup shortcut.
+	stored.Cleanup = orchestrator.CleanupState{}
 	if stored.State == orchestrator.StateStarting && stored.SessionID == "" && lock.SessionID != "" {
 		stored.SessionID = lock.SessionID
 	}
 	if stored.SessionID != "" && lock.SessionID == "" {
-		recovered, found, recoverErr := service.recoverUnpublishedSession(ctx, root, stored.Claim)
+		recovered, found, recoverErr := service.recoverUnpublishedSession(ctx, root, stored.Claim, request.SessionBrokerExecutable, request.SessionName)
 		if recoverErr != nil {
 			return orchestrator.CleanupState{}, recoverErr
 		}
@@ -728,7 +735,7 @@ func (service *Service) Settle(ctx context.Context, root string, request SettleR
 		return orchestrator.CleanupState{}, fmt.Errorf("settle authority does not match Host Lock")
 	}
 	if stored.SessionID == "" {
-		recovered, found, recoverErr := service.recoverUnpublishedSession(ctx, root, stored.Claim)
+		recovered, found, recoverErr := service.recoverUnpublishedSession(ctx, root, stored.Claim, request.SessionBrokerExecutable, request.SessionName)
 		if recoverErr != nil {
 			return orchestrator.CleanupState{}, recoverErr
 		}
@@ -755,19 +762,12 @@ func (service *Service) Settle(ctx context.Context, root string, request SettleR
 		}
 	}
 	if stored.SessionID != "" && !stored.Cleanup.SessionStopped {
-		var runRequest orchestrator.RunRequest
-		if err := readJSON(filepath.Join(runPath(root, stored.Claim.RunID), "request.json"), &runRequest, maxScenarioJSON); err != nil {
-			return orchestrator.CleanupState{}, err
-		}
-		if err := runRequest.Validate(); err != nil || !runRequest.Claim.Equal(stored.Claim) {
-			return orchestrator.CleanupState{}, fmt.Errorf("stored Run request does not match Host Lock")
-		}
 		if service.daemon == nil {
 			return orchestrator.CleanupState{}, fmt.Errorf("Session daemon is unavailable")
 		}
 		if err := service.daemon.Stop(ctx, DaemonStop{
-			Executable:  runRequest.Body.SessionBrokerExecutable,
-			Name:        runRequest.Body.SessionName,
+			Executable:  request.SessionBrokerExecutable,
+			Name:        request.SessionName,
 			SessionID:   stored.SessionID,
 			Environment: runEnvironment(root, stored.Claim.RunID),
 		}); err != nil {
@@ -827,25 +827,22 @@ func (service *Service) Settle(ctx context.Context, root string, request SettleR
 	return stored.Cleanup, nil
 }
 
-func (service *Service) recoverUnpublishedSession(ctx context.Context, root string, claim orchestrator.LockClaim) (orchestrator.SessionID, bool, error) {
-	path := filepath.Join(runPath(root, claim.RunID), "request.json")
-	var request orchestrator.RunRequest
-	if err := readJSON(path, &request, maxScenarioJSON); err != nil {
-		if _, statErr := os.Lstat(path); os.IsNotExist(statErr) {
-			return "", false, nil
-		}
-		return "", false, err
+func (service *Service) recoverUnpublishedSession(ctx context.Context, root string, claim orchestrator.LockClaim, executable, name string) (orchestrator.SessionID, bool, error) {
+	requestPath := filepath.Join(runPath(root, claim.RunID), "request.json")
+	info, err := os.Lstat(requestPath)
+	if os.IsNotExist(err) {
+		return "", false, nil
 	}
-	if err := request.Validate(); err != nil || !request.Claim.Equal(claim) {
-		return "", false, fmt.Errorf("stored Run request does not match Host Lock")
+	if err != nil || !info.Mode().IsRegular() {
+		return "", false, fmt.Errorf("stored Run request is not a regular file")
 	}
 	if service.daemon == nil {
 		return "", false, fmt.Errorf("Session daemon is unavailable")
 	}
 	// blendersessiond records the opaque identity before opening its Windows launch gate.
 	return service.daemon.Recover(ctx, DaemonRecover{
-		Executable:  request.Body.SessionBrokerExecutable,
-		Name:        request.Body.SessionName,
+		Executable:  executable,
+		Name:        name,
 		Environment: runEnvironment(root, claim.RunID),
 	})
 }

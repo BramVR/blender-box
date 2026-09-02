@@ -314,7 +314,7 @@ func TestServiceRunsFencedScenarioAndReturnsEvidenceBeforeExactCleanup(t *testin
 	}
 	body := orchestrator.RequestBody{
 		SchemaVersion:           1,
-		SessionName:             "blender-box-host-test",
+		SessionName:             orchestrator.SessionNameForRun("bbx_01HOSTRUNIDENTITY00000000000"),
 		BlenderExecutable:       `C:\Fake\blender.exe`,
 		SessionBrokerExecutable: `C:\Fake\blendersessiond.exe`,
 		Payload:                 manifest,
@@ -396,7 +396,7 @@ func TestServiceRunsFencedScenarioAndReturnsEvidenceBeforeExactCleanup(t *testin
 	}
 	// A dropped Start response may leave the client with claim-only authority;
 	// the host still resolves and stops its recorded exact Session identity.
-	cleanup, err := service.Settle(context.Background(), root, SettleRequest{SchemaVersion: 1, Receipt: starting})
+	cleanup, err := service.Settle(context.Background(), root, settleHostRequest(starting))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -572,10 +572,7 @@ func TestSettleReleasesExactPartialAcquireWithoutReceipt(t *testing.T) {
 	if err := writeJSONAtomic(lockPath(root), lockRecord{SchemaVersion: 1, Claim: claim}); err != nil {
 		t.Fatal(err)
 	}
-	cleanup, err := service.Settle(context.Background(), root, SettleRequest{
-		SchemaVersion: 1,
-		Receipt:       orchestrator.RunReceipt{SchemaVersion: 1, Claim: claim, State: orchestrator.StateAccepted},
-	})
+	cleanup, err := service.Settle(context.Background(), root, settleHostRequest(orchestrator.RunReceipt{SchemaVersion: 1, Claim: claim, State: orchestrator.StateAccepted}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -620,7 +617,7 @@ func TestSettleRecoversAfterLockReleaseBeforeFinalReceipt(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	cleanup, err := service.Settle(context.Background(), root, SettleRequest{SchemaVersion: 1, Receipt: receipt})
+	cleanup, err := service.Settle(context.Background(), root, settleHostRequest(receipt))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -633,7 +630,7 @@ func TestSettleRecoversAfterLockReleaseBeforeFinalReceipt(t *testing.T) {
 	}
 }
 
-func TestSettleRecoversPartialRunRootCleanupWithoutRepeatingStop(t *testing.T) {
+func TestSettleReconcilesPartialRunRootCleanupWithExactStop(t *testing.T) {
 	root := t.TempDir()
 	now := time.Now().UTC()
 	daemon := &fakeDaemon{}
@@ -669,12 +666,44 @@ func TestSettleRecoversPartialRunRootCleanupWithoutRepeatingStop(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	cleanup, err := service.Settle(context.Background(), root, SettleRequest{SchemaVersion: 1, Receipt: receipt})
+	cleanup, err := service.Settle(context.Background(), root, settleHostRequest(receipt))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !cleanup.Known() || len(daemon.stops) != 0 {
+	if !cleanup.Known() || len(daemon.stops) != 1 || daemon.stops[0].SessionID != receipt.SessionID {
 		t.Fatalf("cleanup = %+v, stops = %+v", cleanup, daemon.stops)
+	}
+}
+
+func TestSettleDoesNotTrustKnownCleanupWhilePhysicalAuthorityExists(t *testing.T) {
+	root := t.TempDir()
+	now := time.Now().UTC()
+	daemon := &fakeDaemon{}
+	service := NewService(Dependencies{Tasks: &fakeTaskLauncher{}, Daemon: daemon, Now: func() time.Time { return now }})
+	request := stageHostTestRun(t, service, root, now, false)
+	if _, err := service.Start(context.Background(), root, request); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.ExecutePending(context.Background(), root); err != nil {
+		t.Fatal(err)
+	}
+	receipt, err := service.Status(root, StatusRequest{SchemaVersion: 1, RunID: request.Claim.RunID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	receipt.Cleanup = orchestrator.CleanupState{SessionStopped: true, PayloadRemoved: true, RunRootRemoved: true, LockReleased: true}
+	if err := service.writeReceipt(root, receipt); err != nil {
+		t.Fatal(err)
+	}
+	cleanup, err := service.Settle(context.Background(), root, settleHostRequest(receipt))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cleanup.Known() || len(daemon.stops) != 1 || daemon.stops[0].SessionID != receipt.SessionID {
+		t.Fatalf("cleanup = %+v, stops = %+v", cleanup, daemon.stops)
+	}
+	if _, err := os.Lstat(lockPath(root)); !os.IsNotExist(err) {
+		t.Fatalf("Host Lock remains after reconciled cleanup: %v", err)
 	}
 }
 
@@ -707,7 +736,7 @@ func TestSettleRejectsNonEmptyRunRootWithoutOwnership(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	_, err = service.Settle(context.Background(), root, SettleRequest{SchemaVersion: 1, Receipt: receipt})
+	_, err = service.Settle(context.Background(), root, settleHostRequest(receipt))
 	if err == nil || !strings.Contains(err.Error(), "ownership") {
 		t.Fatalf("Settle() error = %v", err)
 	}
@@ -803,7 +832,7 @@ func TestExactStopCanInterruptLongScenarioCall(t *testing.T) {
 	}
 	settleCtx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
-	cleanup, err := service.Settle(settleCtx, root, SettleRequest{SchemaVersion: 1, Receipt: starting})
+	cleanup, err := service.Settle(settleCtx, root, settleHostRequest(starting))
 	if err != nil {
 		t.Fatalf("settle during Scenario call: %v", err)
 	}
@@ -841,7 +870,7 @@ func TestExactStopCanInterruptSessionReadiness(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("Session readiness did not start")
 	}
-	cleanup, err := service.Settle(context.Background(), root, SettleRequest{SchemaVersion: 1, Receipt: starting})
+	cleanup, err := service.Settle(context.Background(), root, settleHostRequest(starting))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -871,7 +900,7 @@ func TestExpiredLaunchDeadlinePersistsTimedOutReceipt(t *testing.T) {
 	if err != nil || receipt.State != orchestrator.StateTimedOut {
 		t.Fatalf("deadline receipt = %+v, error = %v", receipt, err)
 	}
-	if _, err := service.Settle(context.Background(), root, SettleRequest{SchemaVersion: 1, Receipt: receipt}); err != nil {
+	if _, err := service.Settle(context.Background(), root, settleHostRequest(receipt)); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -892,7 +921,7 @@ func TestReadinessDeadlinePersistsTimedOutReceipt(t *testing.T) {
 	if err != nil || receipt.State != orchestrator.StateTimedOut || receipt.SessionID == "" {
 		t.Fatalf("readiness deadline receipt = %+v, error = %v", receipt, err)
 	}
-	if _, err := service.Settle(context.Background(), root, SettleRequest{SchemaVersion: 1, Receipt: receipt}); err != nil {
+	if _, err := service.Settle(context.Background(), root, settleHostRequest(receipt)); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -913,7 +942,7 @@ func TestReadinessReconciliationPersistsTimedOutReceipt(t *testing.T) {
 	if err != nil || receipt.State != orchestrator.StateTimedOut || receipt.SessionID == "" {
 		t.Fatalf("reconciliation deadline receipt = %+v, error = %v", receipt, err)
 	}
-	if _, err := service.Settle(context.Background(), root, SettleRequest{SchemaVersion: 1, Receipt: receipt}); err != nil {
+	if _, err := service.Settle(context.Background(), root, settleHostRequest(receipt)); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -937,7 +966,7 @@ func TestExactStopCanInterruptDaemonStartup(t *testing.T) {
 	}
 	settleCtx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
-	cleanup, err := service.Settle(settleCtx, root, SettleRequest{SchemaVersion: 1, Receipt: starting})
+	cleanup, err := service.Settle(settleCtx, root, settleHostRequest(starting))
 	if err != nil {
 		t.Fatalf("settle during daemon startup: %v", err)
 	}
@@ -994,7 +1023,7 @@ func TestSettleReconcilesSessionPublishedOnlyInHostLock(t *testing.T) {
 	if err := writeJSONAtomic(lockPath(root), lock); err != nil {
 		t.Fatal(err)
 	}
-	cleanup, err := service.Settle(context.Background(), root, SettleRequest{SchemaVersion: 1, Receipt: starting})
+	cleanup, err := service.Settle(context.Background(), root, settleHostRequest(starting))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1014,7 +1043,7 @@ func TestSettleRecoversSessionStartedBeforeHostLockPublication(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	cleanup, err := service.Settle(context.Background(), root, SettleRequest{SchemaVersion: 1, Receipt: starting})
+	cleanup, err := service.Settle(context.Background(), root, settleHostRequest(starting))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1051,7 +1080,7 @@ func TestSettleAdoptsExactReceiptIdentityAfterPublicationRollbackFails(t *testin
 	if err != nil || receipt.State != orchestrator.StateCleanupFailed || receipt.SessionID != daemon.sessionID {
 		t.Fatalf("publication failure receipt = %+v, status error = %v, execute error = %v", receipt, err, executeErr)
 	}
-	cleanup, err := service.Settle(context.Background(), root, SettleRequest{SchemaVersion: 1, Receipt: receipt})
+	cleanup, err := service.Settle(context.Background(), root, settleHostRequest(receipt))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1060,7 +1089,7 @@ func TestSettleAdoptsExactReceiptIdentityAfterPublicationRollbackFails(t *testin
 	}
 }
 
-func TestSettleRejectsTamperedStoredRunRequestBeforeDaemonStop(t *testing.T) {
+func TestSettleAnchorsDaemonStopOutsideTamperedStoredRunRequest(t *testing.T) {
 	root := t.TempDir()
 	now := time.Now().UTC()
 	daemon := &fakeDaemon{}
@@ -1080,11 +1109,12 @@ func TestSettleRejectsTamperedStoredRunRequestBeforeDaemonStop(t *testing.T) {
 	if err := writeJSONAtomic(filepath.Join(runPath(root, request.Claim.RunID), "request.json"), request); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := service.Settle(context.Background(), root, SettleRequest{SchemaVersion: 1, Receipt: receipt}); err == nil || !strings.Contains(err.Error(), "stored Run request") {
-		t.Fatalf("Settle() error = %v", err)
+	cleanup, err := service.Settle(context.Background(), root, settleHostRequest(receipt))
+	if err != nil || !cleanup.Known() {
+		t.Fatalf("Settle() cleanup = %+v, error = %v", cleanup, err)
 	}
-	if len(daemon.stops) != 0 {
-		t.Fatalf("tampered daemon path reached stop: %+v", daemon.stops)
+	if len(daemon.stops) != 1 || daemon.stops[0].Executable != `C:\Fake\blendersessiond.exe` || daemon.stops[0].Name != orchestrator.SessionNameForRun(receipt.Claim.RunID) {
+		t.Fatalf("tampered daemon path changed stop authority: %+v", daemon.stops)
 	}
 }
 
@@ -1102,9 +1132,10 @@ func stageHostTestRun(t *testing.T, service *Service, root string, now time.Time
 		}},
 		Scenario: payload.Scenario{Script: "scenario.py", ReadTimeoutSeconds: 600, CaptureViewport: capture},
 	}
+	claim := testHostClaim(now, "HOSTSTAGETEST")
 	body := orchestrator.RequestBody{
 		SchemaVersion:           1,
-		SessionName:             "blender-box-host-test",
+		SessionName:             orchestrator.SessionNameForRun(claim.RunID),
 		BlenderExecutable:       `C:\Fake\blender.exe`,
 		SessionBrokerExecutable: `C:\Fake\blendersessiond.exe`,
 		Payload:                 manifest,
@@ -1114,7 +1145,6 @@ func stageHostTestRun(t *testing.T, service *Service, root string, now time.Time
 		t.Fatal(err)
 	}
 	requestHash := sha256.Sum256(bodyJSON)
-	claim := testHostClaim(now, "HOSTSTAGETEST")
 	claim.RequestHash = hex.EncodeToString(requestHash[:])
 	request := orchestrator.RunRequest{Claim: claim, Body: body}
 	if err := service.Acquire(context.Background(), root, AcquireRequest{SchemaVersion: 1, Claim: claim}); err != nil {
@@ -1137,6 +1167,15 @@ func testHostClaim(now time.Time, suffix string) orchestrator.LockClaim {
 		Deadline:      now.Add(20 * time.Minute),
 		RequestHash:   strings.Repeat("a", 64),
 		TaskName:      "BlenderBoxTest",
+	}
+}
+
+func settleHostRequest(receipt orchestrator.RunReceipt) SettleRequest {
+	return SettleRequest{
+		SchemaVersion:           1,
+		Receipt:                 receipt,
+		SessionBrokerExecutable: `C:\Fake\blendersessiond.exe`,
+		SessionName:             orchestrator.SessionNameForRun(receipt.Claim.RunID),
 	}
 }
 

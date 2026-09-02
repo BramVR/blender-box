@@ -136,6 +136,9 @@ func TestAdapterCarriesTypedAuthorityAcrossEveryHostOperation(t *testing.T) {
 	if settlement.Receipt.SessionID != running.SessionID || settlement.Receipt.Claim != claim {
 		t.Fatalf("settlement authority changed: %+v", settlement)
 	}
+	if settlement.SessionBrokerExecutable != selected.SessionBrokerExecutable || settlement.SessionName != orchestrator.SessionNameForRun(claim.RunID) {
+		t.Fatalf("settlement daemon authority changed: %+v", settlement)
+	}
 }
 
 func adapterTarget() target.Target {
