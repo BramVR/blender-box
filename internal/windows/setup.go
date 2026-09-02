@@ -30,6 +30,9 @@ type SetupResult struct {
 }
 
 func Setup(ctx context.Context, ssh SetupSSH, selected target.Target, source string, apply bool) (SetupResult, error) {
+	if err := selected.Validate(); err != nil {
+		return SetupResult{}, err
+	}
 	contents, err := readHostBinary(source)
 	if err != nil {
 		return SetupResult{}, err

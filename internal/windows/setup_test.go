@@ -241,6 +241,23 @@ func TestSetupRejectsEmptyHostBinaryBeforeSSH(t *testing.T) {
 	}
 }
 
+func TestSetupValidatesTargetBeforeAnySSHCall(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "blender-box.exe")
+	if err := os.WriteFile(path, []byte("host"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	selected := adapterTarget()
+	selected.HostExecutable = `C:\Outside\blender-box.exe`
+	fake := &scriptedSSH{}
+	_, err := Setup(context.Background(), fake, selected, path, true)
+	if err == nil || !strings.Contains(err.Error(), "inside work_root") {
+		t.Fatalf("Setup() error = %v", err)
+	}
+	if len(fake.arguments) != 0 || len(fake.uploads) != 0 {
+		t.Fatal("invalid target reached SSH")
+	}
+}
+
 func TestSetupRejectsRemoteResultThatOmitsBinaryAttestation(t *testing.T) {
 	binary := []byte("bounded-windows-host-binary")
 	path := filepath.Join(t.TempDir(), "blender-box.exe")
