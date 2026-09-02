@@ -620,6 +620,24 @@ func (host *recoveryHost) Observe(_ context.Context, _ target.Target, runID RunI
 	return host.receipt, nil
 }
 
+type cancelAfterSettleHost struct {
+	recoveryHost
+	cancel context.CancelFunc
+}
+
+func (host *cancelAfterSettleHost) Observe(ctx context.Context, selected target.Target, runID RunID) (RunReceipt, error) {
+	if err := ctx.Err(); err != nil {
+		return RunReceipt{}, err
+	}
+	return host.recoveryHost.Observe(ctx, selected, runID)
+}
+
+func (host *cancelAfterSettleHost) Settle(ctx context.Context, selected target.Target, receipt RunReceipt) (CleanupState, error) {
+	cleanup, err := host.recoveryHost.Settle(ctx, selected, receipt)
+	host.cancel()
+	return cleanup, err
+}
+
 func TestStatusAndStopRecoverAndSettleExactHostReceipt(t *testing.T) {
 	claim := LockClaim{
 		SchemaVersion: 1,
@@ -706,6 +724,32 @@ func TestStopReturnsSessionIdentityRecoveredDuringSettlement(t *testing.T) {
 	wantOperations := []string{"observe", "settle", "observe"}
 	if !reflect.DeepEqual(host.operations, wantOperations) {
 		t.Fatalf("operations = %v, want %v", host.operations, wantOperations)
+	}
+}
+
+func TestStopObservesSettledReceiptAfterCallerCancellation(t *testing.T) {
+	claim := LockClaim{
+		SchemaVersion: 1,
+		RunID:         "bbx_01CANCELSTOPRUNIDENTITY000000",
+		RequestID:     "req_01CANCELSTOPREQUESTIDENTITY00",
+		ControllerID:  "controller-test",
+		Deadline:      time.Now().Add(time.Hour).UTC(),
+		RequestHash:   strings.Repeat("a", 64),
+		TaskName:      "BlenderBoxTest",
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	host := &cancelAfterSettleHost{recoveryHost: recoveryHost{fakeHost: fakeHost{receipt: RunReceipt{
+		SchemaVersion: 1,
+		Claim:         claim,
+		State:         StateFailed,
+		SessionID:     "bss_exact-canceled-stop-session-123456",
+	}}}, cancel: cancel}
+	result, err := New(host).Stop(ctx, target.Target{SchemaVersion: 1, TaskName: claim.TaskName}, claim.RunID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.SessionID != host.receipt.SessionID || !result.Cleanup.Known() {
+		t.Fatalf("stop result = %+v", result)
 	}
 }
 

@@ -297,7 +297,9 @@ func (runner *Runner) Stop(ctx context.Context, selected target.Target, runID Ru
 	if !cleanup.Known() {
 		return StopResult{}, fmt.Errorf("settle Run: cleanup state is not known")
 	}
-	settledReceipt, err := runner.recoverReceipt(ctx, selected, runID)
+	reconcileCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), runner.settlementTTL())
+	defer cancel()
+	settledReceipt, err := runner.recoverReceipt(reconcileCtx, selected, runID)
 	if err != nil {
 		return StopResult{}, fmt.Errorf("observe settled Run: %w", err)
 	}
@@ -608,13 +610,16 @@ func validTransition(previous, next RunState) bool {
 }
 
 func (runner *Runner) settle(parent context.Context, target target.Target, receipt RunReceipt) (CleanupState, error) {
-	timeout := runner.settlementTimeout
-	if timeout <= 0 {
-		timeout = defaultSettleTTL
-	}
-	settleCtx, cancel := context.WithTimeout(context.WithoutCancel(parent), timeout)
+	settleCtx, cancel := context.WithTimeout(context.WithoutCancel(parent), runner.settlementTTL())
 	defer cancel()
 	return runner.host.Settle(settleCtx, target, receipt)
+}
+
+func (runner *Runner) settlementTTL() time.Duration {
+	if runner.settlementTimeout > 0 {
+		return runner.settlementTimeout
+	}
+	return defaultSettleTTL
 }
 
 func waitForPoll(ctx context.Context, deadline time.Time) error {
