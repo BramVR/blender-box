@@ -255,7 +255,7 @@
         <span class="tag">working name: blender-box</span>
         <span class="tag">default target: owned Windows host</span>
         <span class="tag">transport: SSH over Tailscale</span>
-        <span class="tag">implementation: Go CLI plus Python helper</span>
+        <span class="tag">implementation: one Go binary; Python in Scenarios</span>
         <span class="tag">interactive launch: Scheduled Task</span>
       </div>
     </div>
@@ -658,6 +658,7 @@ hosts:
     transport: ssh
     ssh:
       host: blender-win
+      user: &lt;windows-ssh-user&gt;
     workRoot: "&lt;operator-managed-work-root&gt;"
     interactive:
       user: "&lt;logged-in-windows-user&gt;"
@@ -669,7 +670,7 @@ hosts:
 
       <div class="mt-14">
 <pre><code># setup is a read-only preview unless --apply is present
-blender-box windows check --host-config hosts.yaml
+blender-box windows check --target target.json --json
 blender-box windows setup --host-config hosts.yaml
 blender-box windows setup --host-config hosts.yaml --apply
 
@@ -735,7 +736,7 @@ blender-box stop bbx_...</code></pre>
       <div class="grid two mt-14">
         <article class="card blue">
           <h3>Read-only Windows check</h3>
-          <p>One SSH inspection should report Windows identity, logged-in console user, Blender discovery and version, daemon version, work-root access, task action and principal, stale Host Locks, and unexpected listeners. It performs no remote writes.</p>
+          <p>The implemented first check streams one bounded read-only inspection over SSH. It verifies the declared SSH controller and logged-in console-user SIDs, declared executable and work-root access, trusted physical path authorities, and the complete root task action, principal, controller launch authority, settings, and security descriptor. Blender and daemon versions, stale Host Locks, and unexpected listeners remain later preflight work.</p>
         </article>
         <article class="card orange">
           <h3>Explicit setup apply</h3>

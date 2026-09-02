@@ -10,6 +10,8 @@ SECURITY_WORKFLOW = ROOT / ".github" / "workflows" / "security.yml"
 CI_SCRIPT = ROOT / "scripts" / "ci"
 DEPENDABOT = ROOT / ".github" / "dependabot.yml"
 GITIGNORE = ROOT / ".gitignore"
+GITATTRIBUTES = ROOT / ".gitattributes"
+SETUP_GO = "actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e"
 
 
 class CIContractTests(unittest.TestCase):
@@ -43,6 +45,24 @@ class CIContractTests(unittest.TestCase):
         self.assertEqual(workflow.count("./scripts/ci test"), 1)
         self.assertEqual(workflow.count("./scripts/ci all"), 2)
         self.assertEqual(workflow.count("fetch-depth: 0"), 4)
+
+    def test_every_go_backed_job_installs_pinned_go(self) -> None:
+        workflow = WORKFLOW.read_text(encoding="utf-8")
+
+        self.assertEqual(workflow.count(f"uses: {SETUP_GO}"), 4)
+        self.assertEqual(workflow.count("go-version-file: go.mod"), 4)
+
+    def test_go_and_shell_sources_keep_lf_checkouts(self) -> None:
+        attributes = GITATTRIBUTES.read_text(encoding="utf-8").splitlines()
+
+        for contract in (
+            "*.go text eol=lf",
+            "go.mod text eol=lf",
+            "*.sh text eol=lf",
+            "/scripts/* text eol=lf",
+        ):
+            with self.subTest(contract=contract):
+                self.assertIn(contract, attributes)
 
     @unittest.skipIf(os.name == "nt", "Windows does not expose Git executable bits")
     def test_repository_gate_is_executable_on_posix(self) -> None:

@@ -132,7 +132,9 @@ Full research and proposed contracts: `docs/research/blender-box-research.html`
 - `docs/architecture/ci.md` - local and hosted CI boundary, tradeoffs, and live-proof separation.
 - `scripts/ci` - the local and GitHub Actions check/test entrypoint.
 - `AGENTS.md` - repo-local operating notes.
-- There is no CLI implementation yet. Update this section with exact package paths and boundaries when code lands. Do not invent a generic DCC core before the product proves a stable need for one.
+- `cmd/blender-box` and `internal/cli` - public command parsing and JSON output.
+- `internal/target`, `internal/ssh`, and `internal/windows` - typed target config, bounded SSH process boundary, and Windows inspection adapter.
+- Do not invent a generic DCC core before the product proves a stable need for one.
 
 ## Taste
 
