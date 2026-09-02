@@ -82,7 +82,7 @@ func TestSetupPlansWithoutSSHAndAppliesOneBoundedHostBinary(t *testing.T) {
 		"[System.IO.File]::Replace($temporary, $hostPath, $backup)",
 		"Remove-Item -Force -LiteralPath $backup",
 		"FileSecurity",
-		"SetOwner($interactiveSid)",
+		"SetOwner($controllerSid)",
 		"Set-Acl -LiteralPath $hostPath",
 		"Set-Acl -LiteralPath $daemonPath",
 		"Set-BlenderBoxStateTree",
@@ -122,6 +122,9 @@ func TestSetupPreservesExecutableUpdateAuthorityForSameAndSplitUsers(t *testing.
 			if !strings.Contains(prepare, "$fileAcl.SetOwner($controllerSid)") || !strings.Contains(prepare, "$controllerSid, [System.Security.AccessControl.FileSystemRights]::FullControl") {
 				t.Fatal("setup prepare does not preserve existing executable update authority")
 			}
+			if !strings.Contains(prepare, "$executableDirectoryAcl.SetOwner($controllerSid)") || !strings.Contains(prepare, "Set-BlenderBoxDirectoryPath $root $hostDirectory $executableDirectoryAcl") || !strings.Contains(prepare, "Set-BlenderBoxDirectoryPath $root $daemonDirectory $executableDirectoryAcl") {
+				t.Fatal("setup prepare does not isolate executable directory authority")
+			}
 			if !strings.Contains(script, "$acl.SetOwner($controllerSid)") {
 				t.Fatal("managed executable owner is not the authenticated controller")
 			}
@@ -130,6 +133,12 @@ func TestSetupPreservesExecutableUpdateAuthorityForSameAndSplitUsers(t *testing.
 			}
 			if !strings.Contains(script, "$controllerSid -ne $interactiveSid") || !strings.Contains(script, "$interactiveSid, [System.Security.AccessControl.FileSystemRights]::ReadAndExecute") {
 				t.Fatal("managed executable ACL does not preserve split-user task execution")
+			}
+			if !strings.Contains(script, "function New-BlenderBoxExecutableDirectoryAcl") || !strings.Contains(script, "Set-BlenderBoxDirectoryPath $root $hostDirectory (New-BlenderBoxExecutableDirectoryAcl)") || !strings.Contains(script, "Set-BlenderBoxDirectoryPath $root $daemonDirectory (New-BlenderBoxExecutableDirectoryAcl)") {
+				t.Fatal("setup apply does not isolate executable directory authority")
+			}
+			if !strings.Contains(script, "Set-Acl -LiteralPath $root -AclObject (New-BlenderBoxRootAcl)") || !strings.Contains(script, "[System.Security.AccessControl.FileSystemRights]::WriteData") {
+				t.Fatal("work root does not separate task file creation from child replacement authority")
 			}
 		})
 	}

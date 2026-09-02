@@ -88,8 +88,13 @@ func (value Target) Validate() error {
 		"session_broker_executable": value.SessionBrokerExecutable,
 		"host_executable":           value.HostExecutable,
 	} {
-		if !strings.HasPrefix(safepath.WindowsKey(path), safepath.WindowsKey(value.WorkRoot)+`\`) {
+		rootKey := safepath.WindowsKey(value.WorkRoot)
+		if !strings.HasPrefix(safepath.WindowsKey(path), rootKey+`\`) {
 			return fmt.Errorf("target %s must be inside work_root", label)
+		}
+		parent := path[:strings.LastIndex(path, `\`)]
+		if safepath.WindowsKey(parent) == rootKey {
+			return fmt.Errorf("target %s must be inside a dedicated executable directory", label)
 		}
 	}
 	executables := []string{value.BlenderExecutable, value.SessionBrokerExecutable, value.HostExecutable}

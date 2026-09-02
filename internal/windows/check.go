@@ -246,6 +246,7 @@ $daemonPath = [string]$config.session_broker_executable
 $hostPath = [string]$config.host_executable
 $readExecute = [System.Security.AccessControl.FileSystemRights]::ReadAndExecute
 $modify = [System.Security.AccessControl.FileSystemRights]::Modify
+$rootAccess = $readExecute -bor [System.Security.AccessControl.FileSystemRights]::WriteData
 $blenderOK = Test-Path -LiteralPath $blenderPath -PathType Leaf -ErrorAction SilentlyContinue
 $daemonOK = Test-Path -LiteralPath $daemonPath -PathType Leaf -ErrorAction SilentlyContinue
 $hostOK = Test-Path -LiteralPath $hostPath -PathType Leaf -ErrorAction SilentlyContinue
@@ -253,7 +254,7 @@ Add-Check 'blender.executable' ($blenderOK -and (Test-SafePath $blenderPath $exp
 Add-Check 'daemon.executable' ($daemonOK -and (Test-SafePath $daemonPath $expectedSid $sshSid $readExecute $true $true $false $true)) $true $daemonPath 'existing executable with explicit task-principal access and trusted controller-owned update authority' 'The staged session broker and parent must carry the setup ACL.'
 Add-Check 'host.executable' ($hostOK -and (Test-SafePath $hostPath $expectedSid $sshSid $readExecute $true $true $false $true)) $true $hostPath 'existing executable with explicit task-principal access and trusted controller-owned update authority' 'The staged Blender Box host binary and parent must carry the setup ACL.'
 $rootExists = Test-Path -LiteralPath ([string]$config.work_root) -PathType Container -ErrorAction SilentlyContinue
-Add-Check 'work-root.access' ($rootExists -and (Test-SafePath ([string]$config.work_root) $expectedSid $sshSid $modify $true $false $true $false)) $true ([string]$config.work_root) 'existing directory with explicit task-principal access and trusted writers' 'The operator-managed work root and inherited child ACL must carry the setup authority and have trusted ancestors.'
+Add-Check 'work-root.access' ($rootExists -and (Test-SafePath ([string]$config.work_root) $expectedSid $sshSid $rootAccess $true $false $true $true)) $true ([string]$config.work_root) 'controller-owned root with task file creation but no child replacement authority' 'The operator-managed work root must separate task file creation from executable-directory replacement authority.'
 $stateTreeOK = $rootExists -and (Test-SafeStateTree ([System.IO.Path]::Combine([string]$config.work_root, 'runs')) $expectedSid $sshSid) -and (Test-SafeStateTree ([System.IO.Path]::Combine([string]$config.work_root, 'receipts')) $expectedSid $sshSid)
 Add-Check 'work-root.state-tree' $stateTreeOK $true $stateTreeOK $true 'Existing Run and receipt trees must contain no reparse points and only declared writers.'
 $task = Get-ScheduledTask -TaskPath '\' -TaskName ([string]$config.task_name) -ErrorAction SilentlyContinue

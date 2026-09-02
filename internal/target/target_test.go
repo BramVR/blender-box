@@ -94,8 +94,14 @@ func TestManagedExecutablesMustStayUnderWorkRoot(t *testing.T) {
 		HostExecutable:          `C:\BlenderBoxTest\bin\blender-box.exe`,
 	}
 	for name, mutate := range map[string]func(*Target){
-		"host":   func(value *Target) { value.HostExecutable = `C:\Other\blender-box.exe` },
-		"daemon": func(value *Target) { value.SessionBrokerExecutable = `D:\Other\blendersessiond.exe` },
+		"host outside root": func(value *Target) { value.HostExecutable = `C:\Other\blender-box.exe` },
+		"daemon outside root": func(value *Target) {
+			value.SessionBrokerExecutable = `D:\Other\blendersessiond.exe`
+		},
+		"host directly in root": func(value *Target) { value.HostExecutable = `C:\BlenderBoxTest\blender-box.exe` },
+		"daemon directly in root": func(value *Target) {
+			value.SessionBrokerExecutable = `C:\BlenderBoxTest\blendersessiond.exe`
+		},
 	} {
 		t.Run(name, func(t *testing.T) {
 			value := base
