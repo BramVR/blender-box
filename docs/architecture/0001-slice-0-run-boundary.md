@@ -91,6 +91,8 @@ The Host Lock is the authority record. The Windows host creates it atomically be
 
 Payload transfer accepts regular files under declared roots, rejects symlinks and traversal, caps file count and total bytes, and verifies SHA-256 before publishing the request. Evidence uses the reverse rule: only manifest-declared regular files under the Run root return, with a per-file and total byte cap. The local client verifies remote hashes after transfer.
 
+The controller filesystem belongs to the invoking user. Blender Box rejects static symlinks, snapshots validated payload bytes, creates evidence atomically, and detects ordinary source changes; it does not claim isolation from an actively hostile process running concurrently as that same OS user. Such a process can already read and replace controller-owned files. Consuming automation must use a private payload and evidence tree when other local users are in scope.
+
 The Windows task runs as the logged-in user with `LogonType=Interactive`, limited rights, no trigger, `IgnoreNew`, and no execution time limit. It starts the host entry point, which validates the request and lease again before invoking `blendersessiond`. Blender's MCP port remains Windows-loopback-only.
 
 Recovery reads the receipt through the same SSH adapter. A dropped connection does not release the Host Lock. `status` can report accepted, staged, starting, running, calling, collecting, settling, complete, failed, timed-out, or cleanup-failed. `stop` requires the Run ID, request identity, request hash, deadline, and Session identity from the receipt. Cleanup records Session stop, Run-root cleanup, and lock release separately.

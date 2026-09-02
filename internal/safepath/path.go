@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"path"
 	"strings"
+	"unicode/utf16"
 )
 
 // ValidateWindowsRelative enforces one portable relative-path grammar for host transfer.
@@ -16,7 +17,7 @@ func ValidateWindowsRelative(label, value string) error {
 		return fmt.Errorf("%s %q is unsafe", label, value)
 	}
 	for _, component := range strings.Split(value, "/") {
-		if strings.TrimRight(component, ". ") != component || windowsReservedName(component) {
+		if strings.TrimRight(component, ". ") != component || windowsReservedName(component) || len(utf16.Encode([]rune(component))) > 255 {
 			return fmt.Errorf("%s %q is unsafe", label, value)
 		}
 		for _, character := range component {
@@ -31,7 +32,7 @@ func ValidateWindowsRelative(label, value string) error {
 func windowsReservedName(component string) bool {
 	base := strings.ToUpper(strings.SplitN(component, ".", 2)[0])
 	switch base {
-	case "CON", "PRN", "AUX", "NUL", "CLOCK$":
+	case "CON", "PRN", "AUX", "NUL", "CLOCK$", "CONIN$", "CONOUT$":
 		return true
 	}
 	runes := []rune(base)

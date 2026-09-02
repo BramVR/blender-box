@@ -189,6 +189,33 @@ func TestValidateReceiptRequiresVersionStateAndPinnedSession(t *testing.T) {
 	}
 }
 
+func TestValidateReceiptComparesDeadlineByInstant(t *testing.T) {
+	deadline := time.Now().Add(time.Hour).UTC().Truncate(time.Second)
+	claim := LockClaim{
+		SchemaVersion: 1,
+		RunID:         "bbx_01TESTRUNIDENTITY0000000000",
+		RequestID:     "req_01TESTREQUESTIDENTITY00000",
+		ControllerID:  "controller-test",
+		Deadline:      deadline,
+		RequestHash:   strings.Repeat("0", 64),
+		TaskName:      "BlenderBoxTest",
+	}
+	receipt := RunReceipt{
+		SchemaVersion: 1,
+		Claim:         claim,
+		State:         StateRunning,
+		SessionID:     "bss_exact-fake-session-identity-123456",
+	}
+	receipt.Claim.Deadline = deadline.In(time.FixedZone("equivalent-zero-offset", 0))
+	if err := validateReceipt(receipt, claim, receipt.SessionID, StateRunning); err != nil {
+		t.Fatalf("equivalent deadline rejected: %v", err)
+	}
+	receipt.Claim.Deadline = deadline.Add(time.Nanosecond)
+	if err := validateReceipt(receipt, claim, receipt.SessionID, StateRunning); err == nil || !strings.Contains(err.Error(), "Host Lock claim changed") {
+		t.Fatalf("changed deadline error = %v", err)
+	}
+}
+
 type startErrorHost struct {
 	fakeHost
 	settledClaim LockClaim

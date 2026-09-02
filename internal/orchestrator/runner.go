@@ -299,7 +299,7 @@ func validateReceipt(receipt RunReceipt, claim LockClaim, expectedSession Sessio
 	if receipt.SchemaVersion != 1 {
 		return fmt.Errorf("unsupported schema version %d", receipt.SchemaVersion)
 	}
-	if receipt.Claim != claim {
+	if !claimsEqual(receipt.Claim, claim) {
 		return fmt.Errorf("Host Lock claim changed")
 	}
 	if !knownState(receipt.State) {
@@ -315,6 +315,16 @@ func validateReceipt(receipt RunReceipt, claim LockClaim, expectedSession Sessio
 		return fmt.Errorf("Session identity changed")
 	}
 	return nil
+}
+
+func claimsEqual(left, right LockClaim) bool {
+	return left.SchemaVersion == right.SchemaVersion &&
+		left.RunID == right.RunID &&
+		left.RequestID == right.RequestID &&
+		left.ControllerID == right.ControllerID &&
+		left.Deadline.Equal(right.Deadline) &&
+		left.RequestHash == right.RequestHash &&
+		left.TaskName == right.TaskName
 }
 
 func knownState(state RunState) bool {
