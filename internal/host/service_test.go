@@ -468,6 +468,48 @@ func TestRepeatedAcquireDoesNotRegressReceiptState(t *testing.T) {
 	}
 }
 
+func TestSettledRunCleanupRemainsIdempotentWhileNewerRunOwnsHostLock(t *testing.T) {
+	root := t.TempDir()
+	now := time.Now().UTC()
+	service := NewService(Dependencies{Now: func() time.Time { return now }})
+	newerClaim := testHostClaim(now, "NEWERACTIVE")
+	if err := service.Acquire(context.Background(), root, AcquireRequest{SchemaVersion: 1, Claim: newerClaim}); err != nil {
+		t.Fatal(err)
+	}
+	pendingPath := filepath.Join(root, "pending-request.json")
+	if err := os.WriteFile(pendingPath, []byte("newer Run marker"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	settledClaim := testHostClaim(now, "OLDSETTLED")
+	settled := orchestrator.RunReceipt{
+		SchemaVersion: 1,
+		Claim:         settledClaim,
+		State:         orchestrator.StateComplete,
+		SessionID:     "bss_old-settled-session-identity-123456",
+		Cleanup: orchestrator.CleanupState{
+			SessionStopped: true,
+			PayloadRemoved: true,
+			RunRootRemoved: true,
+			LockReleased:   true,
+		},
+	}
+	if err := service.writeReceipt(root, settled); err != nil {
+		t.Fatal(err)
+	}
+
+	cleanup, err := service.Settle(context.Background(), root, settleHostRequest(settled))
+	if err != nil || !cleanup.Known() {
+		t.Fatalf("Settle() cleanup = %+v, error = %v", cleanup, err)
+	}
+	current, err := service.readLock(root)
+	if err != nil || !current.Claim.Equal(newerClaim) {
+		t.Fatalf("newer Host Lock changed: %+v, error = %v", current, err)
+	}
+	if contents, err := os.ReadFile(pendingPath); err != nil || string(contents) != "newer Run marker" {
+		t.Fatalf("newer pending request changed: %q, error = %v", contents, err)
+	}
+}
+
 func TestAcquireRejectsAReleasedRunIdentity(t *testing.T) {
 	root := t.TempDir()
 	now := time.Now().UTC()

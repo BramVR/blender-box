@@ -855,8 +855,25 @@ func (service *Service) recoverReleasedCleanup(root string, stored orchestrator.
 	if _, err := os.Lstat(runPath(root, stored.Claim.RunID)); err == nil || !os.IsNotExist(err) {
 		return orchestrator.CleanupState{}, false, nil
 	}
-	if _, err := os.Lstat(lockPath(root)); err == nil || !os.IsNotExist(err) {
-		return orchestrator.CleanupState{}, false, nil
+	newerLock := false
+	lockInfo, err := os.Lstat(lockPath(root))
+	if err == nil {
+		if !lockInfo.Mode().IsRegular() || lockInfo.Mode()&os.ModeSymlink != 0 {
+			return orchestrator.CleanupState{}, true, fmt.Errorf("current Host Lock is invalid")
+		}
+		currentLock, readErr := service.readLock(root)
+		if readErr != nil {
+			return orchestrator.CleanupState{}, true, fmt.Errorf("inspect current Host Lock: %w", readErr)
+		}
+		if currentLock.SchemaVersion != 1 || currentLock.Claim.Validate() != nil || currentLock.SessionID != "" && currentLock.SessionID.Validate() != nil {
+			return orchestrator.CleanupState{}, true, fmt.Errorf("current Host Lock is invalid")
+		}
+		if currentLock.Claim.Equal(stored.Claim) {
+			return orchestrator.CleanupState{}, false, nil
+		}
+		newerLock = true
+	} else if !os.IsNotExist(err) {
+		return orchestrator.CleanupState{}, true, fmt.Errorf("inspect current Host Lock: %w", err)
 	}
 	stored.Cleanup.PayloadRemoved = true
 	stored.Cleanup.RunRootRemoved = true
@@ -865,7 +882,9 @@ func (service *Service) recoverReleasedCleanup(root string, stored orchestrator.
 	if err := service.writeReceipt(root, stored); err != nil {
 		return orchestrator.CleanupState{}, true, err
 	}
-	_ = os.Remove(filepath.Join(root, "pending-request.json"))
+	if !newerLock {
+		_ = os.Remove(filepath.Join(root, "pending-request.json"))
+	}
 	return stored.Cleanup, true, nil
 }
 
