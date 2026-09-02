@@ -503,6 +503,16 @@ func TestHostOperationLockSurvivesPriorProcessExit(t *testing.T) {
 	release()
 }
 
+func TestCanceledOperationContextDoesNotAcquireAFreeLock(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	release, err := acquireOperation(ctx, t.TempDir())
+	if err == nil {
+		release()
+		t.Fatal("acquireOperation() ignored canceled context")
+	}
+}
+
 func TestSettleReleasesExactPartialAcquireWithoutReceipt(t *testing.T) {
 	root := t.TempDir()
 	now := time.Now().UTC()
@@ -791,6 +801,27 @@ func TestExactStopCanInterruptSessionReadiness(t *testing.T) {
 	case <-executionDone:
 	case <-time.After(time.Second):
 		t.Fatal("Scheduled Task did not observe exact stop during readiness")
+	}
+}
+
+func TestReadinessDeadlinePersistsTimedOutReceipt(t *testing.T) {
+	root := t.TempDir()
+	now := time.Now().UTC().Add(-20*time.Minute + 100*time.Millisecond)
+	daemon := &waitingDaemon{readyStarted: make(chan struct{}), stopped: make(chan struct{})}
+	service := NewService(Dependencies{Tasks: &fakeTaskLauncher{}, Daemon: daemon, Now: func() time.Time { return now }})
+	request := stageHostTestRun(t, service, root, now, false)
+	if _, err := service.Start(context.Background(), root, request); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.ExecutePending(context.Background(), root); err == nil {
+		t.Fatal("ExecutePending() unexpectedly passed its deadline")
+	}
+	receipt, err := service.Status(root, StatusRequest{SchemaVersion: 1, RunID: request.Claim.RunID})
+	if err != nil || receipt.State != orchestrator.StateTimedOut {
+		t.Fatalf("deadline receipt = %+v, error = %v", receipt, err)
+	}
+	if _, err := service.Settle(context.Background(), root, SettleRequest{SchemaVersion: 1, Receipt: receipt}); err != nil {
+		t.Fatal(err)
 	}
 }
 

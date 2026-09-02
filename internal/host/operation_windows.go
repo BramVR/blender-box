@@ -33,11 +33,18 @@ func acquireLaunch(ctx context.Context, root string) (func(), error) {
 }
 
 func acquireOperationFile(ctx context.Context, path string) (func(), error) {
+	if err := ctx.Err(); err != nil {
+		return nil, fmt.Errorf("wait for host operation: %w", err)
+	}
 	lock, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE, 0o600)
 	if err != nil {
 		return nil, err
 	}
 	for {
+		if err := ctx.Err(); err != nil {
+			_ = lock.Close()
+			return nil, fmt.Errorf("wait for host operation: %w", err)
+		}
 		var overlapped syscall.Overlapped
 		result, _, callErr := lockFileEx.Call(
 			lock.Fd(),
@@ -67,4 +74,25 @@ func acquireOperationFile(ctx context.Context, path string) (func(), error) {
 		case <-timer.C:
 		}
 	}
+}
+
+func tryAcquireLaunch(root string) (func(), bool, error) {
+	lock, err := os.OpenFile(filepath.Join(root, ".launch.lock"), os.O_RDWR|os.O_CREATE, 0o600)
+	if err != nil {
+		return nil, false, err
+	}
+	var overlapped syscall.Overlapped
+	result, _, callErr := lockFileEx.Call(lock.Fd(), lockfileExclusiveLock|lockfileFailImmediately, 0, 1, 0, uintptr(unsafe.Pointer(&overlapped)))
+	if result != 0 {
+		return func() {
+			var unlockOverlapped syscall.Overlapped
+			_, _, _ = unlockFileEx.Call(lock.Fd(), 0, 1, 0, uintptr(unsafe.Pointer(&unlockOverlapped)))
+			_ = lock.Close()
+		}, true, nil
+	}
+	_ = lock.Close()
+	if errno, ok := callErr.(syscall.Errno); ok && errno == errorLockViolation {
+		return nil, false, nil
+	}
+	return nil, false, callErr
 }

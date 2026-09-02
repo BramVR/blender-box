@@ -494,7 +494,10 @@ func (service *Service) ExecutePending(ctx context.Context, root string) error {
 		SessionID:   sessionID,
 		Environment: environment,
 	}); err != nil {
-		return service.failActiveExecution(ctx, root, request, sessionID, "Session readiness failed")
+		if runCtx.Err() != nil {
+			err = runCtx.Err()
+		}
+		return service.failActiveExecution(ctx, root, request, sessionID, "Session readiness failed", err)
 	}
 	release, err = acquireOperation(runCtx, root)
 	if err != nil {
@@ -517,7 +520,10 @@ func (service *Service) ExecutePending(ctx context.Context, root string) error {
 
 	result, err := service.callScenario(runCtx, root, request, sessionID, environment)
 	if err != nil {
-		return service.failActiveExecution(ctx, root, request, sessionID, "Scenario call failed")
+		if runCtx.Err() != nil {
+			err = runCtx.Err()
+		}
+		return service.failActiveExecution(ctx, root, request, sessionID, "Scenario call failed", err)
 	}
 	release, err = acquireOperation(runCtx, root)
 	if err != nil {
@@ -552,7 +558,10 @@ func (service *Service) ExecutePending(ctx context.Context, root string) error {
 		var captureErr error
 		viewport, captureErr = service.captureViewport(runCtx, root, request, sessionID, environment)
 		if captureErr != nil {
-			return service.failActiveExecution(ctx, root, request, sessionID, "Viewport capture failed")
+			if runCtx.Err() != nil {
+				captureErr = runCtx.Err()
+			}
+			return service.failActiveExecution(ctx, root, request, sessionID, "Viewport capture failed", captureErr)
 		}
 	}
 	release, err = acquireOperation(runCtx, root)
@@ -595,7 +604,7 @@ func (service *Service) activeReceipt(root string, request orchestrator.RunReque
 	return receipt, nil
 }
 
-func (service *Service) failActiveExecution(ctx context.Context, root string, request orchestrator.RunRequest, sessionID orchestrator.SessionID, message string) error {
+func (service *Service) failActiveExecution(ctx context.Context, root string, request orchestrator.RunRequest, sessionID orchestrator.SessionID, message string, cause error) error {
 	failureCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
 	defer cancel()
 	release, err := acquireOperation(failureCtx, root)
@@ -609,6 +618,14 @@ func (service *Service) failActiveExecution(ctx context.Context, root string, re
 	}
 	if err != nil {
 		return errors.Join(fmt.Errorf("%s", message), err)
+	}
+	if errors.Is(cause, context.DeadlineExceeded) {
+		receipt.State = orchestrator.StateTimedOut
+		receipt.Error = message
+		if err := service.writeReceipt(root, receipt); err != nil {
+			return errors.Join(fmt.Errorf("%s", message), err)
+		}
+		return fmt.Errorf("%s: %w", message, cause)
 	}
 	return service.failReceipt(root, receipt, message)
 }
@@ -712,14 +729,12 @@ func (service *Service) Settle(ctx context.Context, root string, request SettleR
 				return orchestrator.CleanupState{}, err
 			}
 		} else if stored.State == orchestrator.StateStarting {
-			probeCtx, cancelProbe := context.WithCancel(context.Background())
-			cancelProbe()
-			launchRelease, launchErr := acquireLaunch(probeCtx, root)
+			launchRelease, acquired, launchErr := tryAcquireLaunch(root)
 			if launchErr != nil {
-				if errors.Is(launchErr, context.Canceled) {
-					return orchestrator.CleanupState{}, fmt.Errorf("Session launch identity is not published yet")
-				}
 				return orchestrator.CleanupState{}, launchErr
+			}
+			if !acquired {
+				return orchestrator.CleanupState{}, fmt.Errorf("Session launch identity is not published yet")
 			}
 			launchRelease()
 		}
