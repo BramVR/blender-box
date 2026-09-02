@@ -386,6 +386,78 @@ func TestRepeatedAcquireDoesNotRegressReceiptState(t *testing.T) {
 	}
 }
 
+func TestAcquireRejectsAReleasedRunIdentity(t *testing.T) {
+	root := t.TempDir()
+	now := time.Now().UTC()
+	service := NewService(Dependencies{Now: func() time.Time { return now }})
+	claim := orchestrator.LockClaim{
+		SchemaVersion: 1,
+		RunID:         "bbx_01RELEASEDRUNIDENTITY0000000",
+		RequestID:     "req_01RELEASEDREQUESTIDENTITY000",
+		ControllerID:  "ctl_released-test",
+		Deadline:      now.Add(time.Hour),
+		RequestHash:   strings.Repeat("a", 64),
+		TaskName:      "BlenderBoxTest",
+	}
+	receipt := orchestrator.RunReceipt{
+		SchemaVersion: 1,
+		Claim:         claim,
+		State:         orchestrator.StateComplete,
+		SessionID:     "bss_released-session-identity-123456",
+		Evidence: orchestrator.EvidenceManifest{SchemaVersion: 1, Files: []orchestrator.EvidenceFile{{
+			Path: "result.json", Type: "scenario-result", Size: 1, SHA256: strings.Repeat("b", 64),
+		}}},
+		Cleanup: orchestrator.CleanupState{SessionStopped: true, PayloadRemoved: true, RunRootRemoved: true, LockReleased: true},
+	}
+	if err := service.writeReceipt(root, receipt); err != nil {
+		t.Fatal(err)
+	}
+
+	err := service.Acquire(context.Background(), root, AcquireRequest{SchemaVersion: 1, Claim: claim})
+	if err == nil || !strings.Contains(err.Error(), "already exists") {
+		t.Fatalf("Acquire() error = %v", err)
+	}
+	if _, statErr := os.Lstat(lockPath(root)); !os.IsNotExist(statErr) {
+		t.Fatalf("Acquire() recreated Host Lock: %v", statErr)
+	}
+	stored, err := service.Status(root, StatusRequest{SchemaVersion: 1, RunID: claim.RunID})
+	if err != nil || stored.State != orchestrator.StateComplete || !stored.Cleanup.Known() {
+		t.Fatalf("durable receipt changed: receipt = %+v, error = %v", stored, err)
+	}
+}
+
+func TestAcquireRejectsTerminalReceiptWithAnActiveLock(t *testing.T) {
+	root := t.TempDir()
+	now := time.Now().UTC()
+	service := NewService(Dependencies{Now: func() time.Time { return now }})
+	claim := orchestrator.LockClaim{
+		SchemaVersion: 1,
+		RunID:         "bbx_01FAILEDRUNIDENTITY000000000",
+		RequestID:     "req_01FAILEDREQUESTIDENTITY0000",
+		ControllerID:  "ctl_failed-test",
+		Deadline:      now.Add(time.Hour),
+		RequestHash:   strings.Repeat("b", 64),
+		TaskName:      "BlenderBoxTest",
+	}
+	request := AcquireRequest{SchemaVersion: 1, Claim: claim}
+	if err := service.Acquire(context.Background(), root, request); err != nil {
+		t.Fatal(err)
+	}
+	receipt := orchestrator.RunReceipt{SchemaVersion: 1, Claim: claim, State: orchestrator.StateFailed, Error: "pre-session failure"}
+	if err := service.writeReceipt(root, receipt); err != nil {
+		t.Fatal(err)
+	}
+
+	err := service.Acquire(context.Background(), root, request)
+	if err == nil || !strings.Contains(err.Error(), "non-replayable") {
+		t.Fatalf("Acquire() error = %v", err)
+	}
+	stored, err := service.Status(root, StatusRequest{SchemaVersion: 1, RunID: claim.RunID})
+	if err != nil || stored.State != orchestrator.StateFailed || stored.Error != "pre-session failure" {
+		t.Fatalf("terminal receipt changed: receipt = %+v, error = %v", stored, err)
+	}
+}
+
 func TestHostOperationLockSurvivesPriorProcessExit(t *testing.T) {
 	root := t.TempDir()
 	if err := os.WriteFile(filepath.Join(root, ".operation.lock"), []byte("stale-owner\n"), 0o600); err != nil {

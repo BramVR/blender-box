@@ -136,6 +136,35 @@ func (service *Service) Acquire(ctx context.Context, root string, request Acquir
 	if err := os.MkdirAll(filepath.Join(root, "runs"), 0o700); err != nil {
 		return err
 	}
+	var existingReceipt orchestrator.RunReceipt
+	receiptErr := readJSON(receiptPath(root, request.Claim.RunID), &existingReceipt, maxScenarioJSON)
+	if receiptErr == nil {
+		if existingReceipt.SchemaVersion != 1 || !existingReceipt.Claim.Equal(request.Claim) {
+			return fmt.Errorf("Run receipt already exists for another request")
+		}
+		switch existingReceipt.State {
+		case orchestrator.StateAccepted, orchestrator.StateStaged, orchestrator.StateStarting:
+			if existingReceipt.SessionID != "" {
+				return fmt.Errorf("Run receipt already has a Session identity")
+			}
+		default:
+			return fmt.Errorf("Run receipt already exists in non-replayable state %q", existingReceipt.State)
+		}
+		existingLock, lockErr := service.readLock(root)
+		if lockErr != nil {
+			if _, statErr := os.Lstat(lockPath(root)); os.IsNotExist(statErr) {
+				return fmt.Errorf("Run receipt already exists without an active Host Lock")
+			}
+			return lockErr
+		}
+		if !existingLock.Claim.Equal(request.Claim) || existingLock.SessionID != "" {
+			return fmt.Errorf("host is locked by another Run")
+		}
+		return nil
+	}
+	if _, err := os.Lstat(receiptPath(root, request.Claim.RunID)); !os.IsNotExist(err) {
+		return fmt.Errorf("existing Run receipt is invalid")
+	}
 	record := lockRecord{SchemaVersion: 1, Claim: request.Claim}
 	encoded, err := json.Marshal(record)
 	if err != nil {
