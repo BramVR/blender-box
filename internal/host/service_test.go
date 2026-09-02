@@ -280,6 +280,91 @@ func TestScenarioReadTimeoutPersistsTimedOutReceipt(t *testing.T) {
 	}
 }
 
+func TestExecutePendingRejectsTerminalReceiptBeforeDaemonStart(t *testing.T) {
+	root := t.TempDir()
+	now := time.Now().UTC()
+	daemon := &fakeDaemon{}
+	service := NewService(Dependencies{Tasks: &fakeTaskLauncher{}, Daemon: daemon, Now: func() time.Time { return now }})
+	request := stageHostTestRun(t, service, root, now, false)
+	receipt, err := service.Start(context.Background(), root, request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	receipt.State = orchestrator.StateFailed
+	receipt.Error = "earlier task invocation failed"
+	if err := service.writeReceipt(root, receipt); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := service.ExecutePending(context.Background(), root); err == nil {
+		t.Fatal("ExecutePending() replayed a terminal Run")
+	}
+	if len(daemon.starts) != 0 {
+		t.Fatalf("terminal Run started daemon: %+v", daemon.starts)
+	}
+}
+
+func TestSettleRemovesExactInterruptedStagingDirectory(t *testing.T) {
+	root := t.TempDir()
+	now := time.Now().UTC()
+	service := NewService(Dependencies{Tasks: &fakeTaskLauncher{}, Daemon: &fakeDaemon{}, Now: func() time.Time { return now }})
+	claim := testHostClaim(now, "INTERRUPTEDSTAGE")
+	if err := service.Acquire(context.Background(), root, AcquireRequest{SchemaVersion: 1, Claim: claim}); err != nil {
+		t.Fatal(err)
+	}
+	staging := stagingPath(root, claim.RunID)
+	if err := os.Mkdir(staging, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeJSONAtomic(filepath.Join(staging, "ownership.json"), lockRecord{SchemaVersion: 1, Claim: claim}); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(staging, "partial-payload"), []byte("partial"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	receipt, err := service.Status(root, StatusRequest{SchemaVersion: 1, RunID: claim.RunID})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	cleanup, err := service.Settle(context.Background(), root, settleHostRequest(receipt))
+	if err != nil || !cleanup.Known() {
+		t.Fatalf("Settle() cleanup = %+v, error = %v", cleanup, err)
+	}
+	if _, err := os.Lstat(staging); !os.IsNotExist(err) {
+		t.Fatalf("exact interrupted staging directory remains: %v", err)
+	}
+}
+
+func TestInterruptedStagingWithoutOwnershipIsRecoverableOnlyWhenEmpty(t *testing.T) {
+	root := t.TempDir()
+	claim := testHostClaim(time.Now().UTC(), "EMPTYINTERRUPTEDSTAGE")
+	empty := stagingPath(root, claim.RunID)
+	if err := os.MkdirAll(empty, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := removeInterruptedStaging(context.Background(), empty, claim); err != nil {
+		t.Fatalf("empty staging cleanup: %v", err)
+	}
+	if _, err := os.Lstat(empty); !os.IsNotExist(err) {
+		t.Fatalf("empty staging directory remains: %v", err)
+	}
+
+	nonempty := stagingPath(root, claim.RunID)
+	if err := os.Mkdir(nonempty, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(nonempty, "unknown"), []byte("data"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := removeInterruptedStaging(context.Background(), nonempty, claim); err == nil {
+		t.Fatal("nonempty staging without ownership was removed")
+	}
+	if _, err := os.Lstat(nonempty); err != nil {
+		t.Fatalf("unowned staging was changed: %v", err)
+	}
+}
+
 func TestScenarioCallAcceptsMaximumResultAfterOuterJSONEscaping(t *testing.T) {
 	padding := strings.Repeat(`\`, maxScenarioJSON/2-128)
 	scenario, err := json.Marshal(map[string]any{"schema_version": 1, "status": "pass", "padding": padding})

@@ -230,8 +230,11 @@ func (service *Service) Stage(ctx context.Context, root string, request StageReq
 	if err := os.MkdirAll(runsRoot, 0o700); err != nil {
 		return err
 	}
-	temporary, err := os.MkdirTemp(runsRoot, ".stage-*")
-	if err != nil {
+	temporary := stagingPath(root, request.Claim.RunID)
+	if err := os.Mkdir(temporary, 0o700); err != nil {
+		if os.IsExist(err) {
+			return fmt.Errorf("exact Run staging directory already exists; settle the Run before retrying")
+		}
 		return err
 	}
 	defer os.RemoveAll(temporary)
@@ -422,6 +425,11 @@ func (service *Service) ExecutePending(ctx context.Context, root string) error {
 	if lock.SessionID != "" {
 		return fmt.Errorf("Host Lock already owns a Session")
 	}
+	receipt, err := service.Status(root, StatusRequest{SchemaVersion: 1, RunID: request.Claim.RunID})
+	if err != nil || receipt.SchemaVersion != 1 || !receipt.Claim.Equal(request.Claim) ||
+		receipt.State != orchestrator.StateStarting || receipt.SessionID != "" || receipt.Cleanup != (orchestrator.CleanupState{}) {
+		return fmt.Errorf("pending Run is not in the exact starting state")
+	}
 	if !request.Claim.Deadline.After(service.now()) {
 		return service.failExecution(root, request, "Run deadline expired before Session start")
 	}
@@ -458,7 +466,7 @@ func (service *Service) ExecutePending(ctx context.Context, root string) error {
 		return err
 	}
 	locked = true
-	receipt, err := service.activeReceipt(root, request, "")
+	receipt, err = service.activeReceipt(root, request, "")
 	if errors.Is(err, errRunSettled) {
 		return fmt.Errorf("Run was settled during Session start")
 	}
@@ -856,6 +864,9 @@ func (service *Service) Settle(ctx context.Context, root string, request SettleR
 	} else if !os.IsNotExist(err) {
 		return orchestrator.CleanupState{}, err
 	}
+	if err := removeInterruptedStaging(ctx, stagingPath(root, stored.Claim.RunID), stored.Claim); err != nil {
+		return orchestrator.CleanupState{}, err
+	}
 	stored.Cleanup.PayloadRemoved = true
 	stored.Cleanup.RunRootRemoved = true
 	currentLock, err := service.readLock(root)
@@ -997,6 +1008,28 @@ func removeRunRootPreservingOwnership(runRoot string, removeAll func(string) err
 		return err
 	}
 	return os.Remove(runRoot)
+}
+
+func removeInterruptedStaging(ctx context.Context, path string, claim orchestrator.LockClaim) error {
+	info, err := os.Lstat(path)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("Run staging ownership does not match")
+	}
+	var ownership lockRecord
+	if err := readJSON(filepath.Join(path, "ownership.json"), &ownership, maxScenarioJSON); err != nil {
+		entries, readErr := os.ReadDir(path)
+		if _, statErr := os.Lstat(filepath.Join(path, "ownership.json")); !os.IsNotExist(statErr) || readErr != nil || len(entries) != 0 {
+			return fmt.Errorf("Run staging ownership does not match")
+		}
+		return os.Remove(path)
+	}
+	if ownership.SchemaVersion != 1 || !ownership.Claim.Equal(claim) || ownership.SessionID != "" {
+		return fmt.Errorf("Run staging ownership does not match")
+	}
+	return removeRunRootWithRetry(ctx, path, os.RemoveAll, retryableRunRemoval, 100*time.Millisecond)
 }
 
 func removeTreeNoReparse(path string, remove func(string) error) error {
@@ -1263,6 +1296,9 @@ func validateRoot(root string) error {
 func lockPath(root string) string { return filepath.Join(root, "host-lock.json") }
 func runPath(root string, runID orchestrator.RunID) string {
 	return filepath.Join(root, "runs", string(runID))
+}
+func stagingPath(root string, runID orchestrator.RunID) string {
+	return filepath.Join(root, "runs", ".stage-"+string(runID))
 }
 func receiptPath(root string, runID orchestrator.RunID) string {
 	return filepath.Join(root, "receipts", string(runID)+".json")
