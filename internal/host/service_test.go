@@ -1060,6 +1060,34 @@ func TestSettleAdoptsExactReceiptIdentityAfterPublicationRollbackFails(t *testin
 	}
 }
 
+func TestSettleRejectsTamperedStoredRunRequestBeforeDaemonStop(t *testing.T) {
+	root := t.TempDir()
+	now := time.Now().UTC()
+	daemon := &fakeDaemon{}
+	service := NewService(Dependencies{Tasks: &fakeTaskLauncher{}, Daemon: daemon, Now: func() time.Time { return now }})
+	request := stageHostTestRun(t, service, root, now, false)
+	if _, err := service.Start(context.Background(), root, request); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.ExecutePending(context.Background(), root); err != nil {
+		t.Fatal(err)
+	}
+	receipt, err := service.Status(root, StatusRequest{SchemaVersion: 1, RunID: request.Claim.RunID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Body.SessionBrokerExecutable = `C:\Attacker\replacement.exe`
+	if err := writeJSONAtomic(filepath.Join(runPath(root, request.Claim.RunID), "request.json"), request); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.Settle(context.Background(), root, SettleRequest{SchemaVersion: 1, Receipt: receipt}); err == nil || !strings.Contains(err.Error(), "stored Run request") {
+		t.Fatalf("Settle() error = %v", err)
+	}
+	if len(daemon.stops) != 0 {
+		t.Fatalf("tampered daemon path reached stop: %+v", daemon.stops)
+	}
+}
+
 func stageHostTestRun(t *testing.T, service *Service, root string, now time.Time, capture bool) orchestrator.RunRequest {
 	t.Helper()
 	script := []byte("print scenario result\n")

@@ -759,6 +759,9 @@ func (service *Service) Settle(ctx context.Context, root string, request SettleR
 		if err := readJSON(filepath.Join(runPath(root, stored.Claim.RunID), "request.json"), &runRequest, maxScenarioJSON); err != nil {
 			return orchestrator.CleanupState{}, err
 		}
+		if err := runRequest.Validate(); err != nil || !runRequest.Claim.Equal(stored.Claim) {
+			return orchestrator.CleanupState{}, fmt.Errorf("stored Run request does not match Host Lock")
+		}
 		if service.daemon == nil {
 			return orchestrator.CleanupState{}, fmt.Errorf("Session daemon is unavailable")
 		}
