@@ -313,6 +313,10 @@ func (runner *Runner) Run(ctx context.Context, intent RunIntent) (_ RunResult, r
 	if err != nil {
 		return RunResult{}, err
 	}
+	evidenceRoot, err := prepareEvidenceRoot(intent.EvidenceDir)
+	if err != nil {
+		return RunResult{}, fmt.Errorf("prepare evidence directory: %w", err)
+	}
 	runCtx, cancelRun := context.WithDeadline(ctx, intent.Deadline)
 	defer cancelRun()
 	if err := runner.host.Inspect(runCtx, intent.Target); err != nil {
@@ -376,8 +380,7 @@ func (runner *Runner) Run(ctx context.Context, intent RunIntent) (_ RunResult, r
 	if receipt.State != StateComplete {
 		return RunResult{}, fmt.Errorf("Run ended in %s: %s", receipt.State, receipt.Error)
 	}
-	evidenceRoot, err := runner.collectEvidence(runCtx, intent, receipt)
-	if err != nil {
+	if err := runner.collectEvidence(runCtx, intent, receipt, evidenceRoot); err != nil {
 		return RunResult{}, err
 	}
 
@@ -604,41 +607,37 @@ func waitForPoll(ctx context.Context, deadline time.Time) error {
 	}
 }
 
-func (runner *Runner) collectEvidence(ctx context.Context, intent RunIntent, receipt RunReceipt) (string, error) {
+func (runner *Runner) collectEvidence(ctx context.Context, intent RunIntent, receipt RunReceipt, evidenceRoot string) error {
 	manifest := receipt.Evidence
 	if err := validateEvidenceManifest(manifest); err != nil {
-		return "", err
-	}
-	evidenceRoot, err := prepareEvidenceRoot(intent.EvidenceDir)
-	if err != nil {
-		return "", fmt.Errorf("prepare evidence directory: %w", err)
+		return err
 	}
 	for _, file := range manifest.Files {
 		content, err := runner.host.Fetch(ctx, intent.Target, receipt, file)
 		if err != nil {
-			return "", fmt.Errorf("fetch evidence %q: %w", file.Path, err)
+			return fmt.Errorf("fetch evidence %q: %w", file.Path, err)
 		}
 		if int64(len(content)) != file.Size {
-			return "", fmt.Errorf("evidence %q: size changed", file.Path)
+			return fmt.Errorf("evidence %q: size changed", file.Path)
 		}
 		hash := sha256.Sum256(content)
 		if hex.EncodeToString(hash[:]) != file.SHA256 {
-			return "", fmt.Errorf("evidence %q: SHA-256 changed", file.Path)
+			return fmt.Errorf("evidence %q: SHA-256 changed", file.Path)
 		}
 		if file.Type == "viewport" {
 			configuration, err := png.DecodeConfig(bytes.NewReader(content))
 			if err != nil {
-				return "", fmt.Errorf("evidence %q: invalid PNG: %w", file.Path, err)
+				return fmt.Errorf("evidence %q: invalid PNG: %w", file.Path, err)
 			}
 			if configuration.Width != file.Width || configuration.Height != file.Height {
-				return "", fmt.Errorf("evidence %q: PNG dimensions changed", file.Path)
+				return fmt.Errorf("evidence %q: PNG dimensions changed", file.Path)
 			}
 		}
 		if err := writeEvidence(evidenceRoot, file.Path, content); err != nil {
-			return "", fmt.Errorf("store evidence %q: %w", file.Path, err)
+			return fmt.Errorf("store evidence %q: %w", file.Path, err)
 		}
 	}
-	return evidenceRoot, nil
+	return nil
 }
 
 func publishBundleMetadata(root string, result RunResult) error {

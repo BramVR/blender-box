@@ -561,6 +561,22 @@ func TestPrepareEvidenceRootCreatesExclusiveCanonicalRunDirectory(t *testing.T) 
 	}
 }
 
+func TestRunRejectsExistingEvidenceDirectoryBeforeHostInspection(t *testing.T) {
+	host := &fakeHost{evidence: testEvidence()}
+	intent := testIntent(t)
+	if err := os.Mkdir(intent.EvidenceDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := New(host).Run(context.Background(), intent)
+	if err == nil || !strings.Contains(err.Error(), "prepare evidence directory") {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if len(host.operations) != 0 {
+		t.Fatalf("host operations before evidence reservation = %v", host.operations)
+	}
+}
+
 type recoveryHost struct {
 	fakeHost
 }
