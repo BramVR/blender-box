@@ -52,13 +52,13 @@ type RunIntent struct {
 }
 
 type HostAdapter interface {
-    Inspect(context.Context, Target) (HostInspection, error)
-    Acquire(context.Context, LockClaim) (HostLease, error)
-    Stage(context.Context, HostLease, Payload) (StagedPayload, error)
-    Start(context.Context, HostLease, RunRequest) (RunReceipt, error)
-    Observe(context.Context, HostLease) (RunReceipt, error)
-    Fetch(context.Context, HostLease, EvidenceManifest) error
-    Settle(context.Context, HostLease, Settlement) (CleanupState, error)
+    Inspect(context.Context, Target) error
+    Acquire(context.Context, Target, LockClaim) error
+    Stage(context.Context, Target, LockClaim, Payload) error
+    Start(context.Context, Target, RunRequest) (RunReceipt, error)
+    Observe(context.Context, Target, RunID) (RunReceipt, error)
+    Fetch(context.Context, Target, RunReceipt, EvidenceFile) ([]byte, error)
+    Settle(context.Context, Target, RunReceipt) (CleanupState, error)
 }
 ```
 
@@ -73,7 +73,7 @@ type LockClaim struct {
     RequestID     RequestID
     ControllerID  string
     Deadline      time.Time
-    RequestSHA256 SHA256
+    RequestHash   SHA256
     TaskName      string
 }
 
@@ -87,9 +87,11 @@ type RunReceipt struct {
 }
 ```
 
-The Host Lock is the authority record. The Windows host creates it atomically before staging. Every later host mutation compares the complete claim. Once `blendersessiond start` returns, the host adds the opaque Session identity with a compare-and-replace write. Session Name remains a routing label. Daemon `call` and `stop` also require the Session identity, so a replaced record fails closed at both layers.
+The Host Lock is the authority record. The Windows host creates it atomically before staging. Every later host mutation compares the complete claim. An acquisition error is ambiguous because the remote create may have committed before its response was lost, so the client makes one bounded claim-only settlement attempt. Once `blendersessiond start` returns, the host adds the opaque Session identity with a compare-and-replace write. Session Name remains a routing label. Daemon `call` and `stop` also require the Session identity, so a replaced record fails closed at both layers.
 
-Payload transfer accepts regular files under declared roots, rejects symlinks and traversal, caps file count and total bytes, and verifies SHA-256 before publishing the request. Evidence uses the reverse rule: only manifest-declared regular files under the Run root return, with a per-file and total byte cap. The local client verifies remote hashes after transfer.
+Payload transfer canonicalizes the declared document root, accepts regular files beneath it, rejects symlinks and traversal below that pinned root, caps file count and total bytes, and verifies SHA-256 before publishing the request. Evidence uses the reverse rule: only manifest-declared regular files under the Run root return, with a per-file and total byte cap. The local client verifies remote hashes after transfer into a fresh, exclusive Evidence Bundle directory and never replaces an existing evidence file.
+
+The controller filesystem belongs to the invoking user. Blender Box rejects static symlinks, snapshots validated payload bytes, creates evidence atomically, and detects ordinary source changes; it does not claim isolation from an actively hostile process running concurrently as that same OS user. Such a process can already read and replace controller-owned files. Consuming automation must use a private payload and evidence tree when other local users are in scope.
 
 The Windows task runs as the logged-in user with `LogonType=Interactive`, limited rights, no trigger, `IgnoreNew`, and no execution time limit. It starts the host entry point, which validates the request and lease again before invoking `blendersessiond`. Blender's MCP port remains Windows-loopback-only.
 
@@ -129,4 +131,6 @@ A Python-only client and host helper would make the first code quick to write, b
 
 The first landed seam is `windows check --target <file> --json`. One Go binary serves both the client and the future static task entry point; Python remains inside Blender-owned Scenario scripts. The check streams a bounded read-only PowerShell program over SSH, resolves the configured console user to an SID, and validates declared paths and the root Scheduled Task without relying on the SSH user's `PATH`.
 
-The remaining `run`, `status`, and `stop` commands must enter through the `Runner` boundary above. They must not expose host adapter phases as public CLI switches.
+The Run contract and deterministic orchestration core are implemented behind `Runner`. A strict Payload loader snapshots the validated bytes, computes transfer size and SHA-256 locally, rejects unsafe Windows paths and symlinks, and enforces file and aggregate bounds. The integrated fake-host test proves the full ordering from inspection and Host Lock acquisition through an exact versioned Session receipt, hash-verified evidence, and known settlement without exposing adapter phases in the CLI. The Run deadline bounds every normal adapter operation; settlement has a separate 30-second attempt bound and retains the last trusted authority after cancellation or transport failure.
+
+The remaining `run`, `status`, and `stop` commands and Windows adapter must enter through the `Runner` boundary above. They must not expose host adapter phases as public CLI switches.
