@@ -7,6 +7,7 @@ Run stages one declared payload, launches Blender through the interactive task, 
 - `run-id` publishes the recovery Run ID before target or payload validation.
 - `payload` transfers only declared bounded regular files and verifies them on Windows.
 - `interactive-session` publishes one exact daemon Session identity, then waits for that same Session's process and socket health.
+- `start-replay` repeats only the identical fenced start request while an `IgnoreNew` task has not published an identity.
 - `long-call` carries the declared read timeout without dropping the Run deadline.
 - `evidence` returns hash-verified Scenario and viewport artifacts.
 - `cleanup` reports exact Session stop, payload removal, Run-root removal, and lock release.
