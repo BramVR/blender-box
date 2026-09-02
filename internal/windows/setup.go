@@ -216,6 +216,21 @@ function Enter-BlenderBoxOperation([string]$Path) {
         }
     }
 }
+function Set-BlenderBoxDirectoryPath([string]$Root, [string]$Directory, [System.Security.AccessControl.DirectorySecurity]$Acl) {
+    $rootFull = [System.IO.Path]::GetFullPath($Root).TrimEnd([char[]]@('\'))
+    $directoryFull = [System.IO.Path]::GetFullPath($Directory).TrimEnd([char[]]@('\'))
+    if ($directoryFull -ieq $rootFull) { return }
+    $prefix = $rootFull + '\'
+    if (-not $directoryFull.StartsWith($prefix, [System.StringComparison]::OrdinalIgnoreCase)) { throw 'Managed directory escaped the work root.' }
+    $current = $rootFull
+    $relative = $directoryFull.Substring($prefix.Length)
+    foreach ($segment in $relative.Split([char[]]@('\'), [System.StringSplitOptions]::RemoveEmptyEntries)) {
+        $current = [System.IO.Path]::Combine($current, $segment)
+        if (-not (Test-Path -LiteralPath $current)) { New-Item -ItemType Directory -Path $current | Out-Null }
+        Assert-NoReparsePath $current
+        Set-Acl -LiteralPath $current -AclObject $Acl
+    }
+}
 `
 
 func prepareSetupScript(selected target.Target) string {
@@ -260,10 +275,8 @@ try {
     $acl.AddAccessRule([System.Security.AccessControl.FileSystemAccessRule]::new([System.Security.Principal.SecurityIdentifier]::new('S-1-5-18'), [System.Security.AccessControl.FileSystemRights]::FullControl, $inherit, $none, $allow))
     $acl.AddAccessRule([System.Security.AccessControl.FileSystemAccessRule]::new([System.Security.Principal.SecurityIdentifier]::new('S-1-5-32-544'), [System.Security.AccessControl.FileSystemRights]::FullControl, $inherit, $none, $allow))
     Set-Acl -LiteralPath $root -AclObject $acl
-    New-Item -ItemType Directory -Force -Path $hostDirectory | Out-Null
-    Assert-NoReparsePath $hostDirectory
-    Set-Acl -LiteralPath $hostDirectory -AclObject $acl
-    if ($daemonDirectory -ine $hostDirectory) { Set-Acl -LiteralPath $daemonDirectory -AclObject $acl }
+    Set-BlenderBoxDirectoryPath $root $hostDirectory $acl
+    Set-BlenderBoxDirectoryPath $root $daemonDirectory $acl
 
     $stateFileAcl = [System.Security.AccessControl.FileSecurity]::new()
     $stateFileAcl.SetAccessRuleProtection($true, $false)
@@ -345,21 +358,16 @@ function Set-BlenderBoxStateTree([string]$path) {
     $rootItem = Get-Item -Force -LiteralPath $path
     if (-not $rootItem.PSIsContainer) { throw 'Managed state path is not a directory.' }
     $pending = [System.Collections.Generic.Stack[System.IO.DirectoryInfo]]::new()
-    $items = [System.Collections.Generic.List[System.IO.FileSystemInfo]]::new()
     $pending.Push($rootItem)
     while ($pending.Count -gt 0) {
         $directory = $pending.Pop()
         if (([int64]$directory.Attributes -band [int64][System.IO.FileAttributes]::ReparsePoint) -ne 0) { throw 'Managed state contains a reparse point.' }
-        [void]$items.Add($directory)
+        Set-Acl -LiteralPath $directory.FullName -AclObject (New-BlenderBoxDirectoryAcl)
         foreach ($child in $directory.EnumerateFileSystemInfos()) {
             if (([int64]$child.Attributes -band [int64][System.IO.FileAttributes]::ReparsePoint) -ne 0) { throw 'Managed state contains a reparse point.' }
             if (($child.Attributes -band [System.IO.FileAttributes]::Directory) -ne 0) { $pending.Push($child) }
-            else { [void]$items.Add($child) }
+            else { Set-Acl -LiteralPath $child.FullName -AclObject (New-BlenderBoxStateFileAcl) }
         }
-    }
-    foreach ($item in $items) {
-        if (($item.Attributes -band [System.IO.FileAttributes]::Directory) -ne 0) { Set-Acl -LiteralPath $item.FullName -AclObject (New-BlenderBoxDirectoryAcl) }
-        else { Set-Acl -LiteralPath $item.FullName -AclObject (New-BlenderBoxStateFileAcl) }
     }
 }
 function New-BlenderBoxFileAcl {
@@ -396,8 +404,6 @@ try {
     Assert-NoReparsePath $operationPath
     if (Test-Path -LiteralPath $lockPath) { throw 'Cannot apply setup while a Host Lock exists.' }
     New-Item -ItemType Directory -Force -Path $root | Out-Null
-    New-Item -ItemType Directory -Force -Path $hostDirectory | Out-Null
-    Assert-NoReparsePath $hostDirectory
     if (-not (Test-Path -LiteralPath $daemonPath -PathType Leaf)) { throw 'Declared blendersessiond executable is missing.' }
     if (-not (Test-Path -LiteralPath $blenderPath -PathType Leaf)) { throw 'Declared Blender executable is missing.' }
     $interactiveSid = ([System.Security.Principal.NTAccount]::new($interactiveUser)).Translate([System.Security.Principal.SecurityIdentifier])
@@ -406,8 +412,8 @@ try {
     Set-BlenderBoxStateTree ([System.IO.Path]::Combine($root, 'runs'))
     Set-BlenderBoxStateTree ([System.IO.Path]::Combine($root, 'receipts'))
     Set-Acl -LiteralPath $operationPath -AclObject (New-BlenderBoxStateFileAcl)
-    Set-Acl -LiteralPath $hostDirectory -AclObject (New-BlenderBoxDirectoryAcl)
-    if ($daemonDirectory -ine $hostDirectory) { Set-Acl -LiteralPath $daemonDirectory -AclObject (New-BlenderBoxDirectoryAcl) }
+    Set-BlenderBoxDirectoryPath $root $hostDirectory (New-BlenderBoxDirectoryAcl)
+    Set-BlenderBoxDirectoryPath $root $daemonDirectory (New-BlenderBoxDirectoryAcl)
     if ((Get-Item -LiteralPath $stagedBinary).Length -ne $expectedSize) { throw 'Host binary size changed in transfer.' }
     $inputStream = [System.IO.File]::Open($stagedBinary, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::None)
     $outputStream = [System.IO.File]::Open($temporary, [System.IO.FileMode]::CreateNew, [System.IO.FileAccess]::Write, [System.IO.FileShare]::None)

@@ -86,6 +86,7 @@ func TestSetupPlansWithoutSSHAndAppliesOneBoundedHostBinary(t *testing.T) {
 		"Set-Acl -LiteralPath $hostPath",
 		"Set-Acl -LiteralPath $daemonPath",
 		"Set-BlenderBoxStateTree",
+		"Set-BlenderBoxDirectoryPath",
 		"FileAttributes]::ReparsePoint",
 		"host-lock.json",
 		"Assert-NoReparsePath",
