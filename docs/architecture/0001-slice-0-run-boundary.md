@@ -104,6 +104,8 @@ This interface is deep because four user operations hide transport quoting, atom
 
 Before either setup connection writes, the authenticated Windows SID must equal the target's declared SSH user SID. Setup never turns an alias-selected account into controller authority by observation. Lock acquisition checks cancellation before touching a free lock. After each daemon boundary, state reconciliation uses its own bounded context, revalidates exact Run and Session authority, and persists an expired Run as `timed-out`; deadline races cannot leave a cleaned Run in a nonterminal state.
 
+Read-only inspection proves explicit controller FullControl on managed state, executable directories, and executable files. It also proves an object-inheritable task-user Modify rule on the work root so task-created root state files remain writable without granting a distinct task user executable replacement authority. The public `stop` command performs its final durable receipt observation under a fresh bounded reconciliation context, so caller cancellation during settlement cannot suppress the returned exact Session identity and known cleanup state.
+
 ## Synthesis decision
 
 Candidate A, one Run state machine behind `Runner`, is the base. Candidate B split planning, lock management, transfer, task launch, daemon calls, evidence, and cleanup into command-layer services that the CLI coordinated. That made each component locally simple, but it leaked execution order and fencing rules into every caller. Candidate A keeps Candidate B's explicit typed boundary adapters for tests while refusing its public phase orchestration.
