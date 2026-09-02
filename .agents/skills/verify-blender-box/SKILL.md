@@ -12,7 +12,7 @@ Use this skill for real user-facing proof of the Blender Box CLI. The host is sh
 From the repository root, use one isolated local scratch directory and build both client and Windows host binaries from the exact checkout:
 
 ```sh
-export VERIFY_ROOT="$(mktemp -d -t blender-box-verify)"
+export VERIFY_ROOT="$(mktemp -d "${TMPDIR%/}/blender-box-verify.XXXXXX")"
 export VERIFY_CLIENT="$VERIFY_ROOT/blender-box"
 export VERIFY_HOST_BINARY="$VERIFY_ROOT/blender-box.exe"
 go build -o "$VERIFY_CLIENT" ./cmd/blender-box
@@ -35,7 +35,7 @@ export VERIFY_SSH_ALIAS="$(jq -er '.ssh_alias' "$BLENDER_BOX_TARGET")"
 export VERIFY_ACTUAL_HOSTNAME="$(ssh -o RequestTTY=no -o RemoteCommand=none -- "$VERIFY_SSH_ALIAS" powershell.exe -NoLogo -NoProfile -NonInteractive -Command '$env:COMPUTERNAME')"
 test "$(printf '%s' "$VERIFY_ACTUAL_HOSTNAME" | tr '[:lower:]' '[:upper:]')" = "$(printf '%s' "$BLENDER_BOX_EXPECTED_HOSTNAME" | tr '[:lower:]' '[:upper:]')"
 "$VERIFY_CLIENT" windows check --target "$BLENDER_BOX_TARGET" --json | tee "$VERIFY_ROOT/check.json"
-jq -e '.schema_version == 1 and (.status == "pass" or .status == "fail") and ([.checks[] | select(.id == "blender.executable")] | length == 1)' "$VERIFY_ROOT/check.json"
+jq -e '.schema_version == 1 and (.status == "pass" or .status == "fail") and ([.checks[] | select(.id == "blender.executable" and (.passed | type == "boolean"))] | length == 1)' "$VERIFY_ROOT/check.json"
 ```
 
 Require `status: pass` before `run`. A failed check is useful read-only diagnosis, but it is not permission to apply setup. Confirm no unknown Blender process or unknown Host Lock is active before continuing; do not stop either.
@@ -101,7 +101,7 @@ Prove idempotent recovery cleanup without touching an unknown process, retain ev
 "$VERIFY_CLIENT" stop --target "$BLENDER_BOX_TARGET" --run "$VERIFY_RUN_ID" --json | tee "$VERIFY_ROOT/stop.json"
 jq -e --arg run "$VERIFY_RUN_ID" '.schema_version == 1 and .run_id == $run and .status == "settled" and .cleanup.session_stopped and .cleanup.payload_removed and .cleanup.run_root_removed and .cleanup.lock_released' "$VERIFY_ROOT/stop.json"
 test -f "$VERIFY_EVIDENCE/evidence.json"
-case "$VERIFY_ROOT" in /tmp/blender-box-verify.*) rm -rf -- "$VERIFY_ROOT" ;; *) echo "refusing unexpected cleanup root" >&2; exit 1 ;; esac
+case "$VERIFY_ROOT" in "${TMPDIR%/}"/blender-box-verify.*) rm -rf -- "$VERIFY_ROOT" ;; *) echo "refusing unexpected cleanup root" >&2; exit 1 ;; esac
 test ! -e "$VERIFY_ROOT"
 test -f "$VERIFY_EVIDENCE/evidence.json"
 git status --short --untracked-files=all
