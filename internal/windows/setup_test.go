@@ -103,6 +103,38 @@ func TestSetupPlansWithoutSSHAndAppliesOneBoundedHostBinary(t *testing.T) {
 	}
 }
 
+func TestSetupPreservesExecutableUpdateAuthorityForSameAndSplitUsers(t *testing.T) {
+	for _, test := range []struct {
+		name        string
+		interactive string
+		controller  string
+	}{
+		{name: "same user", interactive: "test-user", controller: "test-user"},
+		{name: "split user", interactive: "blender-user", controller: "ssh-controller"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			selected := adapterTarget()
+			selected.InteractiveUser = test.interactive
+			selected.SSHUser = test.controller
+			prepare := prepareSetupScript(selected)
+			script := setupScript(selected, SetupResult{HostSize: 1, HostSHA256: strings.Repeat("a", 64)}, `C:\BlenderBoxTest\.setup-host.bin`)
+
+			if !strings.Contains(prepare, "$fileAcl.SetOwner($controllerSid)") || !strings.Contains(prepare, "$controllerSid, [System.Security.AccessControl.FileSystemRights]::FullControl") {
+				t.Fatal("setup prepare does not preserve existing executable update authority")
+			}
+			if !strings.Contains(script, "$acl.SetOwner($controllerSid)") {
+				t.Fatal("managed executable owner is not the authenticated controller")
+			}
+			if !strings.Contains(script, "$controllerSid, [System.Security.AccessControl.FileSystemRights]::FullControl") {
+				t.Fatal("managed executable ACL does not preserve controller update authority")
+			}
+			if !strings.Contains(script, "$controllerSid -ne $interactiveSid") || !strings.Contains(script, "$interactiveSid, [System.Security.AccessControl.FileSystemRights]::ReadAndExecute") {
+				t.Fatal("managed executable ACL does not preserve split-user task execution")
+			}
+		})
+	}
+}
+
 func TestSetupRejectsEmptyHostBinaryBeforeSSH(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "blender-box.exe")
 	if err := os.WriteFile(path, nil, 0o600); err != nil {
