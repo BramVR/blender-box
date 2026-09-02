@@ -974,7 +974,7 @@ func (service *Service) callScenario(ctx context.Context, root string, request o
 		Executed bool   `json:"executed"`
 		Result   string `json:"result"`
 	}
-	if err := decodeJSONBytes(raw, &callResult, maxScenarioJSON); err != nil || !callResult.Executed || len(callResult.Result) > maxScenarioJSON {
+	if err := decodeJSONBytes(raw, &callResult, maxProcessOutput); err != nil || !callResult.Executed || len(callResult.Result) > maxScenarioJSON {
 		return nil, fmt.Errorf("invalid execute_code result")
 	}
 	result := []byte(strings.TrimSpace(callResult.Result))

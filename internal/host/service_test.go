@@ -1,6 +1,7 @@
 package host
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -134,12 +135,13 @@ func (fake *fakeTaskLauncher) Launch(_ context.Context, taskName string) error {
 }
 
 type fakeDaemon struct {
-	starts          []DaemonStart
-	readies         []DaemonReady
-	calls           []DaemonCall
-	stops           []DaemonStop
-	recovered       orchestrator.SessionID
-	captureResponse json.RawMessage
+	starts           []DaemonStart
+	readies          []DaemonReady
+	calls            []DaemonCall
+	stops            []DaemonStop
+	recovered        orchestrator.SessionID
+	captureResponse  json.RawMessage
+	scenarioResponse json.RawMessage
 }
 
 type deadlineReadyDaemon struct {
@@ -210,6 +212,9 @@ func (fake *fakeDaemon) WaitReady(_ context.Context, request DaemonReady) error 
 func (fake *fakeDaemon) Call(_ context.Context, request DaemonCall) (json.RawMessage, error) {
 	fake.calls = append(fake.calls, request)
 	if request.Command == "execute_code" {
+		if fake.scenarioResponse != nil {
+			return fake.scenarioResponse, nil
+		}
 		return json.RawMessage(`{"executed":true,"result":"{\"schema_version\":1,\"status\":\"pass\",\"object\":\"Slice0Cube\"}\n"}`), nil
 	}
 	var parameters struct {
@@ -237,6 +242,35 @@ func (fake *fakeDaemon) Call(_ context.Context, request DaemonCall) (json.RawMes
 	}
 	response, _ := json.Marshal(map[string]any{"success": true, "method": "offscreen", "width": 800, "height": 600, "filepath": parameters.Filepath})
 	return response, nil
+}
+
+func TestScenarioCallAcceptsMaximumResultAfterOuterJSONEscaping(t *testing.T) {
+	padding := strings.Repeat(`\`, maxScenarioJSON/2-128)
+	scenario, err := json.Marshal(map[string]any{"schema_version": 1, "status": "pass", "padding": padding})
+	if err != nil || len(scenario) > maxScenarioJSON {
+		t.Fatalf("scenario size = %d, error = %v", len(scenario), err)
+	}
+	envelope, err := json.Marshal(map[string]any{"executed": true, "result": string(scenario)})
+	if err != nil || len(envelope) <= maxScenarioJSON {
+		t.Fatalf("envelope size = %d, error = %v", len(envelope), err)
+	}
+	daemon := &fakeDaemon{scenarioResponse: envelope}
+	service := NewService(Dependencies{Daemon: daemon})
+	request := orchestrator.RunRequest{
+		Claim: orchestrator.LockClaim{RunID: "bbx_01LARGEESCAPEDRESULTRUN00000"},
+		Body: orchestrator.RequestBody{
+			SessionName:             "blender-box-large-result",
+			SessionBrokerExecutable: `C:\Fake\blendersessiond.exe`,
+			Payload: payload.Payload{Scenario: payload.Scenario{
+				Script:             "scenario.py",
+				ReadTimeoutSeconds: 600,
+			}},
+		},
+	}
+	result, err := service.callScenario(context.Background(), t.TempDir(), request, "bss_large-result-session-identity-123456", nil)
+	if err != nil || !bytes.Equal(result, append(scenario, '\n')) {
+		t.Fatalf("callScenario() bytes = %d, error = %v", len(result), err)
+	}
 }
 
 func TestViewportEvidenceRequiresSuccessfulCaptureProvenance(t *testing.T) {

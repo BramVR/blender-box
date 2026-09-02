@@ -1,6 +1,7 @@
 package host
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -10,6 +11,17 @@ import (
 
 	"github.com/BramVR/blender-box/internal/orchestrator"
 )
+
+func TestProcessOutputLimitCoversNestedMaximumScenarioResult(t *testing.T) {
+	inner := bytes.Repeat([]byte{'\\'}, maxScenarioJSON)
+	envelope, err := json.Marshal(map[string]any{"executed": true, "result": string(inner)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(envelope) <= 2*maxScenarioJSON || len(envelope) > maxProcessOutput {
+		t.Fatalf("nested envelope size = %d, process limit = %d", len(envelope), maxProcessOutput)
+	}
+}
 
 type fakeProcessRunner struct {
 	outputs      [][]byte
