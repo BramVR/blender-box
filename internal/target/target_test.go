@@ -3,6 +3,7 @@ package target
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -101,6 +102,33 @@ func TestManagedExecutablesMustStayUnderWorkRoot(t *testing.T) {
 			mutate(&value)
 			if err := value.Validate(); err == nil {
 				t.Fatal("managed executable outside work root was accepted")
+			}
+		})
+	}
+}
+
+func TestTargetRejectsExecutablePathCollisions(t *testing.T) {
+	base := Target{
+		SchemaVersion:           1,
+		SSHAlias:                "windows-test",
+		SSHUser:                 "test-user",
+		WorkRoot:                `C:\BlenderBoxTest`,
+		InteractiveUser:         "test-user",
+		TaskName:                "BlenderBoxTest",
+		BlenderExecutable:       `C:\BlenderBoxTest\apps\blender.exe`,
+		SessionBrokerExecutable: `C:\BlenderBoxTest\bin\blendersessiond.exe`,
+		HostExecutable:          `C:\BlenderBoxTest\bin\blender-box.exe`,
+	}
+	for name, mutate := range map[string]func(*Target){
+		"host and daemon":    func(value *Target) { value.HostExecutable = strings.ToUpper(value.SessionBrokerExecutable) },
+		"host and Blender":   func(value *Target) { value.HostExecutable = strings.ToUpper(value.BlenderExecutable) },
+		"daemon and Blender": func(value *Target) { value.SessionBrokerExecutable = strings.ToUpper(value.BlenderExecutable) },
+	} {
+		t.Run(name, func(t *testing.T) {
+			value := base
+			mutate(&value)
+			if err := value.Validate(); err == nil {
+				t.Fatal("colliding executable paths were accepted")
 			}
 		})
 	}

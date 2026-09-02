@@ -92,6 +92,15 @@ func (value Target) Validate() error {
 			return fmt.Errorf("target %s must be inside work_root", label)
 		}
 	}
+	executables := []string{value.BlenderExecutable, value.SessionBrokerExecutable, value.HostExecutable}
+	seenExecutables := make(map[string]struct{}, len(executables))
+	for _, path := range executables {
+		key := safepath.WindowsKey(path)
+		if _, exists := seenExecutables[key]; exists {
+			return fmt.Errorf("target executable paths must be distinct")
+		}
+		seenExecutables[key] = struct{}{}
+	}
 	return nil
 }
 
