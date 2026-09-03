@@ -48,12 +48,15 @@ func TestWorkRootRejectsLegacySCPShellCharacters(t *testing.T) {
 	}
 }
 
-func TestWorkRootReservesLegacySCPSetupStagingSuffix(t *testing.T) {
+func TestWorkRootReservesSetupOwnerAttemptPath(t *testing.T) {
+	attemptID := "bbsa_" + strings.Repeat("A", 43)
+	setupOwnerSuffix := `\setup-owner\setup-attempts\` + attemptID + `\` + attemptID + `.ps1`
+	maximumRootTail := maxWindowsPathTail - len(setupOwnerSuffix)
 	value := Target{
 		SchemaVersion:     1,
 		SSHAlias:          "windows-test",
 		SSHUser:           "test-user",
-		WorkRoot:          `C:\` + strings.Repeat("a", 195),
+		WorkRoot:          `C:\` + strings.Repeat("a", maximumRootTail+1),
 		InteractiveUser:   "test-user",
 		TaskName:          "BlenderBoxTest",
 		BlenderExecutable: `C:\Program Files\Blender Foundation\Blender\blender.exe`,
@@ -63,7 +66,7 @@ func TestWorkRootReservesLegacySCPSetupStagingSuffix(t *testing.T) {
 	if err := value.Validate(); err == nil || !strings.Contains(err.Error(), "staging") {
 		t.Fatalf("unstageable root error = %v", err)
 	}
-	maximumStageable := `C:\` + strings.Repeat("a", 194) + `\.setup-` + strings.Repeat("0", 32) + `.ps1`
+	maximumStageable := `C:\` + strings.Repeat("a", maximumRootTail) + setupOwnerSuffix
 	if !ValidateLegacySCPWindowsPath(maximumStageable) {
 		t.Fatal("documented staging boundary is not accepted by the upload grammar")
 	}
@@ -187,6 +190,12 @@ func TestManagedExecutablesMustStayUnderWorkRoot(t *testing.T) {
 		},
 		"daemon under receipts": func(value *Target) {
 			value.SessionBrokerExecutable = `C:\BlenderBoxTest\Receipts\bin\blendersessiond.exe`
+		},
+		"host under setup owner": func(value *Target) {
+			value.HostExecutable = `C:\BlenderBoxTest\setup-owner\bin\blender-box.exe`
+		},
+		"daemon under setup owner": func(value *Target) {
+			value.SessionBrokerExecutable = `C:\BlenderBoxTest\SETUP-OWNER\bin\blendersessiond.exe`
 		},
 	} {
 		t.Run(name, func(t *testing.T) {

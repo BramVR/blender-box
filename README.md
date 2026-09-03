@@ -75,7 +75,7 @@ go run ./cmd/blender-box windows setup \
 	--json
 ```
 
-Setup publishes the hashed host binary, applies the required ACLs, checks the `blendersessiond` contract, and registers the Scheduled Task. It refuses an active Host Lock and rejects reparse points or untrusted write authority in managed paths.
+Setup publishes the hashed host binary, applies the required ACLs, checks the `blendersessiond` contract, and registers the Scheduled Task. The apply program runs inside the daemon's fenced Windows setup owner: every launch, status read, and stop carries a random Setup Attempt ID, Launch ID, and request hash, and success requires proof that the owned process tree is gone. It refuses an active Host Lock and rejects reparse points or untrusted write authority in managed paths.
 
 ## Check the installed host
 
@@ -85,7 +85,7 @@ Run the read-only host check after setup or when the host configuration changes:
 go run ./cmd/blender-box windows check --target target.json --json
 ```
 
-The check verifies the Windows identities, managed paths, ACLs, executables, operation locks, Scheduled Task, and `blendersessiond` capabilities. A failed requirement returns `status: "fail"` without launching Blender.
+The check verifies the Windows identities, managed paths, ACLs, executables, operation locks, setup-owner state tree, Scheduled Task, and `blendersessiond` capabilities. A failed requirement returns `status: "fail"` without launching Blender.
 
 ## Create a Run Payload
 

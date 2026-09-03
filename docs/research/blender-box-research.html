@@ -682,6 +682,7 @@ blender-box run --keep-on-failure addon-smoke
 blender-box status --run bbx_...
 blender-box attach bbx_...
 blender-box stop bbx_...</code></pre>
+        <p class="note">Implemented setup ownership: <code>windows setup --apply</code> stages its bounded program under a private setup-owner root and launches it through <code>blendersessiond</code> with immutable Attempt, Launch, request-hash, and deadline fences. Lost responses reconcile through the same fence; failure cleanup removes staged files only after the daemon proves the exact process tree is gone.</p>
       </div>
 
       <div class="grid three mt-14">

@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/binary"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -24,7 +25,7 @@ type scriptedSSH struct {
 	inputs    [][]byte
 	uploads   []scriptedUpload
 	runHook   func()
-	runResult func(int, []string, []byte) ([]byte, error)
+	runResult func(context.Context, int, []string, []byte) ([]byte, error)
 }
 
 type scriptedUpload struct {
@@ -34,7 +35,7 @@ type scriptedUpload struct {
 	contents    []byte
 }
 
-func (fake *scriptedSSH) Run(_ context.Context, _ string, arguments []string, input []byte) ([]byte, error) {
+func (fake *scriptedSSH) Run(ctx context.Context, _ string, arguments []string, input []byte) ([]byte, error) {
 	if fake.runHook != nil {
 		hook := fake.runHook
 		fake.runHook = nil
@@ -43,7 +44,10 @@ func (fake *scriptedSSH) Run(_ context.Context, _ string, arguments []string, in
 	fake.arguments = append(fake.arguments, append([]string(nil), arguments...))
 	fake.inputs = append(fake.inputs, append([]byte(nil), input...))
 	if fake.runResult != nil {
-		return fake.runResult(len(fake.arguments)-1, arguments, input)
+		return fake.runResult(ctx, len(fake.arguments)-1, arguments, input)
+	}
+	if len(fake.outputs) == 0 {
+		return nil, fmt.Errorf("unexpected SSH call %d", len(fake.arguments)-1)
 	}
 	output := fake.outputs[0]
 	fake.outputs = fake.outputs[1:]
