@@ -1,6 +1,7 @@
 package windows
 
 import (
+	"bytes"
 	"context"
 	cryptorand "crypto/rand"
 	"crypto/sha256"
@@ -59,8 +60,16 @@ func Setup(ctx context.Context, ssh SetupSSH, selected target.Target, source str
 		return SetupResult{}, fmt.Errorf("create setup transfer identity: %w", err)
 	}
 	transferID := hex.EncodeToString(nonce[:])
+	attemptID, err := setupOwnerID("bbsa_")
+	if err != nil {
+		return SetupResult{}, fmt.Errorf("create Setup Attempt identity: %w", err)
+	}
+	launchID, err := setupOwnerID("bbsl_")
+	if err != nil {
+		return SetupResult{}, fmt.Errorf("create setup Launch identity: %w", err)
+	}
 	stagedBinary := fmt.Sprintf(`%s\.setup-%s.bin`, selected.WorkRoot, transferID)
-	stagedScript := fmt.Sprintf(`%s\.setup-%s.ps1`, selected.WorkRoot, transferID)
+	stagedScript := setupOwnerScriptPath(selected, attemptID)
 	localBinary, err := writeHostBinarySnapshot(contents)
 	if err != nil {
 		return SetupResult{}, err
@@ -75,7 +84,7 @@ func Setup(ctx context.Context, ssh SetupSSH, selected target.Target, source str
 		return SetupResult{}, err
 	}
 	defer os.Remove(localScript)
-	prepare := prepareSetupScript(selected)
+	prepare := prepareSetupScript(selected, attemptID)
 	if len(prepare) == 0 || len(prepare) > maxSetupScript {
 		return SetupResult{}, fmt.Errorf("setup guard script exceeds its limit")
 	}
@@ -88,20 +97,38 @@ func Setup(ctx context.Context, ssh SetupSSH, selected target.Target, source str
 	if err := ssh.Upload(ctx, selected.SSHAlias, localScript, stagedScript); err != nil {
 		return SetupResult{}, cleanupSetupUploads(ctx, ssh, selected, []string{stagedBinary, stagedScript}, fmt.Errorf("upload Windows setup script: %w", err))
 	}
-	scriptHash := sha256.Sum256([]byte(script))
-	bootstrap := setupScriptBootstrap(stagedScript, int64(len(script)), hex.EncodeToString(scriptHash[:]))
-	output, err := ssh.Run(ctx, selected.SSHAlias, powerShellArguments(bootstrap), nil)
+	output, err := runOwnedSetup(ctx, ssh, selected, attemptID, launchID, []byte(script))
 	if err != nil {
-		return SetupResult{}, cleanupSetupUploads(ctx, ssh, selected, []string{stagedBinary, stagedScript}, fmt.Errorf("apply Windows setup: %w", err))
+		cause := fmt.Errorf("apply Windows setup: %w", err)
+		if !setupOwnerCleanupProved(err) {
+			return SetupResult{}, cause
+		}
+		return SetupResult{}, cleanupSetupUploads(ctx, ssh, selected, []string{stagedBinary, stagedScript}, cause)
 	}
-	var applied SetupResult
-	if err := json.Unmarshal(output, &applied); err != nil {
-		return SetupResult{}, fmt.Errorf("decode Windows setup result: %w", err)
+	applied, err := decodeSetupResult(output)
+	if err != nil {
+		return SetupResult{}, cleanupSetupUploads(ctx, ssh, selected, []string{stagedBinary, stagedScript}, fmt.Errorf("decode Windows setup result: %w", err))
 	}
 	if applied.SchemaVersion != 1 || applied.Status != "applied" || !applied.Applied || applied.HostSize != int64(len(contents)) || applied.HostSHA256 != hex.EncodeToString(hash[:]) {
-		return SetupResult{}, fmt.Errorf("Windows setup returned an invalid contract")
+		return SetupResult{}, cleanupSetupUploads(ctx, ssh, selected, []string{stagedBinary, stagedScript}, fmt.Errorf("Windows setup returned an invalid contract"))
+	}
+	if err := cleanupSetupUploads(ctx, ssh, selected, []string{stagedBinary, stagedScript}, nil); err != nil {
+		return SetupResult{}, err
 	}
 	return applied, nil
+}
+
+func decodeSetupResult(output []byte) (SetupResult, error) {
+	var result SetupResult
+	decoder := json.NewDecoder(bytes.NewReader(output))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&result); err != nil {
+		return SetupResult{}, err
+	}
+	if err := decoder.Decode(&struct{}{}); err != io.EOF {
+		return SetupResult{}, fmt.Errorf("trailing JSON")
+	}
+	return result, nil
 }
 
 func writeHostBinarySnapshot(contents []byte) (string, error) {
@@ -179,24 +206,6 @@ func writeSetupScript(script string) (string, error) {
 	return path, nil
 }
 
-func setupScriptBootstrap(path string, size int64, expectedHash string) string {
-	return fmt.Sprintf(`$ErrorActionPreference = 'Stop'
-$path = %s
-try {
-    $bytes = [IO.File]::ReadAllBytes($path)
-    if ($bytes.Length -ne %d) { throw 'Setup script size changed in transfer.' }
-    $sha = [Security.Cryptography.SHA256]::Create()
-    try { $actualHash = [BitConverter]::ToString($sha.ComputeHash($bytes)).Replace('-', '').ToLowerInvariant() }
-    finally { $sha.Dispose() }
-    if ($actualHash -cne %s) { throw 'Setup script SHA256 changed in transfer.' }
-    $script = [Text.Encoding]::UTF8.GetString($bytes)
-    Remove-Item -Force -LiteralPath $path
-    & ([ScriptBlock]::Create($script))
-} finally {
-    if (Test-Path -LiteralPath $path -PathType Leaf) { Remove-Item -Force -LiteralPath $path }
-}`, powerShellLiteral(path), size, powerShellLiteral(expectedHash))
-}
-
 func cleanupSetupUploads(ctx context.Context, ssh SetupSSH, selected target.Target, paths []string, cause error) error {
 	cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
 	defer cancel()
@@ -257,7 +266,7 @@ function Assert-RegularFileOrMissing([string]$Path) {
     }
 }
 function Assert-CompatibleSessionBroker([string]$Path) {
-    $result = Invoke-SessionBrokerProbe $Path @('capabilities', '--require', 'blender-box-v1', '--require-capability', 'typed-call-error-reason')
+    $result = Invoke-SessionBrokerProbe $Path @('capabilities', '--require', 'blender-box-v1', '--require-capability', 'typed-call-error-reason', '--require-capability', 'windows-setup-owner-v1')
     if ($null -eq $result -or [int]$result -ne 0) { throw 'Declared blendersessiond does not support the required Blender Box contract.' }
 }
 function Expand-BlenderBoxFileSystemMask([int64]$Mask) {
@@ -345,7 +354,7 @@ function Set-BlenderBoxDirectoryPath([string]$Root, [string]$Directory, [System.
 }
 `
 
-func prepareSetupScript(selected target.Target) string {
+func prepareSetupScript(selected target.Target, attemptID string) string {
 	header := fmt.Sprintf(`$ErrorActionPreference = 'Stop'
 $root = %s
 $daemonPath = %s
@@ -358,7 +367,10 @@ $expectedControllerUser = %s
 $lockPath = [System.IO.Path]::Combine($root, 'host-lock.json')
 $operationPath = [System.IO.Path]::Combine($root, '.operation.lock')
 $launchPath = [System.IO.Path]::Combine($root, '.launch.lock')
-`, powerShellLiteral(selected.WorkRoot), powerShellLiteral(selected.SessionBrokerExecutable), powerShellLiteral(selected.BlenderExecutable), powerShellLiteral(selected.HostExecutable), powerShellLiteral(selected.InteractiveUser), powerShellLiteral(selected.SSHUser))
+$setupOwnerRoot = [System.IO.Path]::Combine($root, 'setup-owner')
+$setupOwnerAttempts = [System.IO.Path]::Combine($setupOwnerRoot, 'setup-attempts')
+$setupOwnerAttempt = [System.IO.Path]::Combine($setupOwnerAttempts, %s)
+`, powerShellLiteral(selected.WorkRoot), powerShellLiteral(selected.SessionBrokerExecutable), powerShellLiteral(selected.BlenderExecutable), powerShellLiteral(selected.HostExecutable), powerShellLiteral(selected.InteractiveUser), powerShellLiteral(selected.SSHUser), powerShellLiteral(attemptID))
 	return header + setupOperationFunctions + `if (-not (Test-Path -LiteralPath $root -PathType Container)) { throw 'Declared work root is missing; provision blendersessiond inside it first.' }
 Assert-NoReparsePath $root
 Assert-NoReparsePath $hostDirectory
@@ -409,8 +421,9 @@ try {
     $rootAcl.AddAccessRule([System.Security.AccessControl.FileSystemAccessRule]::new($controllerSid, [System.Security.AccessControl.FileSystemRights]::FullControl, $inherit, $none, $allow))
     $rootAcl.AddAccessRule([System.Security.AccessControl.FileSystemAccessRule]::new([System.Security.Principal.SecurityIdentifier]::new('S-1-5-18'), [System.Security.AccessControl.FileSystemRights]::FullControl, $inherit, $none, $allow))
     $rootAcl.AddAccessRule([System.Security.AccessControl.FileSystemAccessRule]::new([System.Security.Principal.SecurityIdentifier]::new('S-1-5-32-544'), [System.Security.AccessControl.FileSystemRights]::FullControl, $inherit, $none, $allow))
-    Set-Acl -LiteralPath $root -AclObject $rootAcl
-    $launch = [System.IO.File]::Open($launchPath, [System.IO.FileMode]::OpenOrCreate, [System.IO.FileAccess]::ReadWrite, [System.IO.FileShare]::ReadWrite)
+	Set-Acl -LiteralPath $root -AclObject $rootAcl
+	Set-BlenderBoxDirectoryPath $root $setupOwnerAttempt $rootAcl $controllerSid
+	$launch = [System.IO.File]::Open($launchPath, [System.IO.FileMode]::OpenOrCreate, [System.IO.FileAccess]::ReadWrite, [System.IO.FileShare]::ReadWrite)
     $launch.Dispose()
     Assert-NoReparsePath $launchPath
 

@@ -3,8 +3,10 @@ package cli
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/binary"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"os"
@@ -20,11 +22,12 @@ import (
 )
 
 type fakeSSH struct {
-	stdout  []byte
-	host    string
-	args    []string
-	stdin   []byte
-	uploads [][2]string
+	stdout    []byte
+	host      string
+	args      []string
+	stdin     []byte
+	uploads   [][2]string
+	runResult func([]string, []byte) ([]byte, error)
 }
 
 type fakeRunService struct {
@@ -384,6 +387,35 @@ func TestWindowsSetupPlansWithoutSSHAndRequiresApplyForWrite(t *testing.T) {
 		HostSize:      planned.HostSize,
 		HostSHA256:    planned.HostSHA256,
 	})
+	fake.runResult = func(_ []string, stdin []byte) ([]byte, error) {
+		if len(stdin) == 0 || stdin[0] != '{' {
+			return nil, nil
+		}
+		var request struct {
+			AttemptID string `json:"attempt_id"`
+			LaunchID  string `json:"launch_id"`
+		}
+		if err := json.Unmarshal(stdin, &request); err != nil {
+			return nil, err
+		}
+		hash := sha256.Sum256(stdin)
+		return json.Marshal(map[string]any{
+			"schema_version":   1,
+			"attempt_id":       request.AttemptID,
+			"launch_id":        request.LaunchID,
+			"request_sha256":   hex.EncodeToString(hash[:]),
+			"status":           "terminal",
+			"outcome":          "process_succeeded",
+			"process":          "exited",
+			"cleanup":          "tree_gone",
+			"exit_code":        0,
+			"stdout":           string(fake.stdout),
+			"stderr":           "",
+			"stdout_truncated": false,
+			"stderr_truncated": false,
+			"finished_at":      time.Now().UTC().Format(time.RFC3339Nano),
+		})
+	}
 	stdout.Reset()
 	stderr.Reset()
 	exitCode = Run(context.Background(), []string{
@@ -427,6 +459,9 @@ func (fake *fakeSSH) Run(
 	fake.host = host
 	fake.args = append([]string(nil), args...)
 	fake.stdin = append([]byte(nil), stdin...)
+	if fake.runResult != nil {
+		return fake.runResult(args, stdin)
+	}
 	return fake.stdout, nil
 }
 
