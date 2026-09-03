@@ -24,6 +24,7 @@ type scriptedSSH struct {
 	inputs    [][]byte
 	uploads   []scriptedUpload
 	runHook   func()
+	runResult func(int, []string, []byte) ([]byte, error)
 }
 
 type scriptedUpload struct {
@@ -41,6 +42,9 @@ func (fake *scriptedSSH) Run(_ context.Context, _ string, arguments []string, in
 	}
 	fake.arguments = append(fake.arguments, append([]string(nil), arguments...))
 	fake.inputs = append(fake.inputs, append([]byte(nil), input...))
+	if fake.runResult != nil {
+		return fake.runResult(len(fake.arguments)-1, arguments, input)
+	}
 	output := fake.outputs[0]
 	fake.outputs = fake.outputs[1:]
 	return output, nil

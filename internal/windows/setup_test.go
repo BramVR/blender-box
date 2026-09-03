@@ -3,12 +3,119 @@ package windows
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
+	"encoding/json"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
+	"time"
 )
+
+func TestSetupRunsApplyThroughFencedSetupOwner(t *testing.T) {
+	binary := []byte("bounded-windows-host-binary")
+	path := filepath.Join(t.TempDir(), "blender-box.exe")
+	if err := os.WriteFile(path, binary, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	hostHash := sha256.Sum256(binary)
+	selected := adapterTarget()
+	fake := &scriptedSSH{}
+	fake.runResult = func(call int, arguments []string, input []byte) ([]byte, error) {
+		if call == 0 {
+			return nil, nil
+		}
+		var request struct {
+			SchemaVersion     int    `json:"schema_version"`
+			AttemptID         string `json:"attempt_id"`
+			LaunchID          string `json:"launch_id"`
+			DeadlineUTC       string `json:"deadline_utc"`
+			OperationRevision string `json:"operation_revision"`
+			Script            struct {
+				ArtifactID string `json:"artifact_id"`
+				Size       int    `json:"size"`
+				SHA256     string `json:"sha256"`
+			} `json:"script"`
+		}
+		if err := json.Unmarshal(input, &request); err != nil {
+			t.Fatal(err)
+		}
+		requestHash := sha256.Sum256(input)
+		applied := SetupResult{SchemaVersion: 1, Status: "applied", Applied: true, HostSize: int64(len(binary)), HostSHA256: hex.EncodeToString(hostHash[:])}
+		return mustJSON(t, map[string]any{
+			"schema_version":   1,
+			"attempt_id":       request.AttemptID,
+			"launch_id":        request.LaunchID,
+			"request_sha256":   hex.EncodeToString(requestHash[:]),
+			"status":           "terminal",
+			"outcome":          "process_succeeded",
+			"process":          "exited",
+			"cleanup":          "tree_gone",
+			"exit_code":        0,
+			"stdout":           string(mustJSON(t, applied)),
+			"stderr":           "",
+			"stdout_truncated": false,
+			"stderr_truncated": false,
+			"finished_at":      time.Now().UTC().Format(time.RFC3339Nano),
+		}), nil
+	}
+
+	applied, err := Setup(context.Background(), fake, selected, path, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if applied.Status != "applied" || !applied.Applied {
+		t.Fatalf("apply = %+v", applied)
+	}
+	if len(fake.arguments) != 2 || len(fake.uploads) != 2 {
+		t.Fatalf("SSH calls = %d, uploads = %d", len(fake.arguments), len(fake.uploads))
+	}
+	prepare := string(fake.inputs[0])
+	if !strings.Contains(prepare, "$setupOwnerRoot") || !strings.Contains(prepare, "$setupOwnerAttempt") || !strings.Contains(prepare, "SetAccessRuleProtection($true, $false)") {
+		t.Fatalf("prepare does not provision private setup-owner authority: %s", prepare)
+	}
+	var request struct {
+		SchemaVersion     int    `json:"schema_version"`
+		AttemptID         string `json:"attempt_id"`
+		LaunchID          string `json:"launch_id"`
+		DeadlineUTC       string `json:"deadline_utc"`
+		OperationRevision string `json:"operation_revision"`
+		Script            struct {
+			ArtifactID string `json:"artifact_id"`
+			Size       int    `json:"size"`
+			SHA256     string `json:"sha256"`
+		} `json:"script"`
+	}
+	if err := json.Unmarshal(fake.inputs[1], &request); err != nil {
+		t.Fatal(err)
+	}
+	idPattern := regexp.MustCompile(`^bbs[al]_[A-Za-z0-9_-]{43}$`)
+	if request.SchemaVersion != 1 || !idPattern.MatchString(request.AttemptID) || !idPattern.MatchString(request.LaunchID) || request.OperationRevision != "windows-setup-owner-v1" {
+		t.Fatalf("request identity = %+v", request)
+	}
+	deadline, err := time.Parse(time.RFC3339Nano, request.DeadlineUTC)
+	if err != nil || time.Until(deadline) <= 0 || time.Until(deadline) > 5*time.Minute {
+		t.Fatalf("request deadline = %q, error = %v", request.DeadlineUTC, err)
+	}
+	scriptUpload := fake.uploads[1]
+	wantSuffix := `\setup-owner\setup-attempts\` + request.AttemptID + `\` + request.AttemptID + `.ps1`
+	if scriptUpload.destination != selected.WorkRoot+wantSuffix || request.Script.ArtifactID != request.AttemptID+".ps1" || request.Script.Size != len(scriptUpload.contents) {
+		t.Fatalf("request script = %+v, upload = %+v", request.Script, scriptUpload)
+	}
+	scriptHash := sha256.Sum256(scriptUpload.contents)
+	if request.Script.SHA256 != hex.EncodeToString(scriptHash[:]) {
+		t.Fatalf("request script hash = %q", request.Script.SHA256)
+	}
+	launch := decodedAdapterScript(t, fake.arguments[1])
+	if !strings.Contains(launch, `$env:BLENDERSESSIOND_STATE_DIR = '`+selected.WorkRoot+`\setup-owner'`) || !strings.Contains(launch, selected.SessionBrokerExecutable) || !strings.Contains(launch, `'setup-owner' 'launch' '--json'`) || strings.Contains(launch, "ScriptBlock") {
+		t.Fatalf("launch does not use setup owner: %s", launch)
+	}
+	if _, err := base64.RawURLEncoding.DecodeString(strings.TrimPrefix(request.AttemptID, "bbsa_")); err != nil {
+		t.Fatalf("Attempt ID is not random URL-safe bytes: %v", err)
+	}
+}
 
 func TestSetupPlansWithoutSSHAndAppliesOneBoundedHostBinary(t *testing.T) {
 	binary := []byte("bounded-windows-host-binary")
