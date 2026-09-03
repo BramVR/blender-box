@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -16,6 +17,41 @@ import (
 )
 
 const testSetupAttemptID = "bbsa_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+
+type noEOFSSH struct {
+	*scriptedSSH
+}
+
+func (fake *noEOFSSH) Run(ctx context.Context, host string, arguments []string, input []byte) ([]byte, error) {
+	if len(input) != 0 {
+		<-ctx.Done()
+		return nil, fmt.Errorf("stdin remained open: %w", ctx.Err())
+	}
+	return fake.scriptedSSH.Run(ctx, host, arguments, input)
+}
+
+func TestSetupDoesNotDependOnSSHStdinEOF(t *testing.T) {
+	binary := []byte("bounded-windows-host-binary")
+	path := filepath.Join(t.TempDir(), "blender-box.exe")
+	if err := os.WriteFile(path, binary, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	hash := sha256.Sum256(binary)
+	transport := &scriptedSSH{}
+	setSetupOwnerTerminalResponse(t, transport, mustJSON(t, SetupResult{
+		SchemaVersion: 1,
+		Status:        "applied",
+		Applied:       true,
+		HostSize:      int64(len(binary)),
+		HostSHA256:    hex.EncodeToString(hash[:]),
+	}))
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+
+	if _, err := Setup(ctx, &noEOFSSH{scriptedSSH: transport}, adapterTarget(), path, true); err != nil {
+		t.Fatalf("Setup() waited for SSH stdin EOF: %v", err)
+	}
+}
 
 func TestSetupRunsApplyThroughFencedSetupOwner(t *testing.T) {
 	binary := []byte("bounded-windows-host-binary")
