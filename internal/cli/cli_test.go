@@ -387,18 +387,33 @@ func TestWindowsSetupPlansWithoutSSHAndRequiresApplyForWrite(t *testing.T) {
 		HostSize:      planned.HostSize,
 		HostSHA256:    planned.HostSHA256,
 	})
-	fake.runResult = func(_ []string, stdin []byte) ([]byte, error) {
-		if len(stdin) == 0 || stdin[0] != '{' {
+	fake.runResult = func(arguments []string, stdin []byte) ([]byte, error) {
+		if len(stdin) != 0 {
+			t.Fatalf("setup SSH stdin = %q", stdin)
+		}
+		command := decodePowerShellCommand(t, arguments)
+		const marker = `$r = [Convert]::FromBase64String('`
+		start := strings.Index(command, marker)
+		if start < 0 {
 			return nil, nil
+		}
+		start += len(marker)
+		end := strings.Index(command[start:], `')`)
+		if end < 0 {
+			t.Fatal("setup owner launch has an incomplete embedded request")
+		}
+		requestBytes, err := base64.StdEncoding.DecodeString(command[start : start+end])
+		if err != nil {
+			t.Fatalf("decode embedded setup owner request: %v", err)
 		}
 		var request struct {
 			AttemptID string `json:"attempt_id"`
 			LaunchID  string `json:"launch_id"`
 		}
-		if err := json.Unmarshal(stdin, &request); err != nil {
+		if err := json.Unmarshal(requestBytes, &request); err != nil {
 			return nil, err
 		}
-		hash := sha256.Sum256(stdin)
+		hash := sha256.Sum256(requestBytes)
 		return json.Marshal(map[string]any{
 			"schema_version":   1,
 			"attempt_id":       request.AttemptID,
@@ -425,9 +440,29 @@ func TestWindowsSetupPlansWithoutSSHAndRequiresApplyForWrite(t *testing.T) {
 		"--apply",
 		"--json",
 	}, strings.NewReader(""), &stdout, &stderr, Dependencies{SSH: fake})
-	if exitCode != 0 || stderr.Len() != 0 || fake.host != "windows-test" || len(fake.uploads) != 2 || fake.uploads[0][0] == hostBinary || filepath.Base(fake.uploads[0][0]) != "blender-box.exe" || !strings.HasPrefix(fake.uploads[0][1], `C:\BlenderBoxTest\.setup-`) {
+	if exitCode != 0 || stderr.Len() != 0 || fake.host != "windows-test" || len(fake.uploads) != 3 || fake.uploads[1][0] == hostBinary || filepath.Base(fake.uploads[1][0]) != "blender-box.exe" || !strings.HasPrefix(fake.uploads[1][1], `C:\BlenderBoxTest\.setup-`) {
 		t.Fatalf("apply exit = %d, stderr = %q, SSH host = %q, uploads = %q", exitCode, stderr.String(), fake.host, fake.uploads)
 	}
+}
+
+func decodePowerShellCommand(t *testing.T, arguments []string) string {
+	t.Helper()
+	for index, argument := range arguments {
+		if argument != "-EncodedCommand" || index+1 >= len(arguments) {
+			continue
+		}
+		encoded, err := base64.StdEncoding.DecodeString(arguments[index+1])
+		if err != nil || len(encoded)%2 != 0 {
+			t.Fatalf("invalid PowerShell command: %v", err)
+		}
+		decoded := make([]byte, len(encoded)/2)
+		for offset := range decoded {
+			decoded[offset] = byte(binary.LittleEndian.Uint16(encoded[offset*2:]))
+		}
+		return string(decoded)
+	}
+	t.Fatalf("SSH arguments have no PowerShell command: %q", arguments)
+	return ""
 }
 
 func writeTarget(t *testing.T, root string) string {
