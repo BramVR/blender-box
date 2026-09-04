@@ -12,6 +12,7 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/BramVR/blender-box/internal/capture"
 	"github.com/BramVR/blender-box/internal/safepath"
 )
 
@@ -50,9 +51,25 @@ func (file File) Contents() []byte {
 
 // Scenario declares the Blender script and bounded daemon call behavior.
 type Scenario struct {
-	Script             string `json:"script"`
-	ReadTimeoutSeconds int    `json:"read_timeout_seconds"`
-	CaptureViewport    bool   `json:"capture_viewport"`
+	Script               string `json:"script"`
+	ReadTimeoutSeconds   int    `json:"read_timeout_seconds"`
+	CaptureViewport      bool   `json:"capture_viewport"`
+	CaptureBlenderWindow bool   `json:"capture_blender_window,omitempty"`
+	CaptureDesktop       bool   `json:"capture_desktop,omitempty"`
+}
+
+func (scenario Scenario) Captures() []capture.Kind {
+	result := make([]capture.Kind, 0, 3)
+	if scenario.CaptureViewport {
+		result = append(result, capture.Viewport)
+	}
+	if scenario.CaptureBlenderWindow {
+		result = append(result, capture.BlenderWindow)
+	}
+	if scenario.CaptureDesktop {
+		result = append(result, capture.Desktop)
+	}
+	return result
 }
 
 type document struct {
@@ -93,8 +110,11 @@ func Load(path string) (Payload, error) {
 	if err := requireJSONEnd(decoder); err != nil {
 		return Payload{}, err
 	}
-	if declared.SchemaVersion != 1 {
+	if declared.SchemaVersion != 1 && declared.SchemaVersion != 2 {
 		return Payload{}, fmt.Errorf("unsupported payload schema version %d", declared.SchemaVersion)
+	}
+	if declared.SchemaVersion == 1 && (declared.Scenario.CaptureBlenderWindow || declared.Scenario.CaptureDesktop) {
+		return Payload{}, fmt.Errorf("Blender-window and desktop captures require payload schema version 2")
 	}
 	if len(declared.Files) == 0 || len(declared.Files) > maxFiles {
 		return Payload{}, fmt.Errorf("payload file count %d is outside 1..%d", len(declared.Files), maxFiles)
@@ -110,7 +130,7 @@ func Load(path string) (Payload, error) {
 	}
 
 	base := filepath.Dir(canonicalPath)
-	result := Payload{SchemaVersion: 1, Scenario: declared.Scenario}
+	result := Payload{SchemaVersion: declared.SchemaVersion, Scenario: declared.Scenario}
 	destinations := make(map[string]struct{}, len(declared.Files))
 	var total int64
 	for _, declaredFile := range declared.Files {
@@ -175,8 +195,11 @@ func (payload Payload) Validate() error {
 
 // ValidateManifest verifies bounded cross-process metadata without local bytes.
 func (payload Payload) ValidateManifest() error {
-	if payload.SchemaVersion != 1 {
+	if payload.SchemaVersion != 1 && payload.SchemaVersion != 2 {
 		return fmt.Errorf("unsupported payload schema version %d", payload.SchemaVersion)
+	}
+	if payload.SchemaVersion == 1 && (payload.Scenario.CaptureBlenderWindow || payload.Scenario.CaptureDesktop) {
+		return fmt.Errorf("Blender-window and desktop captures require payload schema version 2")
 	}
 	if len(payload.Files) == 0 || len(payload.Files) > maxFiles {
 		return fmt.Errorf("payload file count %d is outside 1..%d", len(payload.Files), maxFiles)

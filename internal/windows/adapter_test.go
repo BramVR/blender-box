@@ -13,6 +13,7 @@ import (
 	"time"
 	"unicode/utf16"
 
+	"github.com/BramVR/blender-box/internal/capture"
 	"github.com/BramVR/blender-box/internal/host"
 	"github.com/BramVR/blender-box/internal/orchestrator"
 	"github.com/BramVR/blender-box/internal/payload"
@@ -34,6 +35,93 @@ type scriptedUpload struct {
 	source      string
 	destination string
 	contents    []byte
+}
+
+func TestInspectReadsCaptureSupportFromInstalledHost(t *testing.T) {
+	checks := make([]map[string]any, 0, 10)
+	for _, id := range []string{
+		"host.windows", "host.console-user", "host.ssh-user", "host.limited-token-policy",
+		"blender.executable", "daemon.executable", "host.executable", "work-root.access",
+		"work-root.state-tree", "task.interactive",
+	} {
+		checks = append(checks, map[string]any{"id": id, "passed": true, "required": true})
+	}
+	checkResult := map[string]any{"schema_version": 1, "status": "pass", "checks": checks}
+	capabilities := host.CapabilitiesResponse{
+		SchemaVersion: 1,
+		Status:        "pass",
+		Captures: []orchestrator.CaptureSupport{
+			{Kind: capture.Viewport, Capability: "capture-viewport-v1", Supported: true},
+			{Kind: capture.BlenderWindow, Capability: "capture-blender-window-v1", Supported: true},
+			{Kind: capture.Desktop, Capability: "capture-desktop-v1", Supported: false},
+		},
+	}
+	fake := &scriptedSSH{outputs: [][]byte{mustJSON(t, checkResult), mustJSON(t, capabilities)}}
+
+	inspection, err := NewAdapter(fake).Inspect(context.Background(), adapterTarget(), orchestrator.HostRequirements{PayloadSchemaVersion: 2, Captures: []capture.Kind{capture.Desktop}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if inspection.Status != "pass" || len(inspection.Captures) != 3 || inspection.Captures[2].Supported {
+		t.Fatalf("inspection = %+v", inspection)
+	}
+	if len(fake.arguments) != 2 || !strings.Contains(decodedAdapterScript(t, fake.arguments[1]), "'host' 'capabilities'") {
+		t.Fatalf("host capability calls = %d", len(fake.arguments))
+	}
+}
+
+func TestInspectPreservesLegacyViewportWithoutHostCapabilityCommand(t *testing.T) {
+	checks := make([]map[string]any, 0, 10)
+	for _, id := range []string{
+		"host.windows", "host.console-user", "host.ssh-user", "host.limited-token-policy",
+		"blender.executable", "daemon.executable", "host.executable", "work-root.access",
+		"work-root.state-tree", "task.interactive",
+	} {
+		checks = append(checks, map[string]any{"id": id, "passed": true, "required": true})
+	}
+	checkResult := map[string]any{"schema_version": 1, "status": "pass", "checks": checks}
+	fake := &scriptedSSH{outputs: [][]byte{mustJSON(t, checkResult)}}
+
+	inspection, err := NewAdapter(fake).Inspect(context.Background(), adapterTarget(), orchestrator.HostRequirements{PayloadSchemaVersion: 1, Captures: []capture.Kind{capture.Viewport}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if inspection.Status != "pass" || len(inspection.Captures) != 1 || !inspection.Captures[0].Supported || inspection.Captures[0].Kind != capture.Viewport {
+		t.Fatalf("inspection = %+v", inspection)
+	}
+	if len(fake.arguments) != 1 {
+		t.Fatalf("legacy inspection made %d SSH calls", len(fake.arguments))
+	}
+}
+
+func TestInspectRequiresUpgradedHostCapabilitiesForSchema2Viewport(t *testing.T) {
+	capabilities := host.CapabilitiesResponse{SchemaVersion: 1, Status: "pass", Captures: []orchestrator.CaptureSupport{
+		{Kind: capture.Viewport, Capability: "capture-viewport-v1", Supported: true},
+		{Kind: capture.BlenderWindow, Capability: "capture-blender-window-v1", Supported: true},
+		{Kind: capture.Desktop, Capability: "capture-desktop-v1", Supported: true},
+	}}
+	fake := &scriptedSSH{outputs: [][]byte{passingAdapterCheck(t), mustJSON(t, capabilities)}}
+
+	inspection, err := NewAdapter(fake).Inspect(context.Background(), adapterTarget(), orchestrator.HostRequirements{PayloadSchemaVersion: 2, Captures: []capture.Kind{capture.Viewport}})
+	if err != nil || inspection.Status != "pass" {
+		t.Fatalf("inspection = %+v, error = %v", inspection, err)
+	}
+	if len(fake.arguments) != 2 {
+		t.Fatalf("schema 2 inspection made %d SSH calls", len(fake.arguments))
+	}
+}
+
+func passingAdapterCheck(t *testing.T) []byte {
+	t.Helper()
+	checks := make([]map[string]any, 0, 10)
+	for _, id := range []string{
+		"host.windows", "host.console-user", "host.ssh-user", "host.limited-token-policy",
+		"blender.executable", "daemon.executable", "host.executable", "work-root.access",
+		"work-root.state-tree", "task.interactive",
+	} {
+		checks = append(checks, map[string]any{"id": id, "passed": true, "required": true})
+	}
+	return mustJSON(t, map[string]any{"schema_version": 1, "status": "pass", "checks": checks})
 }
 
 func (fake *scriptedSSH) Run(ctx context.Context, _ string, arguments []string, input []byte) ([]byte, error) {

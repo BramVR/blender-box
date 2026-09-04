@@ -18,17 +18,20 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/BramVR/blender-box/internal/capture"
 	"github.com/BramVR/blender-box/internal/orchestrator"
 	"github.com/BramVR/blender-box/internal/safepath"
 	"github.com/BramVR/blender-box/internal/target"
 )
 
 const (
-	maxStageFiles   = 64
-	maxStageFile    = 8 << 20
-	maxStageTotal   = 32 << 20
-	maxEvidenceFile = 16 << 20
-	maxScenarioJSON = 1 << 20
+	maxStageFiles         = 64
+	maxStageFile          = 8 << 20
+	maxStageTotal         = 32 << 20
+	maxEvidenceFile       = 16 << 20
+	maxScenarioJSON       = 1 << 20
+	reconciliationTimeout = 30 * time.Second
+	desktopCaptureTimeout = 20 * time.Second
 
 	identityPublicationRollbackFailure = "Session identity publication and exact rollback failed"
 )
@@ -45,6 +48,11 @@ type Daemon interface {
 	WaitReady(context.Context, DaemonReady) error
 	Call(context.Context, DaemonCall) (json.RawMessage, error)
 	Stop(context.Context, DaemonStop) error
+}
+
+type DesktopCapturer interface {
+	Check(context.Context) error
+	Capture(context.Context, string) error
 }
 
 type DaemonStart struct {
@@ -85,14 +93,16 @@ type DaemonStop struct {
 }
 
 type Dependencies struct {
-	Tasks  TaskLauncher
-	Daemon Daemon
-	Now    func() time.Time
+	Tasks   TaskLauncher
+	Daemon  Daemon
+	Desktop DesktopCapturer
+	Now     func() time.Time
 }
 
 type Service struct {
 	tasks     TaskLauncher
 	daemon    Daemon
+	desktop   DesktopCapturer
 	now       func() time.Time
 	writeLock func(string, lockRecord) error
 }
@@ -113,7 +123,26 @@ func NewService(dependencies Dependencies) *Service {
 	if now == nil {
 		now = time.Now
 	}
-	return &Service{tasks: dependencies.Tasks, daemon: dependencies.Daemon, now: now, writeLock: writeLockAtomic}
+	return &Service{tasks: dependencies.Tasks, daemon: dependencies.Daemon, desktop: dependencies.Desktop, now: now, writeLock: writeLockAtomic}
+}
+
+func (service *Service) Capabilities(ctx context.Context, request CapabilitiesRequest) (CapabilitiesResponse, error) {
+	if request.SchemaVersion != 1 {
+		return CapabilitiesResponse{}, fmt.Errorf("unsupported capabilities schema version")
+	}
+	result := CapabilitiesResponse{SchemaVersion: 1, Status: "pass"}
+	for _, definition := range capture.Definitions() {
+		supported := true
+		if definition.Kind == capture.Desktop {
+			supported = service.desktop != nil && service.desktop.Check(ctx) == nil
+		}
+		result.Captures = append(result.Captures, orchestrator.CaptureSupport{
+			Kind:       definition.Kind,
+			Capability: definition.Capability,
+			Supported:  supported,
+		})
+	}
+	return result, nil
 }
 
 func (service *Service) Acquire(ctx context.Context, root string, request AcquireRequest) error {
@@ -459,7 +488,7 @@ func (service *Service) ExecutePending(ctx context.Context, root string) error {
 		BlenderExecutable: request.Body.BlenderExecutable,
 		Environment:       environment,
 	})
-	reconcileCtx, cancelReconcile := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+	reconcileCtx, cancelReconcile := context.WithTimeout(context.WithoutCancel(ctx), reconciliationTimeout)
 	defer cancelReconcile()
 	release, err = acquireOperation(reconcileCtx, root)
 	if err != nil {
@@ -529,9 +558,9 @@ func (service *Service) ExecutePending(ctx context.Context, root string) error {
 	if err := os.MkdirAll(resultDirectory, 0o700); err != nil {
 		return service.failReceipt(root, receipt, "Scenario evidence directory failed")
 	}
-	if request.Body.Payload.Scenario.CaptureViewport {
+	if len(request.Body.Payload.Scenario.Captures()) > 0 {
 		if err := os.MkdirAll(filepath.Join(runPath(root, request.Claim.RunID), "evidence", "screenshots"), 0o700); err != nil {
-			return service.failReceipt(root, receipt, "Viewport evidence directory failed")
+			return service.failReceipt(root, receipt, "Capture evidence directory failed")
 		}
 	}
 	locked = false
@@ -575,36 +604,71 @@ func (service *Service) ExecutePending(ctx context.Context, root string) error {
 	if err := os.WriteFile(resultPath, result, 0o600); err != nil {
 		return service.failReceipt(root, receipt, "Scenario result write failed")
 	}
-	resultEvidence, err := evidenceFromFile(runPath(root, request.Claim.RunID), "result/scenario-result.json", "scenario-result")
+	resultEvidence, err := evidenceFromFile(runPath(root, request.Claim.RunID), "result/scenario-result.json", orchestrator.EvidenceScenarioResult, request.Body.Payload.SchemaVersion, sessionID)
 	if err != nil {
 		return service.failReceipt(root, receipt, "Scenario evidence validation failed")
 	}
 	receipt.State = orchestrator.StateCollecting
-	receipt.Evidence = orchestrator.EvidenceManifest{SchemaVersion: 1, Files: []orchestrator.EvidenceFile{resultEvidence}}
+	receipt.Evidence = orchestrator.EvidenceManifest{SchemaVersion: request.Body.Payload.SchemaVersion, Files: []orchestrator.EvidenceFile{resultEvidence}}
 	if err := service.writeReceipt(root, receipt); err != nil {
 		return err
 	}
 	locked = false
 	release()
 
-	var viewport orchestrator.EvidenceFile
-	if request.Body.Payload.Scenario.CaptureViewport {
-		var captureErr error
-		viewport, captureErr = service.captureViewport(runCtx, root, request, sessionID, environment)
-		if captureErr != nil {
-			if runCtx.Err() != nil {
-				captureErr = runCtx.Err()
+	for _, kind := range request.Body.Payload.Scenario.Captures() {
+		var pending pendingCapture
+		if kind == capture.Desktop {
+			release, receipt, err = service.resumeActiveExecution(ctx, runCtx, root, request, sessionID, "desktop capture start")
+			if err != nil {
+				return err
 			}
-			return service.failActiveExecution(ctx, root, request, sessionID, "Viewport capture failed", captureErr)
+			locked = true
+			captureCtx, cancelCapture := context.WithTimeout(runCtx, desktopCaptureTimeout)
+			pending, err = service.captureEvidence(captureCtx, root, request, sessionID, environment, kind)
+			if runCtx.Err() != nil {
+				err = runCtx.Err()
+			} else if captureCtx.Err() != nil {
+				err = captureCtx.Err()
+			}
+			cancelCapture()
+			if err != nil {
+				return service.failReceiptWithCause(root, receipt, "desktop capture failed", err)
+			}
+		} else {
+			pending, err = service.captureEvidence(runCtx, root, request, sessionID, environment, kind)
+			if err != nil {
+				if runCtx.Err() != nil {
+					err = runCtx.Err()
+				}
+				return service.failActiveExecution(ctx, root, request, sessionID, fmt.Sprintf("%s capture failed", kind), err)
+			}
+			release, receipt, err = service.resumeActiveExecution(ctx, runCtx, root, request, sessionID, fmt.Sprintf("%s capture", kind))
+			if err != nil {
+				cleanupCaptureTemporary(runPath(root, request.Claim.RunID), pending.temporaryPath)
+				return err
+			}
+			locked = true
 		}
+		captured, publishErr := publishCapturePNG(runPath(root, request.Claim.RunID), pending, request.Body.Payload.SchemaVersion, sessionID)
+		cleanupCaptureTemporary(runPath(root, request.Claim.RunID), pending.temporaryPath)
+		if publishErr != nil {
+			return service.failReceiptWithCause(root, receipt, fmt.Sprintf("%s capture publication failed", kind), publishErr)
+		}
+		receipt.Evidence.Files = append(receipt.Evidence.Files, captured)
+		if err := service.writeReceipt(root, receipt); err != nil {
+			return err
+		}
+		locked = false
+		release()
 	}
 	release, receipt, err = service.resumeActiveExecution(ctx, runCtx, root, request, sessionID, "evidence collection")
 	if err != nil {
 		return err
 	}
 	locked = true
-	if request.Body.Payload.Scenario.CaptureViewport {
-		receipt.Evidence.Files = append(receipt.Evidence.Files, viewport)
+	if err := orchestrator.ValidateEvidence(receipt.Evidence, request.Body.Payload.Scenario, sessionID); err != nil {
+		return service.failReceipt(root, receipt, "Evidence manifest validation failed")
 	}
 	receipt.State = orchestrator.StateComplete
 	if err := service.writeReceipt(root, receipt); err != nil {
@@ -632,7 +696,7 @@ func (service *Service) activeReceipt(root string, request orchestrator.RunReque
 }
 
 func (service *Service) resumeActiveExecution(ctx, runCtx context.Context, root string, request orchestrator.RunRequest, sessionID orchestrator.SessionID, phase string) (func(), orchestrator.RunReceipt, error) {
-	reconcileCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+	reconcileCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), reconciliationTimeout)
 	defer cancel()
 	release, err := acquireOperation(reconcileCtx, root)
 	if err != nil {
@@ -656,7 +720,7 @@ func (service *Service) resumeActiveExecution(ctx, runCtx context.Context, root 
 }
 
 func (service *Service) failActiveExecution(ctx context.Context, root string, request orchestrator.RunRequest, sessionID orchestrator.SessionID, message string, cause error) error {
-	failureCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+	failureCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), reconciliationTimeout)
 	defer cancel()
 	release, err := acquireOperation(failureCtx, root)
 	if err != nil {
@@ -1060,6 +1124,23 @@ func (service *Service) callScenario(ctx context.Context, root string, request o
 	scriptPath := filepath.Join(runPath(root, request.Claim.RunID), "payload", filepath.FromSlash(request.Body.Payload.Scenario.Script))
 	encodedPath, _ := json.Marshal(scriptPath)
 	code := fmt.Sprintf("_bbx_path = %s\n_bbx_globals = {'bpy': bpy, '__file__': _bbx_path, '__name__': '__main__'}\nexec(compile(open(_bbx_path, encoding='utf-8').read(), _bbx_path, 'exec'), _bbx_globals)", encodedPath)
+	result, err := service.executeCode(ctx, request, sessionID, environment, code, request.Body.Payload.Scenario.ReadTimeoutSeconds)
+	if err != nil {
+		return nil, err
+	}
+	var contract map[string]json.RawMessage
+	if err := decodeExtensibleJSON(result, &contract, maxScenarioJSON); err != nil {
+		return nil, fmt.Errorf("Scenario Result did not pass")
+	}
+	var schemaVersion int
+	var status string
+	if json.Unmarshal(contract["schema_version"], &schemaVersion) != nil || json.Unmarshal(contract["status"], &status) != nil || schemaVersion != 1 || status != "pass" {
+		return nil, fmt.Errorf("Scenario Result did not pass")
+	}
+	return append(result, '\n'), nil
+}
+
+func (service *Service) executeCode(ctx context.Context, request orchestrator.RunRequest, sessionID orchestrator.SessionID, environment map[string]string, code string, timeout int) ([]byte, error) {
 	parameters, _ := json.Marshal(map[string]string{"code": code})
 	raw, err := service.daemon.Call(ctx, DaemonCall{
 		Executable:         request.Body.SessionBrokerExecutable,
@@ -1067,7 +1148,7 @@ func (service *Service) callScenario(ctx context.Context, root string, request o
 		SessionID:          sessionID,
 		Command:            "execute_code",
 		Parameters:         parameters,
-		ReadTimeoutSeconds: request.Body.Payload.Scenario.ReadTimeoutSeconds,
+		ReadTimeoutSeconds: timeout,
 		Environment:        environment,
 	})
 	if err != nil {
@@ -1081,20 +1162,34 @@ func (service *Service) callScenario(ctx context.Context, root string, request o
 		return nil, fmt.Errorf("invalid execute_code result")
 	}
 	result := []byte(strings.TrimSpace(callResult.Result))
-	var contract map[string]json.RawMessage
-	if err := decodeExtensibleJSON(result, &contract, maxScenarioJSON); err != nil {
-		return nil, fmt.Errorf("Scenario Result did not pass")
-	}
-	var schemaVersion int
-	var status string
-	if json.Unmarshal(contract["schema_version"], &schemaVersion) != nil || json.Unmarshal(contract["status"], &status) != nil || schemaVersion != 1 || status != "pass" {
-		return nil, fmt.Errorf("Scenario Result did not pass")
-	}
-	return append(result, '\n'), nil
+	return result, nil
 }
 
-func (service *Service) captureViewport(ctx context.Context, root string, request orchestrator.RunRequest, sessionID orchestrator.SessionID, environment map[string]string) (orchestrator.EvidenceFile, error) {
-	path := filepath.Join(runPath(root, request.Claim.RunID), "evidence", "screenshots", "viewport.png")
+type pendingCapture struct {
+	definition    capture.Definition
+	temporaryPath string
+	contents      []byte
+	method        string
+	width         int
+	height        int
+}
+
+func (service *Service) captureEvidence(ctx context.Context, root string, request orchestrator.RunRequest, sessionID orchestrator.SessionID, environment map[string]string, kind capture.Kind) (pendingCapture, error) {
+	switch kind {
+	case capture.Viewport:
+		return service.captureViewport(ctx, root, request, sessionID, environment)
+	case capture.BlenderWindow:
+		return service.captureBlenderWindow(ctx, root, request, sessionID, environment)
+	case capture.Desktop:
+		return service.captureDesktop(ctx, root, request, sessionID, environment)
+	default:
+		return pendingCapture{}, fmt.Errorf("unsupported capture kind %q", kind)
+	}
+}
+
+func (service *Service) captureViewport(ctx context.Context, root string, request orchestrator.RunRequest, sessionID orchestrator.SessionID, environment map[string]string) (pendingCapture, error) {
+	definition, _ := capture.Describe(capture.Viewport)
+	path := captureTemporaryPath(root, request, definition)
 	parameters, _ := json.Marshal(map[string]any{"filepath": path, "format": "png", "max_size": 1600})
 	raw, err := service.daemon.Call(ctx, DaemonCall{
 		Executable:         request.Body.SessionBrokerExecutable,
@@ -1106,7 +1201,8 @@ func (service *Service) captureViewport(ctx context.Context, root string, reques
 		Environment:        environment,
 	})
 	if err != nil {
-		return orchestrator.EvidenceFile{}, err
+		cleanupCaptureTemporary(runPath(root, request.Claim.RunID), path)
+		return pendingCapture{}, err
 	}
 	var capture struct {
 		Success  bool   `json:"success"`
@@ -1117,24 +1213,112 @@ func (service *Service) captureViewport(ctx context.Context, root string, reques
 		Error    string `json:"error,omitempty"`
 	}
 	if err := decodeExtensibleJSON(raw, &capture, maxScenarioJSON); err != nil || !capture.Success || capture.Width < 1 || capture.Height < 1 || capture.Filepath != path || (capture.Method != "offscreen" && capture.Method != "window_grab") {
-		return orchestrator.EvidenceFile{}, fmt.Errorf("invalid viewport capture result")
+		cleanupCaptureTemporary(runPath(root, request.Claim.RunID), path)
+		return pendingCapture{}, fmt.Errorf("invalid viewport capture result")
 	}
 	contents, err := readRegularFile(path, maxEvidenceFile)
 	if err != nil {
-		return orchestrator.EvidenceFile{}, err
+		cleanupCaptureTemporary(runPath(root, request.Claim.RunID), path)
+		return pendingCapture{}, err
 	}
 	configuration, err := png.DecodeConfig(bytes.NewReader(contents))
 	if err != nil || configuration.Width != capture.Width || configuration.Height != capture.Height {
-		return orchestrator.EvidenceFile{}, fmt.Errorf("viewport capture is not the declared PNG")
+		cleanupCaptureTemporary(runPath(root, request.Claim.RunID), path)
+		return pendingCapture{}, fmt.Errorf("viewport capture is not the declared PNG")
 	}
-	file, err := evidenceFromFile(runPath(root, request.Claim.RunID), "screenshots/viewport.png", "viewport")
+	return pendingCapture{definition: definition, temporaryPath: path, contents: contents, method: capture.Method, width: capture.Width, height: capture.Height}, nil
+}
+
+func (service *Service) captureBlenderWindow(ctx context.Context, root string, request orchestrator.RunRequest, sessionID orchestrator.SessionID, environment map[string]string) (pendingCapture, error) {
+	definition, _ := capture.Describe(capture.BlenderWindow)
+	path := captureTemporaryPath(root, request, definition)
+	encodedPath, _ := json.Marshal(path)
+	code := fmt.Sprintf("_bbx_path = %s\nimport json\n_bbx_result = bpy.ops.screen.screenshot(filepath=_bbx_path, check_existing=False)\nprint(json.dumps({'schema_version': 1, 'status': 'pass' if 'FINISHED' in _bbx_result else 'fail', 'filepath': _bbx_path}))", encodedPath)
+	result, err := service.executeCode(ctx, request, sessionID, environment, code, 180)
+	if err != nil {
+		cleanupCaptureTemporary(runPath(root, request.Claim.RunID), path)
+		return pendingCapture{}, err
+	}
+	var contract struct {
+		SchemaVersion int    `json:"schema_version"`
+		Status        string `json:"status"`
+		Filepath      string `json:"filepath"`
+	}
+	if err := decodeExtensibleJSON(result, &contract, maxScenarioJSON); err != nil || contract.SchemaVersion != 1 || contract.Status != "pass" || contract.Filepath != path {
+		cleanupCaptureTemporary(runPath(root, request.Claim.RunID), path)
+		return pendingCapture{}, fmt.Errorf("invalid Blender-window capture result")
+	}
+	pending, err := readPendingCapture(definition, path, "bpy.ops.screen.screenshot")
+	if err != nil {
+		cleanupCaptureTemporary(runPath(root, request.Claim.RunID), path)
+		return pendingCapture{}, err
+	}
+	return pending, nil
+}
+
+func (service *Service) captureDesktop(ctx context.Context, root string, request orchestrator.RunRequest, sessionID orchestrator.SessionID, environment map[string]string) (pendingCapture, error) {
+	if service.desktop == nil {
+		return pendingCapture{}, fmt.Errorf("desktop capture is unavailable")
+	}
+	ready := DaemonReady{Executable: request.Body.SessionBrokerExecutable, Name: request.Body.SessionName, SessionID: sessionID, Environment: environment}
+	if err := service.daemon.WaitReady(ctx, ready); err != nil {
+		return pendingCapture{}, err
+	}
+	definition, _ := capture.Describe(capture.Desktop)
+	path := captureTemporaryPath(root, request, definition)
+	if err := service.desktop.Capture(ctx, path); err != nil {
+		cleanupCaptureTemporary(runPath(root, request.Claim.RunID), path)
+		return pendingCapture{}, err
+	}
+	if err := service.daemon.WaitReady(ctx, ready); err != nil {
+		cleanupCaptureTemporary(runPath(root, request.Claim.RunID), path)
+		return pendingCapture{}, err
+	}
+	pending, err := readPendingCapture(definition, path, "windows-copy-from-screen")
+	if err != nil {
+		cleanupCaptureTemporary(runPath(root, request.Claim.RunID), path)
+		return pendingCapture{}, err
+	}
+	return pending, nil
+}
+
+func captureTemporaryPath(root string, request orchestrator.RunRequest, definition capture.Definition) string {
+	name := "." + string(definition.Kind) + "-" + string(request.Claim.RequestID) + ".png"
+	return filepath.Join(runPath(root, request.Claim.RunID), "evidence", "screenshots", name)
+}
+
+func readPendingCapture(definition capture.Definition, temporaryPath, method string) (pendingCapture, error) {
+	contents, err := readRegularFile(temporaryPath, maxEvidenceFile)
+	if err != nil {
+		return pendingCapture{}, err
+	}
+	configuration, err := png.DecodeConfig(bytes.NewReader(contents))
+	if err != nil || configuration.Width < 1 || configuration.Height < 1 {
+		return pendingCapture{}, fmt.Errorf("%s capture is not a PNG", definition.Kind)
+	}
+	return pendingCapture{definition: definition, temporaryPath: temporaryPath, contents: contents, method: method, width: configuration.Width, height: configuration.Height}, nil
+}
+
+func publishCapturePNG(runRoot string, pending pendingCapture, schemaVersion int, sessionID orchestrator.SessionID) (orchestrator.EvidenceFile, error) {
+	destination := filepath.Join(runRoot, "evidence", filepath.FromSlash(pending.definition.EvidencePath))
+	if _, err := writeFileExclusive(destination, pending.contents); err != nil {
+		return orchestrator.EvidenceFile{}, fmt.Errorf("publish %s capture without replacement: %w", pending.definition.Kind, err)
+	}
+	file, err := evidenceFromFile(runRoot, pending.definition.EvidencePath, orchestrator.EvidenceType(pending.definition.Kind), schemaVersion, sessionID)
 	if err != nil {
 		return orchestrator.EvidenceFile{}, err
 	}
-	file.CaptureMethod = capture.Method
-	file.Width = capture.Width
-	file.Height = capture.Height
+	file.CaptureMethod = pending.method
+	file.Width = pending.width
+	file.Height = pending.height
 	return file, nil
+}
+
+func cleanupCaptureTemporary(runRoot, temporaryPath string) {
+	_ = os.Remove(temporaryPath)
+	_ = os.Remove(filepath.Dir(temporaryPath))
+	_ = os.Remove(filepath.Join(runRoot, "evidence"))
+	_ = os.Remove(runRoot)
 }
 
 func (service *Service) validateStagedRequest(root string, request orchestrator.RunRequest) error {
@@ -1255,14 +1439,24 @@ func runEnvironment(root string, runID orchestrator.RunID) map[string]string {
 	}
 }
 
-func evidenceFromFile(runRoot, relative, kind string) (orchestrator.EvidenceFile, error) {
+func evidenceFromFile(runRoot, relative string, kind orchestrator.EvidenceType, schemaVersion int, sessionID orchestrator.SessionID) (orchestrator.EvidenceFile, error) {
 	path := filepath.Join(runRoot, "evidence", filepath.FromSlash(relative))
 	contents, err := readRegularFile(path, maxEvidenceFile)
 	if err != nil {
 		return orchestrator.EvidenceFile{}, err
 	}
 	hash := sha256.Sum256(contents)
-	return orchestrator.EvidenceFile{Path: relative, Type: kind, Size: int64(len(contents)), SHA256: hex.EncodeToString(hash[:])}, nil
+	file := orchestrator.EvidenceFile{Path: relative, Type: kind, Size: int64(len(contents)), SHA256: hex.EncodeToString(hash[:])}
+	if schemaVersion == 2 {
+		file.SourcePath = "evidence/" + relative
+		file.SessionID = sessionID
+		if kind == orchestrator.EvidenceScenarioResult {
+			file.MediaType = "application/json"
+		} else {
+			file.MediaType = "image/png"
+		}
+	}
+	return file, nil
 }
 
 func readRegularFile(path string, limit int64) ([]byte, error) {

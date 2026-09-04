@@ -3,15 +3,68 @@ package host
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"reflect"
 	"strconv"
 	"strings"
 	"testing"
+	"unicode/utf16"
 
 	"github.com/BramVR/blender-box/internal/orchestrator"
 )
+
+func TestRuntimeChecksAndCapturesTheWindowsVirtualDesktop(t *testing.T) {
+	fake := &fakeProcessRunner{outputs: [][]byte{nil, nil}}
+	runtime := NewRuntime(fake)
+	path := `C:\Run\screenshots\desktop's proof.png`
+
+	if err := runtime.Check(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err := runtime.Capture(context.Background(), path); err != nil {
+		t.Fatal(err)
+	}
+
+	if !reflect.DeepEqual(fake.executables, []string{"powershell.exe", "powershell.exe"}) {
+		t.Fatalf("executables = %v", fake.executables)
+	}
+	check := decodePowerShellCommand(t, fake.arguments[0])
+	if !strings.Contains(check, "System.Drawing.Bitmap") || !strings.Contains(check, "System.Windows.Forms.SystemInformation") || strings.Contains(check, "VirtualScreen") || strings.Contains(check, "CopyFromScreen") {
+		t.Fatalf("check script = %q", check)
+	}
+	capture := decodePowerShellCommand(t, fake.arguments[1])
+	for _, required := range []string{"SystemInformation]::VirtualScreen", "GetDC", "ReleaseDC", "BitBlt", "0x40CC0020", base64.StdEncoding.EncodeToString([]byte(path))} {
+		if !strings.Contains(capture, required) {
+			t.Fatalf("capture script lacks %q: %q", required, capture)
+		}
+	}
+	if strings.Contains(capture, "CopyFromScreen") || strings.Contains(capture, "CopyPixelOperation") {
+		t.Fatalf("capture script routes native raster flags through the managed enum: %q", capture)
+	}
+	if strings.Contains(capture, path) {
+		t.Fatalf("capture path was interpolated into PowerShell: %q", capture)
+	}
+}
+
+func decodePowerShellCommand(t *testing.T, arguments []string) string {
+	t.Helper()
+	assertArguments(t, arguments[:3], "-NoLogo", "-NoProfile", "-NonInteractive")
+	if len(arguments) != 5 || arguments[3] != "-EncodedCommand" {
+		t.Fatalf("PowerShell arguments = %v", arguments)
+	}
+	encoded, err := base64.StdEncoding.DecodeString(arguments[4])
+	if err != nil || len(encoded)%2 != 0 {
+		t.Fatalf("encoded PowerShell = %q, error = %v", arguments[4], err)
+	}
+	units := make([]uint16, len(encoded)/2)
+	for index := range units {
+		units[index] = binary.LittleEndian.Uint16(encoded[index*2:])
+	}
+	return string(utf16.Decode(units))
+}
 
 func TestProcessOutputLimitCoversNestedMaximumScenarioResult(t *testing.T) {
 	inner := bytes.Repeat([]byte{'\\'}, maxScenarioJSON)

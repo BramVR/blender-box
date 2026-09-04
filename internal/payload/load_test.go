@@ -9,7 +9,49 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/BramVR/blender-box/internal/capture"
 )
+
+func TestLoadVersionTwoDeclaresDistinctCaptures(t *testing.T) {
+	root := t.TempDir()
+	writeScenario(t, root)
+	path := filepath.Join(root, "payload.json")
+	document := `{"schema_version":2,"files":[{"source":"scenario.py","destination":"scenario.py"}],"scenario":{"script":"scenario.py","capture_viewport":true,"capture_blender_window":true,"capture_desktop":true}}`
+	if err := os.WriteFile(path, []byte(document), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	loaded, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []capture.Kind{capture.Viewport, capture.BlenderWindow, capture.Desktop}
+	got := loaded.Scenario.Captures()
+	if len(got) != len(want) {
+		t.Fatalf("captures = %v, want %v", got, want)
+	}
+	for index := range want {
+		if got[index] != want[index] {
+			t.Fatalf("captures = %v, want %v", got, want)
+		}
+	}
+}
+
+func TestLoadVersionOneRejectsNewCaptureDeclarations(t *testing.T) {
+	root := t.TempDir()
+	writeScenario(t, root)
+	path := filepath.Join(root, "payload.json")
+	document := `{"schema_version":1,"files":[{"source":"scenario.py","destination":"scenario.py"}],"scenario":{"script":"scenario.py","capture_desktop":true}}`
+	if err := os.WriteFile(path, []byte(document), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := Load(path)
+	if err == nil || !strings.Contains(err.Error(), "schema version 2") {
+		t.Fatalf("error = %v, want schema version 2", err)
+	}
+}
 
 func TestLoadResolvesAndHashesDeclaredFiles(t *testing.T) {
 	root := t.TempDir()

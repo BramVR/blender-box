@@ -15,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/BramVR/blender-box/internal/capture"
 	"github.com/BramVR/blender-box/internal/payload"
 	"github.com/BramVR/blender-box/internal/safepath"
 	"github.com/BramVR/blender-box/internal/target"
@@ -146,14 +147,26 @@ func (request RunRequest) Validate() error {
 }
 
 type EvidenceFile struct {
-	Path          string `json:"path"`
-	Type          string `json:"type"`
-	Size          int64  `json:"size"`
-	SHA256        string `json:"sha256"`
-	CaptureMethod string `json:"capture_method,omitempty"`
-	Width         int    `json:"width,omitempty"`
-	Height        int    `json:"height,omitempty"`
+	Path          string       `json:"path"`
+	Type          EvidenceType `json:"type"`
+	SourcePath    string       `json:"source_path,omitempty"`
+	MediaType     string       `json:"media_type,omitempty"`
+	SessionID     SessionID    `json:"session_id,omitempty"`
+	Size          int64        `json:"size"`
+	SHA256        string       `json:"sha256"`
+	CaptureMethod string       `json:"capture_method,omitempty"`
+	Width         int          `json:"width,omitempty"`
+	Height        int          `json:"height,omitempty"`
 }
+
+type EvidenceType string
+
+const (
+	EvidenceScenarioResult EvidenceType = "scenario-result"
+	EvidenceViewport       EvidenceType = "viewport"
+	EvidenceBlenderWindow  EvidenceType = "blender-window"
+	EvidenceDesktop        EvidenceType = "desktop"
+)
 
 type EvidenceManifest struct {
 	SchemaVersion int            `json:"schema_version"`
@@ -230,7 +243,7 @@ type StopResult struct {
 
 // HostAdapter owns all host-side effects. The Runner owns ordering and authority propagation.
 type HostAdapter interface {
-	Inspect(context.Context, target.Target) error
+	Inspect(context.Context, target.Target, HostRequirements) (HostInspection, error)
 	Acquire(context.Context, target.Target, LockClaim) error
 	Stage(context.Context, target.Target, LockClaim, payload.Payload) error
 	Start(context.Context, target.Target, RunRequest) (RunReceipt, error)
@@ -344,14 +357,28 @@ func (runner *Runner) Run(ctx context.Context, intent RunIntent) (_ RunResult, r
 	if err != nil {
 		return RunResult{}, &preflightError{cause: err}
 	}
+	plan, err := runner.Plan(PlanIntent{Target: intent.Target, Payload: intent.Payload})
+	if err != nil {
+		return RunResult{}, &preflightError{cause: err}
+	}
 	evidenceRoot, err := prepareEvidenceRoot(intent.EvidenceDir)
 	if err != nil {
 		return RunResult{}, &preflightError{cause: fmt.Errorf("prepare evidence directory: %w", err)}
 	}
 	runCtx, cancelRun := context.WithDeadline(ctx, intent.Deadline)
 	defer cancelRun()
-	if err := runner.host.Inspect(runCtx, intent.Target); err != nil {
+	inspection, err := runner.host.Inspect(runCtx, intent.Target, hostRequirements(plan))
+	if err != nil {
 		return RunResult{}, fmt.Errorf("inspect host: %w", err)
+	}
+	if inspection.SchemaVersion != 1 || (inspection.Status != "pass" && inspection.Status != "fail") {
+		return RunResult{}, fmt.Errorf("inspect host: invalid host inspection")
+	}
+	if inspection.Status == "fail" {
+		return RunResult{}, fmt.Errorf("inspect host: host checks failed")
+	}
+	if !inspectionSupports(inspection, plan.Captures) {
+		return RunResult{}, fmt.Errorf("inspect host: requested capture is unsupported")
 	}
 	receipt := RunReceipt{SchemaVersion: 1, Claim: request.Claim, State: StateAccepted}
 	if err := runner.host.Acquire(runCtx, intent.Target, request.Claim); err != nil {
@@ -541,11 +568,11 @@ func validateRecoveredReceipt(receipt RunReceipt, selected target.Target, runID 
 		return fmt.Errorf("invalid Session identity")
 	}
 	if receipt.Evidence.SchemaVersion != 0 || len(receipt.Evidence.Files) != 0 {
-		if err := validateEvidenceManifest(receipt.Evidence); err != nil {
+		if err := validateEvidenceManifest(receipt.Evidence, receipt.SessionID); err != nil {
 			return err
 		}
 	}
-	if receipt.State == StateComplete && receipt.Evidence.SchemaVersion != 1 {
+	if receipt.State == StateComplete && receipt.Evidence.SchemaVersion != 1 && receipt.Evidence.SchemaVersion != 2 {
 		return fmt.Errorf("complete Run has no evidence manifest")
 	}
 	return nil
@@ -644,10 +671,10 @@ func waitForPoll(ctx context.Context, deadline time.Time) error {
 
 func (runner *Runner) collectEvidence(ctx context.Context, intent RunIntent, receipt RunReceipt, evidenceRoot string) error {
 	manifest := receipt.Evidence
-	if err := validateEvidenceManifest(manifest); err != nil {
-		return err
+	if manifest.SchemaVersion != intent.Payload.SchemaVersion {
+		return fmt.Errorf("evidence schema version does not match payload schema version")
 	}
-	if err := validateRequiredEvidence(manifest, intent.Payload.Scenario); err != nil {
+	if err := ValidateEvidence(manifest, intent.Payload.Scenario, receipt.SessionID); err != nil {
 		return err
 	}
 	for _, file := range manifest.Files {
@@ -662,7 +689,7 @@ func (runner *Runner) collectEvidence(ctx context.Context, intent RunIntent, rec
 		if hex.EncodeToString(hash[:]) != file.SHA256 {
 			return fmt.Errorf("evidence %q: SHA-256 changed", file.Path)
 		}
-		if file.Type == "viewport" {
+		if _, isCapture := captureKindForEvidenceType(file.Type); isCapture {
 			configuration, err := png.DecodeConfig(bytes.NewReader(content))
 			if err != nil {
 				return fmt.Errorf("evidence %q: invalid PNG: %w", file.Path, err)
@@ -679,28 +706,43 @@ func (runner *Runner) collectEvidence(ctx context.Context, intent RunIntent, rec
 }
 
 func validateRequiredEvidence(manifest EvidenceManifest, scenario payload.Scenario) error {
-	scenarioResults := 0
-	viewports := 0
+	want := map[EvidenceType]int{EvidenceScenarioResult: 1}
+	for _, kind := range scenario.Captures() {
+		want[EvidenceType(kind)] = 1
+	}
+	got := make(map[EvidenceType]int, len(want))
 	for _, file := range manifest.Files {
-		switch file.Type {
-		case "scenario-result":
-			scenarioResults++
-		case "viewport":
-			viewports++
-		default:
-			return fmt.Errorf("unexpected evidence type %q", file.Type)
+		if file.Type != EvidenceScenarioResult {
+			if _, known := captureKindForEvidenceType(file.Type); !known {
+				return fmt.Errorf("unexpected evidence type %q", file.Type)
+			}
+		}
+		got[file.Type]++
+	}
+	for kind, count := range got {
+		if want[kind] == 0 {
+			return fmt.Errorf("unexpected evidence type %q", kind)
+		}
+		if count != want[kind] {
+			return fmt.Errorf("required %s evidence is missing or ambiguous", kind)
 		}
 	}
-	if scenarioResults != 1 {
-		return fmt.Errorf("required Scenario Result evidence is missing or ambiguous")
-	}
-	if scenario.CaptureViewport && viewports != 1 {
-		return fmt.Errorf("required viewport evidence is missing or ambiguous")
-	}
-	if !scenario.CaptureViewport && viewports != 0 {
-		return fmt.Errorf("unexpected viewport evidence")
+	for kind, count := range want {
+		if got[kind] != count {
+			if kind == EvidenceScenarioResult {
+				return fmt.Errorf("required Scenario Result evidence is missing or ambiguous")
+			}
+			return fmt.Errorf("required %s evidence is missing or ambiguous", kind)
+		}
 	}
 	return nil
+}
+
+func ValidateEvidence(manifest EvidenceManifest, scenario payload.Scenario, sessionID SessionID) error {
+	if err := validateEvidenceManifest(manifest, sessionID); err != nil {
+		return err
+	}
+	return validateRequiredEvidence(manifest, scenario)
 }
 
 func publishBundleMetadata(root string, result RunResult) error {
@@ -718,8 +760,8 @@ func publishBundleMetadata(root string, result RunResult) error {
 	return writeEvidence(root, "evidence.json", append(document, '\n'))
 }
 
-func validateEvidenceManifest(manifest EvidenceManifest) error {
-	if manifest.SchemaVersion != 1 {
+func validateEvidenceManifest(manifest EvidenceManifest, expectedSession ...SessionID) error {
+	if manifest.SchemaVersion != 1 && manifest.SchemaVersion != 2 {
 		return fmt.Errorf("evidence: unsupported schema version %d", manifest.SchemaVersion)
 	}
 	if len(manifest.Files) == 0 || len(manifest.Files) > maxEvidenceFiles {
@@ -728,7 +770,7 @@ func validateEvidenceManifest(manifest EvidenceManifest) error {
 	var total int64
 	seen := make(map[string]struct{}, len(manifest.Files))
 	for _, file := range manifest.Files {
-		if err := validateEvidenceFile(file); err != nil {
+		if err := validateEvidenceFileForSchema(file, manifest.SchemaVersion, expectedSession); err != nil {
 			return fmt.Errorf("evidence %q: %w", file.Path, err)
 		}
 		key := safepath.WindowsKey(file.Path)
@@ -745,18 +787,51 @@ func validateEvidenceManifest(manifest EvidenceManifest) error {
 }
 
 func validateEvidenceFile(file EvidenceFile) error {
+	return validateEvidenceFileForSchema(file, 1, nil)
+}
+
+func validateEvidenceFileForSchema(file EvidenceFile, schemaVersion int, expectedSession []SessionID) error {
 	if err := safepath.ValidateWindowsRelative("path", file.Path); err != nil {
 		return err
 	}
 	if file.Type == "" {
 		return fmt.Errorf("type is required")
 	}
-	if file.Type == "viewport" {
-		if (file.CaptureMethod != "offscreen" && file.CaptureMethod != "window_grab") || file.Width < 1 || file.Height < 1 {
-			return fmt.Errorf("viewport capture provenance is invalid")
+	if schemaVersion == 1 {
+		if file.SourcePath != "" || file.MediaType != "" || file.SessionID != "" {
+			return fmt.Errorf("schema version 1 does not support typed source provenance")
 		}
-	} else if file.CaptureMethod != "" || file.Width != 0 || file.Height != 0 {
-		return fmt.Errorf("capture provenance is only valid for captures")
+		if file.Type == EvidenceViewport {
+			if !capture.MethodAllowed(capture.Viewport, file.CaptureMethod) || file.Width < 1 || file.Height < 1 {
+				return fmt.Errorf("viewport capture provenance is invalid")
+			}
+		} else if file.Type != EvidenceScenarioResult {
+			return fmt.Errorf("unsupported evidence type %q", file.Type)
+		} else if file.CaptureMethod != "" || file.Width != 0 || file.Height != 0 {
+			return fmt.Errorf("capture provenance is only valid for captures")
+		}
+	} else {
+		if file.SourcePath != "evidence/"+file.Path {
+			return fmt.Errorf("source path does not match evidence path")
+		}
+		if len(expectedSession) != 1 || expectedSession[0] == "" || file.SessionID != expectedSession[0] {
+			return fmt.Errorf("Session provenance does not match Run")
+		}
+		if err := file.SessionID.Validate(); err != nil {
+			return err
+		}
+		if file.Type == EvidenceScenarioResult {
+			if file.Path != "result/scenario-result.json" || file.MediaType != "application/json" || file.CaptureMethod != "" || file.Width != 0 || file.Height != 0 {
+				return fmt.Errorf("Scenario Result provenance is invalid")
+			}
+		} else if kind, known := captureKindForEvidenceType(file.Type); known {
+			definition, _ := capture.Describe(kind)
+			if file.Path != definition.EvidencePath || file.MediaType != definition.MediaType || !capture.MethodAllowed(kind, file.CaptureMethod) || file.Width < 1 || file.Height < 1 {
+				return fmt.Errorf("%s capture provenance is invalid", kind)
+			}
+		} else {
+			return fmt.Errorf("unsupported evidence type %q", file.Type)
+		}
 	}
 	if file.Size <= 0 || file.Size > maxEvidenceFile {
 		return fmt.Errorf("invalid size %d", file.Size)
@@ -765,6 +840,11 @@ func validateEvidenceFile(file EvidenceFile) error {
 		return fmt.Errorf("invalid SHA-256")
 	}
 	return nil
+}
+
+func captureKindForEvidenceType(kind EvidenceType) (capture.Kind, bool) {
+	definition, found := capture.Describe(capture.Kind(kind))
+	return definition.Kind, found
 }
 
 func writeEvidence(root, relative string, content []byte) error {

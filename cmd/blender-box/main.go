@@ -17,7 +17,7 @@ func main() {
 	defer cancel()
 	sshRunner := sshtransport.Runner{}
 	runtime := host.NewRuntime(host.ExecProcessRunner{})
-	hostService := host.NewService(host.Dependencies{Tasks: runtime, Daemon: runtime})
+	hostService := host.NewService(host.Dependencies{Tasks: runtime, Daemon: runtime, Desktop: runtime})
 	os.Exit(cli.Run(
 		ctx,
 		os.Args[1:],
