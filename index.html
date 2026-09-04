@@ -11,6 +11,7 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=Manrope:wght@400;500;600;650;700;750;800&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="styles.css">
+  <script src="navigation.js" defer></script>
 </head>
 <body>
   <a class="skip-link" href="#main">Skip to content</a>
@@ -20,14 +21,42 @@
       <span>blender<span class="wordmark-light">box</span><span class="wordmark-dot">.</span></span>
     </a>
     <nav aria-label="Main navigation">
-      <a href="#get-started">Get started</a>
-      <a href="#evidence">Test results</a>
+      <a class="header-docs" href="#overview">Documentation</a>
       <a class="github-link" href="https://github.com/BramVR/blender-box">GitHub <span aria-hidden="true">↗</span></a>
     </nav>
   </header>
 
-  <main id="main">
-    <section class="hero wrap" aria-labelledby="hero-title">
+  <div class="docs-shell">
+    <aside class="docs-sidebar" aria-label="Documentation contents">
+      <button class="contents-toggle" type="button" aria-expanded="false" aria-controls="docs-navigation">On this page <span aria-hidden="true">+</span></button>
+      <nav id="docs-navigation" aria-label="Documentation sections">
+        <div class="nav-group">
+          <p class="nav-heading">Start here</p>
+          <a href="#overview">Overview</a>
+          <a href="#why">Why Blender Box?</a>
+          <a href="#how-it-works">How it works</a>
+        </div>
+        <div class="nav-group">
+          <p class="nav-heading">Your first test</p>
+          <a href="#before-you-start">Before you start</a>
+          <a href="#build">Build from source</a>
+          <a href="#target">Configure the connection</a>
+          <a href="#setup">Install the Windows runner</a>
+          <a href="#payload">Create the test files</a>
+          <a href="#run">Run the cube test</a>
+          <a href="#recover">Check or stop a run</a>
+        </div>
+        <div class="nav-group">
+          <p class="nav-heading">Reference</p>
+          <a href="#evidence">Results and screenshots</a>
+          <a href="#reference">Commands</a>
+          <a href="#architecture">Architecture</a>
+        </div>
+        <a class="sidebar-source" href="https://github.com/BramVR/blender-box/blob/main/README.md">Repository guide <span aria-hidden="true">↗</span></a>
+      </nav>
+    </aside>
+  <main id="main" tabindex="-1">
+    <section class="hero wrap" id="overview" aria-labelledby="hero-title">
       <div class="hero-copy">
         <p class="eyebrow"><span class="status-dot" aria-hidden="true"></span> A command-line tool for Blender developers</p>
         <h1 id="hero-title">Run Blender scripts<br>on a remote<br><span>Windows desktop.</span></h1>
@@ -81,7 +110,7 @@
       </figure>
     </section>
 
-    <section class="explainer" aria-labelledby="why-title">
+    <section class="explainer" id="why" aria-labelledby="why-title">
       <div class="wrap explainer-inner">
         <div>
           <p class="eyebrow">WHY USE IT?</p>
@@ -90,8 +119,8 @@
           <p>You write the Python script and choose the assertions that define a passing test. Blender Box runs the script and collects its output.</p>
           <p>A coding agent can use the same command-line workflow to run your tests and read their results.</p>
         </div>
-        <div>
-          <p class="eyebrow">HOW IT WORKS</p>
+        <div id="how-it-works">
+          <h2 class="eyebrow">How it works</h2>
           <ol class="explainer-steps">
             <li><strong>Choose what to run.</strong><p>Provide a Python script, a JSON file listing the files and screenshots you need, and the connection settings for your Windows machine.</p></li>
             <li><strong>Run it in Blender on Windows.</strong><p>Blender Box copies only the listed files over SSH and runs your script in Blender. Blender opens in the logged-in Windows desktop, so you can capture its window as well as the scene pixels.</p></li>
@@ -102,22 +131,6 @@
     </section>
 
     <div class="guide-layout wrap" id="get-started">
-      <aside class="guide-sidebar">
-        <p class="eyebrow">SETUP AND EXAMPLE</p>
-        <nav aria-label="Guide sections">
-          <a href="#before-you-start"><span>00</span> Before you start</a>
-          <a href="#build"><span>01</span> Build from source</a>
-          <a href="#target"><span>02</span> Configure the connection</a>
-          <a href="#setup"><span>03</span> Install the Windows runner</a>
-          <a href="#payload"><span>04</span> Create the test files</a>
-          <a href="#run"><span>05</span> Run the cube test</a>
-          <a href="#recover"><span>06</span> Check or stop a run</a>
-          <a href="#evidence"><span>07</span> Find results and images</a>
-        </nav>
-        <div class="sidebar-note">Working with your own test?<p>Replace the cube script with your Blender script, list its required files, and choose the screenshots you need.</p></div>
-        <a class="sidebar-source" href="https://github.com/BramVR/blender-box/blob/main/README.md">Read the repository guide <span aria-hidden="true">↗</span></a>
-      </aside>
-
       <div class="guide-content">
         <section class="guide-intro" id="before-you-start" aria-labelledby="guide-title">
           <p class="eyebrow">00 / BEFORE YOU START</p>
@@ -284,7 +297,7 @@ go run ./cmd/blender-box doctor \
       </dl>
     </section>
 
-    <section class="architecture wrap" aria-labelledby="architecture-title">
+    <section class="architecture wrap" id="architecture" aria-labelledby="architecture-title">
       <div class="architecture-top"><div><p class="eyebrow">ARCHITECTURE</p><h2 id="architecture-title">How the Windows runner works</h2></div><p>Blender Box sends commands and files over SSH. The Windows Scheduled Task starts work in the logged-in desktop, where <a href="https://github.com/BramVR/blendersessiond">blendersessiond</a> launches and stops the correct Blender process. The Blender MCP add-on stays on Windows loopback; its port is never exposed or forwarded.</p></div>
       <div class="architecture-links">
         <a href="https://github.com/BramVR/blender-box/blob/main/docs/architecture/0001-slice-0-run-boundary.md"><span>ADR 001</span><strong>How runs return results and clean up</strong><span aria-hidden="true">↗</span></a>
@@ -297,5 +310,6 @@ go run ./cmd/blender-box doctor \
   </main>
 
   <footer class="site-footer wrap"><a class="footer-wordmark" href="#">blenderbox<span>.</span></a><p>An open-source command-line tool for remote Blender scripts.</p><a href="https://github.com/BramVR/blender-box">Source on GitHub <span aria-hidden="true">↗</span></a></footer>
+  </div>
 </body>
 </html>
