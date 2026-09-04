@@ -45,13 +45,19 @@ func (adapter *Adapter) Inspect(ctx context.Context, selected target.Target, req
 		return orchestrator.HostInspection{SchemaVersion: 1, Status: "pass", Captures: legacy}, nil
 	}
 	var capabilities host.CapabilitiesResponse
-	if err := adapter.invokeJSON(ctx, selected, "capabilities", host.CapabilitiesRequest{SchemaVersion: 1}, &capabilities); err != nil {
+	capabilityRequest := host.CapabilitiesRequest{SchemaVersion: 1}
+	if requirements.UIActions {
+		capabilityRequest.UIActions = true
+		capabilityRequest.BlenderExecutable = selected.BlenderExecutable
+		capabilityRequest.SessionBrokerExecutable = selected.SessionBrokerExecutable
+	}
+	if err := adapter.invokeJSON(ctx, selected, "capabilities", capabilityRequest, &capabilities); err != nil {
 		return orchestrator.HostInspection{}, err
 	}
 	if err := validateCapabilities(capabilities); err != nil {
 		return orchestrator.HostInspection{}, err
 	}
-	return orchestrator.HostInspection{SchemaVersion: 1, Status: "pass", Captures: capabilities.Captures}, nil
+	return orchestrator.HostInspection{SchemaVersion: 1, Status: "pass", Captures: capabilities.Captures, UIActions: capabilities.UIActions}, nil
 }
 
 func validateCapabilities(result host.CapabilitiesResponse) error {
