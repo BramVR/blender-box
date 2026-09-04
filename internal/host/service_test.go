@@ -29,8 +29,13 @@ type fakeTaskLauncher struct {
 }
 
 func TestDesktopCaptureLeavesTimeForReconciliation(t *testing.T) {
-	if desktopCaptureTimeout >= reconciliationTimeout {
-		t.Fatalf("desktop capture timeout %s exhausts reconciliation timeout %s", desktopCaptureTimeout, reconciliationTimeout)
+	const minimumCaptureBudget = 20 * time.Second
+	const minimumReconciliationMargin = 10 * time.Second
+	if desktopCaptureTimeout < minimumCaptureBudget {
+		t.Fatalf("desktop capture timeout %s is below live-proven minimum %s", desktopCaptureTimeout, minimumCaptureBudget)
+	}
+	if reconciliationTimeout-desktopCaptureTimeout < minimumReconciliationMargin {
+		t.Fatalf("desktop capture timeout %s leaves less than %s of reconciliation timeout %s", desktopCaptureTimeout, minimumReconciliationMargin, reconciliationTimeout)
 	}
 }
 

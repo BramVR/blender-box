@@ -36,10 +36,13 @@ func TestRuntimeChecksAndCapturesTheWindowsVirtualDesktop(t *testing.T) {
 		t.Fatalf("check script = %q", check)
 	}
 	capture := decodePowerShellCommand(t, fake.arguments[1])
-	for _, required := range []string{"SystemInformation]::VirtualScreen", "CopyFromScreen", "CaptureBlt", base64.StdEncoding.EncodeToString([]byte(path))} {
+	for _, required := range []string{"SystemInformation]::VirtualScreen", "GetDC", "ReleaseDC", "BitBlt", "0x40CC0020", base64.StdEncoding.EncodeToString([]byte(path))} {
 		if !strings.Contains(capture, required) {
 			t.Fatalf("capture script lacks %q: %q", required, capture)
 		}
+	}
+	if strings.Contains(capture, "CopyFromScreen") || strings.Contains(capture, "CopyPixelOperation") {
+		t.Fatalf("capture script routes native raster flags through the managed enum: %q", capture)
 	}
 	if strings.Contains(capture, path) {
 		t.Fatalf("capture path was interpolated into PowerShell: %q", capture)

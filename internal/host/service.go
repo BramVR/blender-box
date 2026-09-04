@@ -31,7 +31,7 @@ const (
 	maxEvidenceFile       = 16 << 20
 	maxScenarioJSON       = 1 << 20
 	reconciliationTimeout = 30 * time.Second
-	desktopCaptureTimeout = 10 * time.Second
+	desktopCaptureTimeout = 20 * time.Second
 
 	identityPublicationRollbackFailure = "Session identity publication and exact rollback failed"
 )
