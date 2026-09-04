@@ -730,6 +730,7 @@ blender-box stop bbx_...</code></pre>
         </article>
         <article class="card green">
           <h3><span class="priority p0">Implemented</span>Window and desktop captures</h3>
+          <p>Payload schema 3 now adds bounded UI action batches. Clicks, key taps with optional modifiers, and Unicode text use the exact Session's explicit Blender window event queue, with no global Windows input. The host persists each pending action before delivery, waits for a two-pass event-processing acknowledgement published atomically in the exact Run root, and records queued, rejected, or uncertain outcomes without entered text. A complete claim and random nonce bind that bounded acknowledgement; local observation avoids a second daemon health inspection while preserving the five-second action deadline. Window identity, foreground, client dimensions, and action deadlines are checked inside Blender. Failed and cancelled Runs retain available evidence and the terminal journal; uncertain input is never replayed. See <a href="../architecture/0005-session-local-ui-actions.md">the UI action contract</a>.</p>
           <p>Payload schema 2 declares Blender-window and opt-in Windows-desktop captures separately. The window path calls <code>bpy.ops.screen.screenshot</code> through the exact daemon Session. Desktop capture stays host-local, revalidates exact authority, holds the host operation lock through a separately bounded Windows virtual-desktop copy and no-replace publication, and is never enabled by default.</p>
         </article>
       </div>

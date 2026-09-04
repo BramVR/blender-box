@@ -14,6 +14,50 @@ The first end-to-end slice supports read-only host checks, explicit setup, local
 
 The default test suite replaces SSH, the Scheduled Task, `blendersessiond`, the filesystem, and Blender with fakes. Proof against a real Windows Blender host is opt-in.
 
+## Drive a Blender UI workflow
+
+Payload schema 3 requires one `ui_actions` batch after the preparation script declaration. Use schema 1 or 2 for Scenarios without UI actions:
+
+```json
+{
+  "schema_version": 3,
+  "files": [{"source": "prepare.py", "destination": "prepare.py"}],
+  "scenario": {
+    "script": "prepare.py",
+    "capture_blender_window": true,
+    "ui_actions": {
+      "schema_version": 1,
+      "timeout_seconds": 15,
+      "actions": [
+        {"type": "click", "x": 400, "y": 300, "button": "left"},
+        {"type": "key", "key": "F2"},
+        {"type": "text", "text": "Blender Box proof"},
+        {"type": "key", "key": "ENTER"}
+      ]
+    }
+  }
+}
+```
+
+Choose coordinates for your Blender layout. Coordinates are physical client pixels from the top-left, bounded by the verified window. The preparation script runs first and must return the ordinary passing Scenario Result. The batch then runs in the foreground Blender window owned by that exact Session.
+
+Run `plan` to inspect the redacted batch and capture paths. Its `expected_evidence` field lists each evidence type once; `captures` lists individual files, including both Blender-window images. Run `doctor` before launching. UI actions require an updated host and a daemon advertising `blender-ui-events-v1`, plus Blender support for `--enable-event-simulate`. The host opts that Session into event simulation with `--enable-ui-events`. Blender's `--enable-event-simulate` mode disables real physical mouse and keyboard input in that Session.
+
+The action vocabulary and limits are:
+
+- `click` requires `x`, `y`, and `button`, one of `left`, `middle`, or `right`. Coordinates must be within 0..32767 and inside the client area.
+- `key` accepts `A` through `Z`, `0` through `9`, `F1` through `F12`, `ENTER`, `ESC`, `TAB`, `SPACE`, `BACKSPACE`, `DELETE`, `LEFT`, `RIGHT`, `UP`, `DOWN`, `HOME`, `END`, `PAGEUP`, and `PAGEDOWN`. Optional `modifiers` contains distinct `ctrl`, `shift`, or `alt` values. Each action presses and releases its own keys.
+- `text` accepts 1..256 Unicode scalars without control or format characters. Use key actions for Enter and Tab. IME composition, clipboard paste, and OS dialogs are outside this contract.
+- A batch contains 1..64 actions, at most 1024 text scalars, and a 1..30 second timeout. Each action also has a five-second deadline.
+
+Start a batch with a click to select the editor for later keys and text. A batch starting with a key or text action requires the physical cursor to already be inside the Blender client.
+
+The backend targets Blender's own window event queue. It does not send global Windows input or move the physical cursor. Focus loss, multiple Blender windows, replacement windows, and coordinate mismatches stop the batch.
+
+`queued` receipts mean the event-processing barrier passed. Verify the intended UI change from the images or your Scenario's own checks. With Blender-window capture enabled, the bundle contains before and after images plus `result/ui-actions.json`. On failure, it retains available evidence and stops the exact Session. An uncertain action is never replayed automatically. Receipts omit entered text, but your payload and screenshots can contain it.
+
+The [UI action contract](docs/architecture/0005-session-local-ui-actions.md) describes identity, acknowledgement, and recovery.
+
 ## Requirements
 
 You need:

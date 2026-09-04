@@ -65,6 +65,9 @@ func TestInspectReadsCaptureSupportFromInstalledHost(t *testing.T) {
 	if inspection.Status != "pass" || len(inspection.Captures) != 3 || inspection.Captures[2].Supported {
 		t.Fatalf("inspection = %+v", inspection)
 	}
+	if string(fake.inputs[1]) != "{\"schema_version\":1}" {
+		t.Fatalf("legacy schema2 capabilities changed: %s", fake.inputs[1])
+	}
 	if len(fake.arguments) != 2 || !strings.Contains(decodedAdapterScript(t, fake.arguments[1]), "'host' 'capabilities'") {
 		t.Fatalf("host capability calls = %d", len(fake.arguments))
 	}

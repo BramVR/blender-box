@@ -22,6 +22,7 @@ import (
 	"github.com/BramVR/blender-box/internal/orchestrator"
 	"github.com/BramVR/blender-box/internal/safepath"
 	"github.com/BramVR/blender-box/internal/target"
+	"github.com/BramVR/blender-box/internal/uiaction"
 )
 
 const (
@@ -56,6 +57,7 @@ type DesktopCapturer interface {
 }
 
 type DaemonStart struct {
+	EnableUIEvents    bool
 	Executable        string
 	Name              string
 	BlenderExecutable string
@@ -93,6 +95,7 @@ type DaemonStop struct {
 }
 
 type Dependencies struct {
+	UIActor UIActor
 	Tasks   TaskLauncher
 	Daemon  Daemon
 	Desktop DesktopCapturer
@@ -100,6 +103,7 @@ type Dependencies struct {
 }
 
 type Service struct {
+	uiActor   UIActor
 	tasks     TaskLauncher
 	daemon    Daemon
 	desktop   DesktopCapturer
@@ -123,7 +127,7 @@ func NewService(dependencies Dependencies) *Service {
 	if now == nil {
 		now = time.Now
 	}
-	return &Service{tasks: dependencies.Tasks, daemon: dependencies.Daemon, desktop: dependencies.Desktop, now: now, writeLock: writeLockAtomic}
+	return &Service{uiActor: dependencies.UIActor, tasks: dependencies.Tasks, daemon: dependencies.Daemon, desktop: dependencies.Desktop, now: now, writeLock: writeLockAtomic}
 }
 
 func (service *Service) Capabilities(ctx context.Context, request CapabilitiesRequest) (CapabilitiesResponse, error) {
@@ -131,6 +135,12 @@ func (service *Service) Capabilities(ctx context.Context, request CapabilitiesRe
 		return CapabilitiesResponse{}, fmt.Errorf("unsupported capabilities schema version")
 	}
 	result := CapabilitiesResponse{SchemaVersion: 1, Status: "pass"}
+	if request.UIActions {
+		if !target.ValidateWindowsPath(request.BlenderExecutable) || !target.ValidateWindowsPath(request.SessionBrokerExecutable) {
+			return CapabilitiesResponse{}, fmt.Errorf("invalid UI capability executable paths")
+		}
+		result.UIActions = &orchestrator.UIActionSupport{Capability: uiaction.Capability, Supported: service.uiActor != nil && service.uiActor.CheckUI(ctx, request.SessionBrokerExecutable, request.BlenderExecutable) == nil}
+	}
 	for _, definition := range capture.Definitions() {
 		supported := true
 		if definition.Kind == capture.Desktop {
@@ -452,6 +462,11 @@ func (service *Service) ExecutePending(ctx context.Context, root string) error {
 		return err
 	}
 	if lock.SessionID != "" {
+		existing, statusErr := service.Status(root, StatusRequest{SchemaVersion: 1, RunID: request.Claim.RunID})
+		if statusErr == nil && existing.Claim.Equal(request.Claim) && existing.SessionID == lock.SessionID && existing.UIActions != nil && existing.State == orchestrator.StateInteracting {
+			existing.UIActions.MarkUncertain()
+			return service.failReceipt(root, existing, "UI action execution was interrupted; actions will not be replayed")
+		}
 		return fmt.Errorf("Host Lock already owns a Session")
 	}
 	receipt, err := service.Status(root, StatusRequest{SchemaVersion: 1, RunID: request.Claim.RunID})
@@ -483,6 +498,7 @@ func (service *Service) ExecutePending(ctx context.Context, root string) error {
 	locked = false
 	release()
 	sessionID, startErr := service.daemon.Start(runCtx, DaemonStart{
+		EnableUIEvents:    request.Body.Payload.Scenario.UIActions != nil,
 		Executable:        request.Body.SessionBrokerExecutable,
 		Name:              request.Body.SessionName,
 		BlenderExecutable: request.Body.BlenderExecutable,
@@ -609,6 +625,9 @@ func (service *Service) ExecutePending(ctx context.Context, root string) error {
 		return service.failReceipt(root, receipt, "Scenario evidence validation failed")
 	}
 	receipt.State = orchestrator.StateCollecting
+	if request.Body.Payload.Scenario.UIActions != nil {
+		receipt.State = orchestrator.StateCalling
+	}
 	receipt.Evidence = orchestrator.EvidenceManifest{SchemaVersion: request.Body.Payload.SchemaVersion, Files: []orchestrator.EvidenceFile{resultEvidence}}
 	if err := service.writeReceipt(root, receipt); err != nil {
 		return err
@@ -616,6 +635,11 @@ func (service *Service) ExecutePending(ctx context.Context, root string) error {
 	locked = false
 	release()
 
+	if request.Body.Payload.Scenario.UIActions != nil {
+		if err := service.executeUIActions(runCtx, root, request, sessionID, environment); err != nil {
+			return err
+		}
+	}
 	for _, kind := range request.Body.Payload.Scenario.Captures() {
 		var pending pendingCapture
 		if kind == capture.Desktop {
@@ -649,6 +673,10 @@ func (service *Service) ExecutePending(ctx context.Context, root string) error {
 				return err
 			}
 			locked = true
+		}
+		if kind == capture.BlenderWindow && request.Body.Payload.Scenario.UIActions != nil {
+			pending.definition.EvidencePath = uiaction.AfterPath
+			pending.definition.SourcePath = "evidence/" + uiaction.AfterPath
 		}
 		captured, publishErr := publishCapturePNG(runPath(root, request.Claim.RunID), pending, request.Body.Payload.SchemaVersion, sessionID)
 		cleanupCaptureTemporary(runPath(root, request.Claim.RunID), pending.temporaryPath)
@@ -893,8 +921,13 @@ func (service *Service) Settle(ctx context.Context, root string, request SettleR
 		}
 	}
 	stored.Cleanup.SessionStopped = true
-	if err := service.writeReceipt(root, stored); err != nil {
-		return orchestrator.CleanupState{}, err
+	journalErr := service.publishUIJournal(root, &stored)
+	if journalErr != nil {
+		terminalizeSettledReceipt(&stored)
+	}
+	receiptErr := service.writeReceipt(root, stored)
+	if err := errors.Join(journalErr, receiptErr); err != nil {
+		return stored.Cleanup, err
 	}
 	runRoot := runPath(root, stored.Claim.RunID)
 	if info, err := os.Lstat(runRoot); err == nil {
@@ -1412,6 +1445,11 @@ func (service *Service) failReceipt(root string, receipt orchestrator.RunReceipt
 }
 
 func (service *Service) failReceiptWithCause(root string, receipt orchestrator.RunReceipt, message string, cause error) error {
+	if receipt.UIActions != nil {
+		if err := service.publishUIJournal(root, &receipt); err != nil {
+			cause = errors.Join(cause, err)
+		}
+	}
 	if errors.Is(cause, context.DeadlineExceeded) {
 		receipt.State = orchestrator.StateTimedOut
 	} else {
@@ -1447,10 +1485,10 @@ func evidenceFromFile(runRoot, relative string, kind orchestrator.EvidenceType, 
 	}
 	hash := sha256.Sum256(contents)
 	file := orchestrator.EvidenceFile{Path: relative, Type: kind, Size: int64(len(contents)), SHA256: hex.EncodeToString(hash[:])}
-	if schemaVersion == 2 {
+	if schemaVersion >= 2 {
 		file.SourcePath = "evidence/" + relative
 		file.SessionID = sessionID
-		if kind == orchestrator.EvidenceScenarioResult {
+		if kind == orchestrator.EvidenceScenarioResult || kind == orchestrator.EvidenceUIActions {
 			file.MediaType = "application/json"
 		} else {
 			file.MediaType = "image/png"

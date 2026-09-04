@@ -121,4 +121,4 @@ Artifacts are ignored product evidence, not scratch. Keep them until proof is re
 
 No verification-only helper wraps the product. Drive `blender-box` directly, use `jq` for typed assertions, `ssh` only for the read-only hostname check, and use the public `status`/`stop` commands for host recovery and cleanup.
 
-Read `features/README.md` and the matching feature file before exercising a user path.
+Read `README.md` and the matching `docs/architecture/` contract before exercising a user path.
