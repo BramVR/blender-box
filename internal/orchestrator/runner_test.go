@@ -439,6 +439,21 @@ func TestForgedPayloadFailsBeforeHostInspection(t *testing.T) {
 	}
 }
 
+func TestRunReportsFailedHostInspectionBeforeAcquisition(t *testing.T) {
+	host := &fakeHost{
+		evidence:   testEvidence(),
+		inspection: HostInspection{SchemaVersion: 1, Status: "fail"},
+	}
+
+	_, err := New(host).Run(context.Background(), testIntent(t))
+	if err == nil || !strings.Contains(err.Error(), "host checks failed") || strings.Contains(err.Error(), "capture") {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if !reflect.DeepEqual(host.operations, []string{"inspect"}) {
+		t.Fatalf("host operations = %v", host.operations)
+	}
+}
+
 type malformedStartHost struct {
 	startErrorHost
 }

@@ -371,6 +371,12 @@ func (runner *Runner) Run(ctx context.Context, intent RunIntent) (_ RunResult, r
 	if err != nil {
 		return RunResult{}, fmt.Errorf("inspect host: %w", err)
 	}
+	if inspection.SchemaVersion != 1 || (inspection.Status != "pass" && inspection.Status != "fail") {
+		return RunResult{}, fmt.Errorf("inspect host: invalid host inspection")
+	}
+	if inspection.Status == "fail" {
+		return RunResult{}, fmt.Errorf("inspect host: host checks failed")
+	}
 	if !inspectionSupports(inspection, plan.Captures) {
 		return RunResult{}, fmt.Errorf("inspect host: requested capture is unsupported")
 	}
