@@ -4,8 +4,8 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="theme-color" content="#f6f5f1">
-  <meta name="description" content="Run declared Blender Scenarios on an owned Windows desktop over SSH. Set up your host, run a Scenario, and bring verified evidence back to your checkout.">
-  <title>Blender Box · Remote Blender, proof returned</title>
+  <meta name="description" content="Run your Python scripts in Blender on a Windows machine you control. Start from your development checkout and get JSON results and screenshots back in your project.">
+  <title>Blender Box · Run Blender scripts on a remote Windows desktop</title>
   <link rel="icon" href="favicon.svg" type="image/svg+xml">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -21,7 +21,7 @@
     </a>
     <nav aria-label="Main navigation">
       <a href="#get-started">Get started</a>
-      <a href="#evidence">Evidence</a>
+      <a href="#evidence">Test results</a>
       <a class="github-link" href="https://github.com/BramVR/blender-box">GitHub <span aria-hidden="true">↗</span></a>
     </nav>
   </header>
@@ -29,20 +29,20 @@
   <main id="main">
     <section class="hero wrap" aria-labelledby="hero-title">
       <div class="hero-copy">
-        <p class="eyebrow"><span class="status-dot" aria-hidden="true"></span> An open-source remote Scenario runner</p>
-        <h1 id="hero-title">Your scene.<br>Remote Blender.<br><span>Proof returned.</span></h1>
-        <p class="hero-description">Run Blender on your own Windows desktop, straight from your checkout. Send a declared payload over SSH. Bring back verified evidence.</p>
+        <p class="eyebrow"><span class="status-dot" aria-hidden="true"></span> A command-line tool for Blender developers</p>
+        <h1 id="hero-title">Run Blender scripts<br>on a remote<br><span>Windows desktop.</span></h1>
+        <p class="hero-description">Blender Box runs your Python scripts in Blender on a Windows machine you control. Start a run from your development checkout and get the script's JSON result and screenshots back in your project.</p>
         <div class="hero-actions">
-          <a class="button" href="#get-started">Run your first Scenario <span aria-hidden="true">↗</span></a>
-          <a class="text-link" href="https://github.com/BramVR/blender-box">Explore the source <span aria-hidden="true">↗</span></a>
+          <a class="button" href="#get-started">Set up your first test <span aria-hidden="true">↗</span></a>
+          <a class="text-link" href="https://github.com/BramVR/blender-box">View on GitHub <span aria-hidden="true">↗</span></a>
         </div>
-        <p class="hero-footnote">Your host. Your files. An exact Session identity.</p>
+        <p class="hero-footnote">Requires your own Windows machine with Blender installed.</p>
       </div>
       <figure class="hero-figure">
-        <div class="figure-topline"><span>01 / THE RUN BOUNDARY</span><span>SSH → WINDOWS</span></div>
+        <div class="figure-topline"><span>YOUR PROJECT → BLENDER</span><span>OVER SSH</span></div>
         <svg class="run-diagram" viewBox="0 0 540 430" role="img" aria-labelledby="diagram-title diagram-desc">
-          <title id="diagram-title">A remote Blender Run and its returned evidence</title>
-          <desc id="diagram-desc">A developer checkout sends a declared payload over SSH to an owned Windows host. A solid orange cube represents Blender. Evidence returns to the checkout. This is an architecture diagram, not a screenshot.</desc>
+          <title id="diagram-title">Your project sends files to Blender and receives test results</title>
+          <desc id="diagram-desc">Blender Box copies your listed files over SSH to your Windows machine. Blender runs your Python script there. The JSON result and requested screenshots return to your project. The orange cube represents Blender in this diagram.</desc>
           <defs>
             <pattern id="grid" width="24" height="24" patternUnits="userSpaceOnUse"><path d="M24 0H0V24" fill="none" stroke="#dedfd8" stroke-width=".7"/></pattern>
             <linearGradient id="cube-front" x1="0" x2="1" y2="1"><stop stop-color="#ff954e"/><stop offset="1" stop-color="#ed6326"/></linearGradient>
@@ -63,68 +63,81 @@
           <path d="m173 152 111 63 111-63m-111 63v126" fill="none" stroke="#ffc091" stroke-width="1"/>
           <path d="M311 74V41h153" fill="none" stroke="#7b8177"/>
           <circle cx="311" cy="74" r="3" fill="#f47732"/>
-          <text x="353" y="28" class="diagram-label">OWNED WINDOWS HOST</text>
+          <text x="353" y="28" class="diagram-label">YOUR WINDOWS MACHINE</text>
           <path d="M133 236H58v79" fill="none" stroke="#7b8177" marker-end="url(#arrow)"/>
-          <text x="31" y="220" class="diagram-label">EVIDENCE</text>
+          <text x="31" y="220" class="diagram-label">RESULTS</text>
           <path d="M68 177V117h91" fill="none" stroke="#7b8177" stroke-dasharray="4 4" marker-end="url(#arrow)"/>
-          <text x="30" y="102" class="diagram-label">PAYLOAD</text>
+          <text x="30" y="102" class="diagram-label">FILES</text>
           <rect x="25" y="325" width="131" height="61" rx="3" fill="#f6f5f1" stroke="#aeb3a5"/>
           <path d="m41 347 6 5-6 5m11 0h7" fill="none" stroke="#252724" stroke-width="1.5"/>
-          <text x="68" y="356" class="diagram-node">checkout</text>
+          <text x="64" y="356" class="diagram-node">project</text>
           <path d="M362 301h77v47h-44" fill="none" stroke="#7b8177"/>
           <circle cx="362" cy="301" r="3" fill="#252724"/>
           <rect x="231" y="371" width="218" height="31" rx="3" fill="#252724"/>
-          <text x="246" y="391" class="diagram-code">Session identity · exact</text>
+          <text x="246" y="391" class="diagram-code">Blender runs your script</text>
           <text x="304" y="275" transform="rotate(-29 304 275)" fill="#ffd9bf" class="cube-label">BLENDER</text>
         </svg>
-        <figcaption><span><span class="figure-key" aria-hidden="true"></span> Architecture diagram</span><span>Payload out. Evidence back.</span></figcaption>
+        <figcaption><span><span class="figure-key" aria-hidden="true"></span> Workflow diagram</span><span>Results include requested screenshots.</span></figcaption>
       </figure>
     </section>
 
-    <div class="facts-strip">
-      <div class="wrap facts-inner">
-        <p><span class="fact-index">01</span> Open source <span class="fact-detail">Built in the open</span></p>
-        <p><span class="fact-index">02</span> Direct SSH <span class="fact-detail">Your configured host alias</span></p>
-        <p><span class="fact-index">03</span> Verified evidence <span class="fact-detail">SHA-256 + cleanup state</span></p>
+    <section class="explainer" aria-labelledby="why-title">
+      <div class="wrap explainer-inner">
+        <div>
+          <p class="eyebrow">WHY USE IT?</p>
+          <h2 id="why-title">Test each change on Windows from your development machine.</h2>
+          <p>When you develop Blender scripts or add-ons on another machine, testing on Windows means copying files, starting Blender, checking the output, and cleaning up afterward. Blender Box automates those steps so you can rerun a test after each change.</p>
+          <p>You write the Python script and choose the assertions that define a passing test. Blender Box runs the script and collects its output.</p>
+          <p>A coding agent can use the same command-line workflow to run your tests and read their results.</p>
+        </div>
+        <div>
+          <p class="eyebrow">HOW IT WORKS</p>
+          <ol class="explainer-steps">
+            <li><strong>Choose what to run.</strong><p>Provide a Python script, a JSON file listing the files and screenshots you need, and the connection settings for your Windows machine.</p></li>
+            <li><strong>Run it in Blender on Windows.</strong><p>Blender Box copies only the listed files over SSH and runs your script in Blender. Blender opens in the logged-in Windows desktop, so you can capture its window as well as the scene pixels.</p></li>
+            <li><strong>Read the result in your project.</strong><p>Your script prints its JSON result. Blender Box fetches it and the requested screenshots, checks the transferred files' hashes, then stops the Blender session it created.</p></li>
+          </ol>
+        </div>
       </div>
-    </div>
+    </section>
 
     <div class="guide-layout wrap" id="get-started">
       <aside class="guide-sidebar">
-        <p class="eyebrow">THE FIELD GUIDE</p>
+        <p class="eyebrow">SETUP AND EXAMPLE</p>
         <nav aria-label="Guide sections">
           <a href="#before-you-start"><span>00</span> Before you start</a>
           <a href="#build"><span>01</span> Build from source</a>
-          <a href="#target"><span>02</span> Define your host</a>
-          <a href="#setup"><span>03</span> Set up Windows</a>
-          <a href="#payload"><span>04</span> Declare the payload</a>
-          <a href="#run"><span>05</span> Run the Scenario</a>
-          <a href="#recover"><span>06</span> Recover or stop</a>
-          <a href="#evidence"><span>07</span> Read the evidence</a>
+          <a href="#target"><span>02</span> Configure the connection</a>
+          <a href="#setup"><span>03</span> Install the Windows runner</a>
+          <a href="#payload"><span>04</span> Create the test files</a>
+          <a href="#run"><span>05</span> Run the cube test</a>
+          <a href="#recover"><span>06</span> Check or stop a run</a>
+          <a href="#evidence"><span>07</span> Find results and images</a>
         </nav>
-        <div class="sidebar-note"><span class="status-dot" aria-hidden="true"></span> First end-to-end slice<p>Host checks, setup, remote runs, capture, recovery, and exact stop are implemented.</p></div>
+        <div class="sidebar-note">Working with your own test?<p>Replace the cube script with your Blender script, list its required files, and choose the screenshots you need.</p></div>
         <a class="sidebar-source" href="https://github.com/BramVR/blender-box/blob/main/README.md">Read the repository guide <span aria-hidden="true">↗</span></a>
       </aside>
 
       <div class="guide-content">
         <section class="guide-intro" id="before-you-start" aria-labelledby="guide-title">
           <p class="eyebrow">00 / BEFORE YOU START</p>
-          <h2 id="guide-title">From your checkout<br>to your Blender host.</h2>
-          <p class="section-lead">Set up an owned Windows desktop, declare a Scenario, and return an Evidence Bundle to your developer machine.</p>
-          <p>Run the shell commands below from a macOS or Linux checkout. Replace the example target values with your own settings.</p>
+          <h2 id="guide-title">Run the example cube test.</h2>
+          <p class="section-lead">This example creates a cube in Blender on your Windows machine and checks that it has eight vertices. You get the JSON result and two images back in your project, then Blender Box stops the Blender session.</p>
+          <p>The images show the viewport and the Blender window. The JSON result contains <code>"status": "pass"</code> and <code>"vertices": 8</code> when the assertion passes.</p>
+          <p>Run the shell commands below on macOS or Linux. Before you start, prepare these requirements.</p>
           <ul class="requirements">
             <li><span class="requirement-mark" aria-hidden="true">↗</span><div><strong>A developer machine</strong><span>Go 1.23 or later, Git, and SSH.</span></div></li>
-            <li><span class="requirement-mark" aria-hidden="true">↗</span><div><strong>An owned Windows desktop</strong><span>OpenSSH, a safe SSH config alias, and an interactive user logged in.</span></div></li>
-            <li><span class="requirement-mark" aria-hidden="true">↗</span><div><strong>Blender and blendersessiond</strong><span>Existing installations and a work root on Windows. <a href="https://github.com/BramVR/blendersessiond">Get the daemon ↗</a></span></div></li>
-            <li><span class="requirement-mark" aria-hidden="true">↗</span><div><strong>One Windows identity</strong><span>SSH control and the Scheduled Task must resolve to the same Windows SID.</span></div></li>
+            <li><span class="requirement-mark" aria-hidden="true">↗</span><div><strong>A Windows machine you control</strong><span>OpenSSH, a host alias in your SSH config, and a user logged in to the desktop.</span></div></li>
+            <li><span class="requirement-mark" aria-hidden="true">↗</span><div><strong>Blender and its process manager</strong><span>Install Blender and <a href="https://github.com/BramVR/blendersessiond">blendersessiond</a> on Windows. This companion program starts and stops Blender for each test.</span></div></li>
+            <li><span class="requirement-mark" aria-hidden="true">↗</span><div><strong>A Windows work directory</strong><span>Create a directory for the runner and temporary test files, such as <code>C:\BlenderBox</code>.</span></div></li>
           </ul>
-          <div class="note"><span class="note-label">HOST BOUNDARY</span><p>Blender Box does not install Blender or the daemon, or change your SSH, Tailscale, or firewall settings. The Blender MCP add-on stays on Windows loopback.</p></div>
+          <div class="note"><span class="note-label">BEFORE SETUP</span><p>Blender Box's setup command installs its Windows runner. You must install Blender and blendersessiond separately and configure SSH access yourself.</p></div>
         </section>
 
         <ol class="steps">
           <li class="step" id="build">
-            <div class="step-heading"><span class="step-number" aria-hidden="true">01</span><h2>Build from source.</h2></div>
-            <p>Clone the repository. Build the Windows binary that setup publishes to your host.</p>
+            <div class="step-heading"><span class="step-number" aria-hidden="true">01</span><h2>Build the Windows runner</h2></div>
+            <p>Clone Blender Box, then build its Windows executable. A later step copies this executable to your Windows machine so it can receive and run test requests.</p>
             <div class="code-block"><div class="code-title"><span>SHELL</span><span>Developer machine</span></div><pre tabindex="0"><code>git clone https://github.com/BramVR/blender-box.git
 cd blender-box
 GOOS=windows GOARCH=amd64 go build \
@@ -133,8 +146,9 @@ GOOS=windows GOARCH=amd64 go build \
           </li>
 
           <li class="step" id="target">
-            <div class="step-heading"><span class="step-number" aria-hidden="true">02</span><h2>Define your host.</h2></div>
-            <p>Create <code>target.json</code> in the checkout. The SSH alias selects a host from your existing SSH config.</p>
+            <div class="step-heading"><span class="step-number" aria-hidden="true">02</span><h2>Configure the Windows connection</h2></div>
+            <p>Create <code>target.json</code> in the checkout. This target profile tells Blender Box which SSH connection to use and where to find Blender and the runner on Windows.</p>
+            <p>Replace the example values with your settings. <code>ssh_alias</code> must match an entry in your SSH config. The SSH user and the desktop user must resolve to the same Windows security identifier, or SID.</p>
             <details open><summary><span>target.json</span><span class="detail-hint">Host profile</span></summary><div class="details-body"><pre tabindex="0"><code>{
 	"schema_version": 1,
 	"ssh_alias": "owned-windows-host",
@@ -146,31 +160,33 @@ GOOS=windows GOARCH=amd64 go build \
 	"session_broker_executable": "C:\\BlenderBox\\bin\\blendersessiond.exe",
 	"host_executable": "C:\\BlenderBox\\bin\\blender-box.exe"
 }</code></pre></div></details>
-            <p>Keep credentials, hostnames, IP addresses, and private network details out of the profile. These are example values, not a discovered host.</p>
-            <p class="small-copy">Use an ASCII drive path without spaces for <code>work_root</code>. Put both host executables in a dedicated directory below that root. Blender can live elsewhere.</p>
+            <p>Keep connection details and SSH key paths in your SSH configuration. Do not put secrets in <code>target.json</code>.</p>
+            <p class="small-copy">Use an ASCII drive path without spaces for <code>work_root</code>. Both <code>session_broker_executable</code> and <code>host_executable</code> must be in a dedicated directory below that root. Blender can be installed elsewhere.</p>
           </li>
 
           <li class="step" id="setup">
-            <div class="step-heading"><span class="step-number" aria-hidden="true">03</span><h2>Set up Windows.</h2></div>
-            <p>Preview the setup plan first. Without <code>--apply</code>, setup validates the profile locally and makes no SSH connection.</p>
+            <div class="step-heading"><span class="step-number" aria-hidden="true">03</span><h2>Install the runner on Windows</h2></div>
+            <p>Blender needs to open in the logged-in desktop. Setup registers a Windows Scheduled Task for this because an SSH connection cannot launch an interactive Blender window directly.</p>
+            <p>Preview setup first. Without <code>--apply</code>, this command checks your profile locally and makes no SSH connection.</p>
             <div class="code-block"><div class="code-title"><span>SHELL</span><span>Preview · local only</span></div><pre tabindex="0"><code>go run ./cmd/blender-box windows setup \
 	--target target.json \
 	--host-binary /tmp/blender-box.exe \
 	--json</code></pre></div>
-            <details><summary><span>Apply setup to your verified host</span><span class="detail-hint">Writes to Windows</span></summary><div class="details-body"><p>Run this after you have verified the target is your owned host. Setup publishes the hashed binary, applies managed-path ACLs, checks the daemon contract, and registers the fixed interactive Scheduled Task.</p><pre tabindex="0"><code>go run ./cmd/blender-box windows setup \
+            <details><summary><span>Install the runner and Scheduled Task</span><span class="detail-hint">Writes to Windows</span></summary><div class="details-body"><p>After you verify the target settings, add <code>--apply</code> to install the runner. Setup copies the executable, sets access permissions on its managed directories, checks that blendersessiond supports the required operations, and registers the Scheduled Task.</p><pre tabindex="0"><code>go run ./cmd/blender-box windows setup \
 	--target target.json \
 	--host-binary /tmp/blender-box.exe \
 	--apply \
 	--json</code></pre></div></details>
-            <p>After setup, check the installed host. This read-only check does not launch Blender.</p>
+            <p>After installation, check that the Windows users, paths, programs, and Scheduled Task are configured correctly. This command reads host settings without changing them or launching Blender.</p>
             <div class="code-block"><div class="code-title"><span>SHELL</span><span>Read-only host check</span></div><pre tabindex="0"><code>go run ./cmd/blender-box windows check \
 	--target target.json --json</code></pre></div>
-            <p class="small-copy">A failed requirement returns <code>status: "fail"</code>. Fix the reported identity, path, task, or capability issue before you run a Scenario.</p>
+            <p class="small-copy">A failed requirement returns <code>status: "fail"</code>. Fix the reported problem before running the test.</p>
           </li>
 
           <li class="step" id="payload">
-            <div class="step-heading"><span class="step-number" aria-hidden="true">04</span><h2>Declare the payload.</h2></div>
-            <p>Create <code>payload.json</code> next to your <code>scenario.py</code>. List each file to stage and choose the captures you need.</p>
+            <div class="step-heading"><span class="step-number" aria-hidden="true">04</span><h2>Create the script and file list</h2></div>
+            <p>Blender Box calls a declared Blender workflow a <strong>Scenario</strong>. This Scenario has one Python script that creates and checks a cube.</p>
+            <p>Create <code>payload.json</code> in your checkout. This <strong>Run Payload</strong> lists the files to copy, the script to execute, and the screenshots to collect. The example requests both a viewport image and a Blender window screenshot.</p>
             <details open><summary><span>payload.json</span><span class="detail-hint">Schema 2</span></summary><div class="details-body"><pre tabindex="0"><code>{
 	"schema_version": 2,
 	"files": [
@@ -187,8 +203,8 @@ GOOS=windows GOARCH=amd64 go build \
 		"capture_desktop": false
 	}
 }</code></pre></div></details>
-            <p>Source paths are relative to the payload document. Destination paths are relative to the remote payload root.</p>
-            <details><summary><span>scenario.py</span><span class="detail-hint">Minimal cube example</span></summary><div class="details-body"><p>This script adds a cube to the fresh Run's Blender scene, checks its vertex count, and prints the Scenario Result.</p><pre tabindex="0"><code>import json
+            <p>Create <code>scenario.py</code> beside <code>payload.json</code> and copy in this script. For additional files, use source paths relative to <code>payload.json</code> and destination paths relative to the test's directory on Windows.</p>
+            <details><summary><span>scenario.py</span><span class="detail-hint">Cube test</span></summary><div class="details-body"><p>The script creates a cube, checks its vertex count with a Python assertion, and prints a JSON result. Change the script and its assertions to test your own Blender work.</p><pre tabindex="0"><code>import json
 import bpy
 
 bpy.ops.mesh.primitive_cube_add(size=2, location=(0, 0, 0))
@@ -202,38 +218,39 @@ print(json.dumps({
 	"object": cube.name,
 	"vertices": len(cube.data.vertices),
 }))</code></pre></div></details>
-            <div class="note"><span class="note-label">SCENARIO CONTRACT</span><p>Print exactly one JSON document with <code>schema_version: 1</code> and <code>status: "pass"</code>. Extra stdout makes the result invalid. Returning a dictionary from a function alone does not produce a Scenario Result. <a href="https://github.com/BramVR/blender-box/blob/main/docs/architecture/0001-slice-0-run-boundary.md">Read the Run contract ↗</a></p></div>
-            <p>Validate the plan locally, then use <code>doctor</code> to check the installed host and requested capture capabilities.</p>
+            <div class="note"><span class="note-label">SCRIPT OUTPUT</span><p>Print exactly one JSON document with <code>schema_version: 1</code> and <code>status: "pass"</code> after your assertions pass. Extra text on stdout makes the result invalid. Returning a dictionary from a function is not enough; the script must print it. <a href="https://github.com/BramVR/blender-box/blob/main/docs/architecture/0001-slice-0-run-boundary.md">Read the result format ↗</a></p></div>
+            <p>Check the files and configuration locally with <code>plan</code>. Then run <code>doctor</code> to confirm that the Windows installation supports the requested screenshots.</p>
             <div class="code-block"><div class="code-title"><span>SHELL</span><span>Plan, then diagnose</span></div><pre tabindex="0"><code>go run ./cmd/blender-box plan \
 	--target target.json --payload payload.json --json
 
 go run ./cmd/blender-box doctor \
 	--target target.json --payload payload.json --json</code></pre></div>
-            <p class="small-copy"><code>plan</code> does not contact the host. <code>doctor</code> is read-only. Schema 2 payloads require a matching upgraded host binary.</p>
+            <p class="small-copy"><code>plan</code> does not contact Windows. <code>doctor</code> connects to Windows but does not change settings or launch Blender. This schema 2 example requires a Windows runner built from the matching source version.</p>
           </li>
 
           <li class="step" id="run">
-            <div class="step-heading"><span class="step-number" aria-hidden="true">05</span><h2>Run the Scenario.</h2></div>
-            <p>Start a Run with a bounded timeout. The client stages the payload, starts Blender through the fixed Scheduled Task, and returns verified evidence.</p>
+            <div class="step-heading"><span class="step-number" aria-hidden="true">05</span><h2>Run the cube test</h2></div>
+            <p>One execution of a Scenario is a <strong>Run</strong>, identified by a unique Run ID. Start this example with a 20-minute timeout.</p>
             <div class="code-block"><div class="code-title"><span>SHELL</span><span>Launches Blender on your host</span></div><pre tabindex="0"><code>go run ./cmd/blender-box run \
 	--target target.json \
 	--payload payload.json \
 	--timeout 20m \
 	--json</code></pre></div>
-            <p>Save the <code>RUN_ID=bbx_...</code> line written to stderr before validation. With <code>--json</code>, stdout contains one versioned success or failure result.</p>
-            <div class="run-flow" aria-label="Run lifecycle"><span>Lock</span><span>Stage</span><span>Launch</span><span>Verify</span><span>Clean up</span></div>
-            <p class="small-copy">The client fetches and verifies evidence before stopping its exact Session and removing the remote Run files.</p>
+            <p>The command prints <code>RUN_ID=bbx_...</code> to stderr before it starts work. Save this ID so you can check or stop the test if the connection drops. With <code>--json</code>, stdout contains one JSON success or failure result.</p>
+            <div class="run-flow" aria-label="Test execution"><span>Copy files</span><span>Run script</span><span>Fetch results</span><span>Stop Blender</span></div>
+            <p>On success, open <code>result/scenario-result.json</code> in the run's local results directory. It contains <code>"vertices": 8</code>. The <code>screenshots</code> directory contains the viewport and Blender window images.</p>
+            <p class="small-copy">Blender Box checks the transferred files before stopping the Blender session it created and removing that run's temporary Windows files.</p>
           </li>
 
           <li class="step" id="recover">
-            <div class="step-heading"><span class="step-number" aria-hidden="true">06</span><h2>Recover or stop.</h2></div>
-            <p>If your client disconnects, read the durable host receipt with the Run ID. Replace <code>bbx_...</code> with the ID you saved.</p>
-            <div class="code-block"><div class="code-title"><span>SHELL</span><span>Read the Run state</span></div><pre tabindex="0"><code>go run ./cmd/blender-box status \
+            <div class="step-heading"><span class="step-number" aria-hidden="true">06</span><h2>Check or stop a run</h2></div>
+            <p>If the connection drops, use <code>status</code> to read the run's saved state on Windows. Replace <code>bbx_...</code> with the Run ID you saved.</p>
+            <div class="code-block"><div class="code-title"><span>SHELL</span><span>Check the saved run state</span></div><pre tabindex="0"><code>go run ./cmd/blender-box status \
 	--target target.json --run bbx_... --json</code></pre></div>
-            <p>To stop that Run, use the same ID.</p>
-            <div class="code-block"><div class="code-title"><span>SHELL</span><span>Stop the owned Session</span></div><pre tabindex="0"><code>go run ./cmd/blender-box stop \
+            <p>To stop an active run, pass the same ID to <code>stop</code>.</p>
+            <div class="code-block"><div class="code-title"><span>SHELL</span><span>Stop this run's Blender session</span></div><pre tabindex="0"><code>go run ./cmd/blender-box stop \
 	--target target.json --run bbx_... --json</code></pre></div>
-            <p class="small-copy"><code>stop</code> recovers the recorded request and Session identities. A process name, port, executable path, or guessed PID is never stop authority.</p>
+            <p class="small-copy">The saved run state identifies the Blender session that Blender Box created. <code>stop</code> uses that recorded identity, so it cannot stop an unrelated Blender window by matching its process name or port.</p>
           </li>
         </ol>
       </div>
@@ -241,44 +258,44 @@ go run ./cmd/blender-box doctor \
 
     <section class="evidence-section" id="evidence" aria-labelledby="evidence-title">
       <div class="wrap evidence-inner">
-        <div class="evidence-intro"><p class="eyebrow">07 / THE EVIDENCE BUNDLE</p><h2 id="evidence-title">A result you<br>can inspect.</h2><p>Each Run reserves a new local directory before it contacts the host. Evidence records what ran, what came back, and whether cleanup completed.</p><p class="evidence-path"><code>artifacts/blender-box/&lt;run-id&gt;/</code></p><p class="small-copy">Use <code>--evidence-dir</code> to choose another new directory. Existing evidence files are never replaced.</p></div>
+        <div class="evidence-intro"><p class="eyebrow">07 / RESULTS</p><h2 id="evidence-title">Find your test results and screenshots.</h2><p>After a successful run, Blender Box saves the run's files in a new directory in your checkout. This Evidence Bundle contains the script's JSON result, requested screenshots, file checksums, and a record of whether cleanup completed.</p><p class="evidence-path"><code>artifacts/blender-box/&lt;run-id&gt;/</code></p><p class="small-copy">Use <code>--evidence-dir</code> to choose another new directory. Blender Box never replaces an existing evidence file.</p></div>
         <div class="evidence-files"><p class="file-list-title"><span>SUCCESSFUL RUN</span><span>WHAT EACH FILE TELLS YOU</span></p><dl>
-          <div><dt>manifest.json</dt><dd>Paths, types, sizes, SHA-256 hashes, and capture provenance.</dd></div>
-          <div><dt>evidence.json</dt><dd>Run and Session identities, deadline, terminal state, and cleanup result.</dd></div>
-          <div><dt>result/scenario-result.json</dt><dd>The versioned Scenario Result.</dd></div>
-          <div><dt>screenshots/viewport.png</dt><dd>Scene pixels. Included when requested.</dd></div>
-          <div><dt>screenshots/blender-window.png</dt><dd>The Blender window with UI chrome. Included when requested.</dd></div>
-          <div><dt>screenshots/desktop.png</dt><dd>The Windows virtual desktop. Explicit opt-in only.</dd></div>
+          <div><dt>manifest.json</dt><dd>The returned files, their sizes and SHA-256 hashes, and how each screenshot was captured.</dd></div>
+          <div><dt>evidence.json</dt><dd>The run and Blender session IDs, deadline, final state, and cleanup result.</dd></div>
+          <div><dt>result/scenario-result.json</dt><dd>The JSON printed by your script. The cube example reports eight vertices.</dd></div>
+          <div><dt>screenshots/viewport.png</dt><dd>An image of the Blender scene. Included when requested.</dd></div>
+          <div><dt>screenshots/blender-window.png</dt><dd>The full Blender window, including its controls and panels. Included when requested.</dd></div>
+          <div><dt>screenshots/desktop.png</dt><dd>The Windows desktop across its displays. Collected only when you enable desktop capture.</dd></div>
         </dl></div>
       </div>
-      <div class="wrap capture-note"><span class="capture-symbol" aria-hidden="true">↗</span><p>Choose the evidence that proves your work. A viewport capture shows scene pixels. A window capture shows Blender's UI. A desktop capture can include private information from other applications. Review desktop images before sharing.</p></div>
+      <div class="wrap capture-note"><span class="capture-symbol" aria-hidden="true">↗</span><p>Use a viewport image to inspect the scene. Use a Blender window screenshot to check an add-on's controls or panels. Desktop capture is off by default because it can include other applications and private information. Review those images before sharing.</p></div>
     </section>
 
     <section class="reference-section wrap" id="reference" aria-labelledby="reference-title">
-      <div class="reference-heading"><p class="eyebrow">KEEP AT HAND</p><h2 id="reference-title">One command.<br>One clear job.</h2><p>Use <code>--json</code> for machine-readable output.</p></div>
+      <div class="reference-heading"><p class="eyebrow">REFERENCE</p><h2 id="reference-title">Command reference</h2><p>Use <code>--json</code> to read command results from a script or coding agent.</p></div>
       <dl class="command-reference">
-        <div><dt><code>windows setup</code></dt><dd>Local setup plan. <code>--apply</code> publishes to the verified Windows host.</dd></div>
-        <div><dt><code>windows check</code></dt><dd>Read-only inspection of the installed host.</dd></div>
-        <div><dt><code>plan</code></dt><dd>Local target and payload validation.</dd></div>
-        <div><dt><code>doctor</code></dt><dd>Read-only host and capture-capability diagnosis.</dd></div>
-        <div><dt><code>run</code></dt><dd>Execute a Scenario and return verified evidence.</dd></div>
-        <div><dt><code>status</code></dt><dd>Read a durable Run receipt after a disconnect.</dd></div>
-        <div><dt><code>stop</code></dt><dd>Stop the exact Session recorded for a Run.</dd></div>
+        <div><dt><code>windows setup</code></dt><dd>Preview installation. With <code>--apply</code>, install the runner and register its Windows Scheduled Task.</dd></div>
+        <div><dt><code>windows check</code></dt><dd>Check the Windows installation without changing it or starting Blender.</dd></div>
+        <div><dt><code>plan</code></dt><dd>Validate the connection settings and file list locally.</dd></div>
+        <div><dt><code>doctor</code></dt><dd>Check the Windows installation and support for your requested screenshots.</dd></div>
+        <div><dt><code>run</code></dt><dd>Run your script in Blender and collect the result and requested screenshots.</dd></div>
+        <div><dt><code>status</code></dt><dd>Read the saved state of a run, including after a lost connection.</dd></div>
+        <div><dt><code>stop</code></dt><dd>Stop the Blender session created for the specified Run ID.</dd></div>
       </dl>
     </section>
 
     <section class="architecture wrap" aria-labelledby="architecture-title">
-      <div class="architecture-top"><div><p class="eyebrow">BUILT IN THE OPEN</p><h2 id="architecture-title">Read the decisions<br>behind the Run.</h2></div><p>Blender Box owns orchestration and evidence. <a href="https://github.com/BramVR/blendersessiond">blendersessiond</a> owns Blender's lifecycle. Your repository owns the Scenario.</p></div>
+      <div class="architecture-top"><div><p class="eyebrow">ARCHITECTURE</p><h2 id="architecture-title">How the Windows runner works</h2></div><p>Blender Box sends commands and files over SSH. The Windows Scheduled Task starts work in the logged-in desktop, where <a href="https://github.com/BramVR/blendersessiond">blendersessiond</a> launches and stops the correct Blender process. The Blender MCP add-on stays on Windows loopback; its port is never exposed or forwarded.</p></div>
       <div class="architecture-links">
-        <a href="https://github.com/BramVR/blender-box/blob/main/docs/architecture/0001-slice-0-run-boundary.md"><span>ADR 001</span><strong>The Run boundary</strong><span aria-hidden="true">↗</span></a>
-        <a href="https://github.com/BramVR/blender-box/blob/main/docs/architecture/0002-slice-0-windows-identity.md"><span>ADR 002</span><strong>One Windows identity</strong><span aria-hidden="true">↗</span></a>
-        <a href="https://github.com/BramVR/blender-box/blob/main/docs/architecture/0003-session-broker-capability-gate.md"><span>ADR 003</span><strong>The daemon contract</strong><span aria-hidden="true">↗</span></a>
-        <a href="https://github.com/BramVR/blender-box/blob/main/docs/architecture/0004-fenced-windows-setup-owner.md"><span>ADR 004</span><strong>Fenced Windows setup</strong><span aria-hidden="true">↗</span></a>
+        <a href="https://github.com/BramVR/blender-box/blob/main/docs/architecture/0001-slice-0-run-boundary.md"><span>ADR 001</span><strong>How runs return results and clean up</strong><span aria-hidden="true">↗</span></a>
+        <a href="https://github.com/BramVR/blender-box/blob/main/docs/architecture/0002-slice-0-windows-identity.md"><span>ADR 002</span><strong>Why both Windows users need one SID</strong><span aria-hidden="true">↗</span></a>
+        <a href="https://github.com/BramVR/blender-box/blob/main/docs/architecture/0003-session-broker-capability-gate.md"><span>ADR 003</span><strong>Required blendersessiond operations</strong><span aria-hidden="true">↗</span></a>
+        <a href="https://github.com/BramVR/blender-box/blob/main/docs/architecture/0004-fenced-windows-setup-owner.md"><span>ADR 004</span><strong>How setup tracks its Windows processes</strong><span aria-hidden="true">↗</span></a>
       </div>
-      <p class="architecture-more"><a href="https://github.com/BramVR/blender-box/blob/main/docs/research/blender-box-research.html">Research brief ↗</a><a href="https://github.com/BramVR/blender-box/blob/main/docs/architecture/ci.md">CI and live proof ↗</a></p>
+      <p class="architecture-more"><a href="https://github.com/BramVR/blender-box/blob/main/docs/research/blender-box-research.html">Research brief ↗</a><a href="https://github.com/BramVR/blender-box/blob/main/docs/architecture/ci.md">Automated tests and Windows verification ↗</a></p>
     </section>
   </main>
 
-  <footer class="site-footer wrap"><a class="footer-wordmark" href="#">blenderbox<span>.</span></a><p>Remote Blender. Exact ownership. Evidence returned.</p><a href="https://github.com/BramVR/blender-box">Made in the open <span aria-hidden="true">↗</span></a></footer>
+  <footer class="site-footer wrap"><a class="footer-wordmark" href="#">blenderbox<span>.</span></a><p>An open-source command-line tool for remote Blender scripts.</p><a href="https://github.com/BramVR/blender-box">Source on GitHub <span aria-hidden="true">↗</span></a></footer>
 </body>
 </html>
