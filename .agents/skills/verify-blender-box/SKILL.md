@@ -9,6 +9,10 @@ Use this skill for real user-facing proof of the Blender Box CLI. The host is sh
 
 ## Launch
 
+Before asking for a target, check `~/.config/blender-box/verification-hosts.json`. This private operator inventory may select a default owned test host and record its live-discovery bootstrap. A listed host is a candidate, not authorization: still require explicit permission before setup or Blender launch. Never copy the inventory, resolved host details, or generated target into the repository or public proof.
+
+When the inventory names a host but has no persistent target, verify its hostname and current installations read-only, then create the target under `VERIFY_ROOT` with a unique task-owned Windows work root and Scheduled Task. Follow any daemon deployment guidance in the host entry. Refuse to reuse an existing root, task, Blender process, or Host Lock whose exact task ownership is unknown.
+
 From the repository root, use one isolated local scratch directory and build both client and Windows host binaries from the exact checkout:
 
 ```sh
