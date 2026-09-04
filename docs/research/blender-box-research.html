@@ -724,13 +724,13 @@ blender-box stop bbx_...</code></pre>
           <h3><span class="priority p0">Implemented</span>Host Lock and request fence</h3>
           <p>Windows stores shared host authority bound to the Run ID, controller, deadline, request hash, task name, and returned Session identity. Host mutations use an OS-released lock, and stale clients cannot replace or clean a newer Run. The typed Run request must use the exact Session name derived from its Run ID, keeping launch and settlement routing identical. The static task launches only from the exact identity-free <code>starting</code> receipt, so a terminal receipt cannot be replayed through a leftover pending request. Run-derived payload staging lets settlement name and remove an interrupted pre-publication directory under the exact claim; missing ownership is recoverable only when that directory is empty. After each daemon boundary, bounded reconciliation reacquires the lock, revalidates the exact authority, and durably records a deadline race as <code>timed-out</code>. Failed identity publication rolls back under the reconciliation deadline; if rollback also fails, settlement adopts the receipt identity only when Run-isolated daemon recovery returns the exact same value. Settlement takes the daemon executable from the controller-selected target and derives the Session name from the Run ID, so task-writable state cannot redirect the SSH controller process. It reconciles physical authority rather than trusting receipt cleanup flags and marks an interrupted active Run terminal <code>failed</code>. Exact stop re-observes the settled receipt so a Session identity recovered during startup cleanup is included in the public result.</p>
         </article>
-        <article class="card blue">
-          <h3><span class="priority p1">P1</span>Capability and version report</h3>
-          <p>Add package version, add-on pin, server pin, capture support, and supported call features to <code>doctor --json</code>. Remote preflight can then reject the wrong host before staging.</p>
+        <article class="card green">
+          <h3><span class="priority p0">Implemented</span>Capture capability report</h3>
+          <p><code>doctor --json</code> combines the local Scenario plan with the installed host's versioned viewport, Blender-window, and desktop capture capabilities. A requested unsupported capture fails before staging.</p>
         </article>
-        <article class="card blue">
-          <h3><span class="priority p1">P1</span>Window screenshot helper</h3>
-          <p>Expose a first-class full Blender window capture or document a stable <code>execute_code</code> recipe around <code>bpy.ops.screen.screenshot</code>. Keep it separate from the existing offscreen viewport image.</p>
+        <article class="card green">
+          <h3><span class="priority p0">Implemented</span>Window and desktop captures</h3>
+          <p>Payload schema 2 declares Blender-window and opt-in Windows-desktop captures separately. The window path calls <code>bpy.ops.screen.screenshot</code> through the exact daemon Session. Desktop capture stays host-local, revalidates exact authority, holds the host operation lock through a separately bounded Windows virtual-desktop copy and no-replace publication, and is never enabled by default.</p>
         </article>
       </div>
 

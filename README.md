@@ -10,7 +10,7 @@ Tailscale can provide private reachability, but Blender Box connects through a c
 
 ## Project status
 
-The first end-to-end slice supports read-only host checks, explicit setup, remote Scenario runs, reconnect status, exact stop, and local Evidence Bundles. It captures the Blender viewport only. It does not claim Blender-window or Windows-desktop evidence.
+The first end-to-end slice supports read-only host checks, explicit setup, local planning, capture-aware host diagnosis, remote Scenario runs, reconnect status, exact stop, and local Evidence Bundles. A Scenario can request distinct viewport, Blender-window, and opt-in Windows-desktop captures.
 
 The default test suite replaces SSH, the Scheduled Task, `blendersessiond`, the filesystem, and Blender with fakes. Proof against a real Windows Blender host is opt-in.
 
@@ -89,13 +89,13 @@ The check verifies the Windows identities, managed paths, ACLs, executables, ope
 
 ## Create a Run Payload
 
-A Run Payload lists the files to stage, the Python Scenario entry point, the daemon read timeout, and the viewport capture policy. Each `source` path is relative to the payload document. Each `destination` path is relative to the remote payload root.
+A Run Payload lists the files to stage, the Python Scenario entry point, the daemon read timeout, and its capture policy. Each `source` path is relative to the payload document. Each `destination` path is relative to the remote payload root.
 
 Create `payload.json` next to `scenario.py`:
 
 ```json
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "files": [
     {
       "source": "scenario.py",
@@ -105,12 +105,29 @@ Create `payload.json` next to `scenario.py`:
   "scenario": {
     "script": "scenario.py",
     "read_timeout_seconds": 600,
-    "capture_viewport": true
+    "capture_viewport": true,
+    "capture_blender_window": true,
+    "capture_desktop": false
   }
 }
 ```
 
-The Scenario call must return one JSON document with `schema_version: 1` and `status: "pass"`. A successful Run also requires one viewport capture when `capture_viewport` is `true`. Missing, duplicate, or unsolicited evidence fails the Run.
+The Scenario call must return one JSON document with `schema_version: 1` and `status: "pass"`. Payload schema 1 remains valid for the existing viewport-only contract. Blender-window and desktop captures require payload schema 2.
+
+- `capture_viewport` records scene pixels through the daemon's offscreen or window-grab path.
+- `capture_blender_window` records the full Blender window, including its UI chrome, through `bpy.ops.screen.screenshot` on the exact Session.
+- `capture_desktop` records the Windows virtual desktop. It is always off by default and can contain unrelated private information.
+
+A successful Run requires exactly one file for each requested capture. Missing, duplicate, malformed, or unsolicited evidence fails the Run.
+
+Validate locally without contacting the host, then inspect the installed host capabilities:
+
+```sh
+go run ./cmd/blender-box plan --target target.json --payload payload.json --json
+go run ./cmd/blender-box doctor --target target.json --payload payload.json --json
+```
+
+`doctor` is read-only. It checks the target and payload, runs the installed host inspection, and reports support for every requested capture before staging or launching Blender. Schema 1 viewport-only Payloads retain the existing host inspection path. Every schema 2 Payload requires the matching upgraded host binary.
 
 ## Run the Scenario
 
@@ -160,8 +177,10 @@ A successful Evidence Bundle contains:
 - `evidence.json` with the Run identity, request identity, deadline, Session identity, terminal state, and cleanup result.
 - `result/scenario-result.json` with the Scenario Result.
 - `screenshots/viewport.png` when the Run requests a viewport capture.
+- `screenshots/blender-window.png` when the Run requests a Blender-window capture.
+- `screenshots/desktop.png` only when the Run explicitly requests a desktop capture.
 
-The client verifies hashes after transfer and never replaces an existing evidence file.
+Schema 2 manifest entries record the capture type, method, dimensions, media type, byte size, SHA-256, source path, and exact Session identity. The client verifies hashes and PNG dimensions after transfer and never replaces an existing evidence file. Keep desktop Evidence Bundles private unless you have reviewed the image.
 
 ## Ownership boundaries
 

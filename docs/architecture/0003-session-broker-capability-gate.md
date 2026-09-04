@@ -26,6 +26,8 @@ Design C gives `blendersessiond` one versioned capability command with a require
 
 Slice 0 uses Design C. After proving the daemon path is trusted, `windows check` runs `blendersessiond capabilities --require blender-box-v1 --require-capability typed-call-error-reason --require-capability windows-setup-owner-v1`. Those capabilities mean the daemon returns opaque Session identities, requires them for call and stop, accepts bounded call read timeouts, types a read-timeout failure independently of process exit prose, and supports the fenced Windows setup-owner contract. Explicit setup applies the daemon ACL, runs the same probe, and registers the Scheduled Task only after it passes.
 
+Capture-aware `doctor` keeps that daemon gate, then asks an upgraded `blender-box` host binary for its built-in capture implementations. The host command proves the installed binary contains the schema 2, Blender-window, and desktop paths; it does not claim a live capture. Schema 1 viewport-only and no-capture Payloads retain the original inspection path so a client update does not make the existing workflow depend on a new host command. Every schema 2 Payload requires the upgraded host binary and fails before staging when it is absent.
+
 The probe has a ten-second process deadline and gives stdout and stderr distinct spellings of the Windows null device, so output never enters PowerShell or client memory. It touches the process handle before waiting because Windows PowerShell otherwise may not retain the exit code for a redirected `Start-Process`. Failure is readiness failure; it never falls back to an unfenced call or stop.
 
 ## Consequences

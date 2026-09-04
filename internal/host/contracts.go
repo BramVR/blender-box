@@ -7,6 +7,16 @@ type Acknowledgement struct {
 	Status        string `json:"status"`
 }
 
+type CapabilitiesRequest struct {
+	SchemaVersion int `json:"schema_version"`
+}
+
+type CapabilitiesResponse struct {
+	SchemaVersion int                           `json:"schema_version"`
+	Status        string                        `json:"status"`
+	Captures      []orchestrator.CaptureSupport `json:"captures"`
+}
+
 type AcquireRequest struct {
 	SchemaVersion int                    `json:"schema_version"`
 	Claim         orchestrator.LockClaim `json:"claim"`

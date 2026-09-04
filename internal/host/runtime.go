@@ -3,6 +3,8 @@ package host
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
+	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -11,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf16"
 
 	"github.com/BramVR/blender-box/internal/orchestrator"
 )
@@ -32,6 +35,28 @@ type Runtime struct {
 
 func NewRuntime(processes ProcessRunner) *Runtime {
 	return &Runtime{processes: processes, readyPollInterval: defaultReadyPoll}
+}
+
+func (runtime *Runtime) Check(ctx context.Context) error {
+	script := `$ErrorActionPreference='Stop'; Add-Type -AssemblyName System.Drawing; Add-Type -AssemblyName System.Windows.Forms; if ($null -eq [System.Drawing.Bitmap] -or $null -eq [System.Windows.Forms.SystemInformation]) { throw 'Windows desktop capture APIs are unavailable' }`
+	_, err := runtime.processes.Run(ctx, "powershell.exe", powershellArguments(script), nil)
+	return err
+}
+
+func (runtime *Runtime) Capture(ctx context.Context, path string) error {
+	encodedPath := base64.StdEncoding.EncodeToString([]byte(path))
+	script := fmt.Sprintf(`$ErrorActionPreference='Stop'; Add-Type -AssemblyName System.Drawing; Add-Type -AssemblyName System.Windows.Forms; $path=[System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String('%s')); $bounds=[System.Windows.Forms.SystemInformation]::VirtualScreen; if ($bounds.Width -le 0 -or $bounds.Height -le 0) { throw 'Windows virtual desktop is unavailable' }; $bitmap=New-Object System.Drawing.Bitmap($bounds.Width,$bounds.Height); $graphics=[System.Drawing.Graphics]::FromImage($bitmap); try { $graphics.CopyFromScreen($bounds.X,$bounds.Y,0,0,$bounds.Size,([System.Drawing.CopyPixelOperation]::SourceCopy -bor [System.Drawing.CopyPixelOperation]::CaptureBlt)); $bitmap.Save($path,[System.Drawing.Imaging.ImageFormat]::Png) } finally { $graphics.Dispose(); $bitmap.Dispose() }`, encodedPath)
+	_, err := runtime.processes.Run(ctx, "powershell.exe", powershellArguments(script), nil)
+	return err
+}
+
+func powershellArguments(script string) []string {
+	units := utf16.Encode([]rune(script))
+	encoded := make([]byte, len(units)*2)
+	for index, unit := range units {
+		binary.LittleEndian.PutUint16(encoded[index*2:], unit)
+	}
+	return []string{"-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand", base64.StdEncoding.EncodeToString(encoded)}
 }
 
 func (runtime *Runtime) Launch(ctx context.Context, taskName string) error {

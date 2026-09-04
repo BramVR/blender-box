@@ -18,6 +18,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/BramVR/blender-box/internal/capture"
 	"github.com/BramVR/blender-box/internal/orchestrator"
 	"github.com/BramVR/blender-box/internal/payload"
 )
@@ -25,6 +26,89 @@ import (
 type fakeTaskLauncher struct {
 	taskName string
 	launches int
+}
+
+func TestDesktopCaptureLeavesTimeForReconciliation(t *testing.T) {
+	if desktopCaptureTimeout >= reconciliationTimeout {
+		t.Fatalf("desktop capture timeout %s exhausts reconciliation timeout %s", desktopCaptureTimeout, reconciliationTimeout)
+	}
+}
+
+type fakeDesktopCapturer struct {
+	checkErr   error
+	captureErr error
+	paths      []string
+}
+
+type delayedDesktopCapturer struct {
+	started chan struct{}
+	release chan struct{}
+}
+
+func (fake *fakeDesktopCapturer) Check(context.Context) error {
+	return fake.checkErr
+}
+
+func (fake *fakeDesktopCapturer) Capture(_ context.Context, path string) error {
+	fake.paths = append(fake.paths, path)
+	if fake.captureErr != nil {
+		return fake.captureErr
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return err
+	}
+	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
+	if err != nil {
+		return err
+	}
+	if err := png.Encode(file, image.NewRGBA(image.Rect(0, 0, 1920, 1080))); err != nil {
+		file.Close()
+		return err
+	}
+	return file.Close()
+}
+
+func (capture *delayedDesktopCapturer) Check(context.Context) error { return nil }
+
+func (capture *delayedDesktopCapturer) Capture(_ context.Context, path string) error {
+	close(capture.started)
+	<-capture.release
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return err
+	}
+	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
+	if err != nil {
+		return err
+	}
+	if err := png.Encode(file, image.NewRGBA(image.Rect(0, 0, 1920, 1080))); err != nil {
+		file.Close()
+		return err
+	}
+	return file.Close()
+}
+
+func TestCapabilitiesReportBuiltInAndDesktopCaptureSupport(t *testing.T) {
+	desktop := &fakeDesktopCapturer{}
+	service := NewService(Dependencies{Desktop: desktop})
+
+	result, err := service.Capabilities(context.Background(), CapabilitiesRequest{SchemaVersion: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.SchemaVersion != 1 || result.Status != "pass" || len(result.Captures) != 3 {
+		t.Fatalf("capabilities = %+v", result)
+	}
+	for _, support := range result.Captures {
+		if !support.Supported {
+			t.Fatalf("capture support = %+v", support)
+		}
+	}
+
+	desktop.checkErr = errors.New("desktop API unavailable")
+	result, err = service.Capabilities(context.Background(), CapabilitiesRequest{SchemaVersion: 1})
+	if err != nil || result.Captures[2].Supported {
+		t.Fatalf("capabilities = %+v, error = %v", result, err)
+	}
 }
 
 type stoppingDaemon struct {
@@ -144,6 +228,7 @@ type fakeDaemon struct {
 	captureResponse  json.RawMessage
 	callError        error
 	scenarioResponse json.RawMessage
+	readyErrors      []error
 }
 
 type deadlineReadyDaemon struct {
@@ -221,6 +306,11 @@ func (fake *fakeDaemon) Recover(_ context.Context, _ DaemonRecover) (orchestrato
 
 func (fake *fakeDaemon) WaitReady(_ context.Context, request DaemonReady) error {
 	fake.readies = append(fake.readies, request)
+	if len(fake.readyErrors) > 0 {
+		err := fake.readyErrors[0]
+		fake.readyErrors = fake.readyErrors[1:]
+		return err
+	}
 	return nil
 }
 
@@ -230,6 +320,36 @@ func (fake *fakeDaemon) Call(_ context.Context, request DaemonCall) (json.RawMes
 		return nil, fake.callError
 	}
 	if request.Command == "execute_code" {
+		var parameters struct {
+			Code string `json:"code"`
+		}
+		if err := json.Unmarshal(request.Parameters, &parameters); err != nil {
+			return nil, err
+		}
+		if strings.Contains(parameters.Code, "bpy.ops.screen.screenshot") {
+			line := strings.SplitN(parameters.Code, "\n", 2)[0]
+			var path string
+			if !strings.HasPrefix(line, "_bbx_path = ") || json.Unmarshal([]byte(strings.TrimPrefix(line, "_bbx_path = ")), &path) != nil {
+				return nil, fmt.Errorf("invalid Blender-window path")
+			}
+			if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+				return nil, err
+			}
+			file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
+			if err != nil {
+				return nil, err
+			}
+			if err := png.Encode(file, image.NewRGBA(image.Rect(0, 0, 1280, 720))); err != nil {
+				file.Close()
+				return nil, err
+			}
+			if err := file.Close(); err != nil {
+				return nil, err
+			}
+			result, _ := json.Marshal(map[string]any{"schema_version": 1, "status": "pass", "filepath": path})
+			envelope, _ := json.Marshal(map[string]any{"executed": true, "result": string(result)})
+			return envelope, nil
+		}
 		if fake.scenarioResponse != nil {
 			return fake.scenarioResponse, nil
 		}
@@ -260,6 +380,193 @@ func (fake *fakeDaemon) Call(_ context.Context, request DaemonCall) (json.RawMes
 	}
 	response, _ := json.Marshal(map[string]any{"success": true, "method": "offscreen", "width": 800, "height": 600, "filepath": parameters.Filepath})
 	return response, nil
+}
+
+func TestServiceReturnsAllRequestedCaptureEvidenceWithTypedProvenance(t *testing.T) {
+	root := t.TempDir()
+	now := time.Now().UTC()
+	daemon := &fakeDaemon{}
+	desktop := &fakeDesktopCapturer{}
+	service := NewService(Dependencies{Tasks: &fakeTaskLauncher{}, Daemon: daemon, Desktop: desktop, Now: func() time.Time { return now }})
+	request := stageHostScenarioTestRun(t, service, root, now, 2, payload.Scenario{
+		Script:               "scenario.py",
+		ReadTimeoutSeconds:   600,
+		CaptureViewport:      true,
+		CaptureBlenderWindow: true,
+		CaptureDesktop:       true,
+	})
+
+	if _, err := service.Start(context.Background(), root, request); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.ExecutePending(context.Background(), root); err != nil {
+		t.Fatal(err)
+	}
+	receipt, err := service.Status(root, StatusRequest{SchemaVersion: 1, RunID: request.Claim.RunID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantTypes := []orchestrator.EvidenceType{
+		orchestrator.EvidenceScenarioResult,
+		orchestrator.EvidenceViewport,
+		orchestrator.EvidenceBlenderWindow,
+		orchestrator.EvidenceDesktop,
+	}
+	if receipt.State != orchestrator.StateComplete || receipt.Evidence.SchemaVersion != 2 || len(receipt.Evidence.Files) != len(wantTypes) {
+		t.Fatalf("receipt = %+v", receipt)
+	}
+	for index, file := range receipt.Evidence.Files {
+		if file.Type != wantTypes[index] || file.SourcePath != "evidence/"+file.Path || file.SessionID != receipt.SessionID || file.MediaType == "" {
+			t.Fatalf("evidence %d = %+v", index, file)
+		}
+	}
+	if len(desktop.paths) != 1 || len(daemon.readies) != 3 {
+		t.Fatalf("desktop paths = %v, readiness checks = %+v", desktop.paths, daemon.readies)
+	}
+}
+
+func TestStaleSessionCannotCaptureOrPublishDesktopEvidence(t *testing.T) {
+	root := t.TempDir()
+	now := time.Now().UTC()
+	daemon := &fakeDaemon{readyErrors: []error{nil, errors.New("replacement Session")}}
+	desktop := &fakeDesktopCapturer{}
+	service := NewService(Dependencies{Tasks: &fakeTaskLauncher{}, Daemon: daemon, Desktop: desktop, Now: func() time.Time { return now }})
+	request := stageHostScenarioTestRun(t, service, root, now, 2, payload.Scenario{
+		Script:             "scenario.py",
+		ReadTimeoutSeconds: 600,
+		CaptureDesktop:     true,
+	})
+
+	if _, err := service.Start(context.Background(), root, request); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.ExecutePending(context.Background(), root); err == nil {
+		t.Fatal("stale Session captured desktop evidence")
+	}
+	receipt, err := service.Status(root, StatusRequest{SchemaVersion: 1, RunID: request.Claim.RunID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if receipt.State != orchestrator.StateFailed || len(desktop.paths) != 0 {
+		t.Fatalf("receipt = %+v, desktop paths = %v", receipt, desktop.paths)
+	}
+	for _, file := range receipt.Evidence.Files {
+		if file.Type == orchestrator.EvidenceDesktop {
+			t.Fatalf("stale desktop evidence was published: %+v", file)
+		}
+	}
+}
+
+func TestCaptureFailureSettlesOwnedRunRoot(t *testing.T) {
+	root := t.TempDir()
+	now := time.Now().UTC()
+	service := NewService(Dependencies{
+		Tasks:   &fakeTaskLauncher{},
+		Daemon:  &fakeDaemon{},
+		Desktop: &fakeDesktopCapturer{captureErr: errors.New("capture failed")},
+		Now:     func() time.Time { return now },
+	})
+	request := stageHostScenarioTestRun(t, service, root, now, 2, payload.Scenario{
+		Script:             "scenario.py",
+		ReadTimeoutSeconds: 600,
+		CaptureDesktop:     true,
+	})
+	if _, err := service.Start(context.Background(), root, request); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.ExecutePending(context.Background(), root); err == nil {
+		t.Fatal("capture failure unexpectedly passed")
+	}
+	receipt, err := service.Status(root, StatusRequest{SchemaVersion: 1, RunID: request.Claim.RunID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cleanup, err := service.Settle(context.Background(), root, settleHostRequest(receipt))
+	if err != nil || !cleanup.Known() {
+		t.Fatalf("cleanup = %+v, error = %v", cleanup, err)
+	}
+	if _, err := os.Stat(runPath(root, request.Claim.RunID)); !os.IsNotExist(err) {
+		t.Fatalf("Run root remains after capture failure: %v", err)
+	}
+}
+
+func TestBlenderWindowCaptureNeverReplacesPublishedEvidence(t *testing.T) {
+	root := t.TempDir()
+	runID := orchestrator.RunID("bbx_01WINDOWNOREPLACERUN00000000")
+	request := orchestrator.RunRequest{
+		Claim: orchestrator.LockClaim{RunID: runID, RequestID: "req_01WINDOWNOREPLACEREQUEST000"},
+		Body: orchestrator.RequestBody{
+			SessionName:             "blender-box-window-test",
+			SessionBrokerExecutable: `C:\Fake\blendersessiond.exe`,
+			Payload:                 payload.Payload{SchemaVersion: 2},
+		},
+	}
+	path := filepath.Join(runPath(root, runID), "evidence", "screenshots", "blender-window.png")
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	original := []byte("already-published")
+	if err := os.WriteFile(path, original, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	service := NewService(Dependencies{Daemon: &fakeDaemon{}})
+
+	pending, err := service.captureBlenderWindow(context.Background(), root, request, "bss_exact-window-session-identity-123456", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := publishCapturePNG(runPath(root, runID), pending, 2, "bss_exact-window-session-identity-123456"); err == nil {
+		t.Fatal("capture replaced existing evidence")
+	}
+	cleanupCaptureTemporary(runPath(root, runID), pending.temporaryPath)
+	if contents := mustRead(t, path); !bytes.Equal(contents, original) {
+		t.Fatalf("published evidence changed: %q", contents)
+	}
+}
+
+func TestSettlementDuringDesktopCaptureWaitsForCaptureAndRemovesRunRoot(t *testing.T) {
+	root := t.TempDir()
+	now := time.Now().UTC()
+	desktop := &delayedDesktopCapturer{started: make(chan struct{}), release: make(chan struct{})}
+	service := NewService(Dependencies{Tasks: &fakeTaskLauncher{}, Daemon: &fakeDaemon{}, Desktop: desktop, Now: func() time.Time { return now }})
+	request := stageHostScenarioTestRun(t, service, root, now, 2, payload.Scenario{
+		Script:             "scenario.py",
+		ReadTimeoutSeconds: 600,
+		CaptureDesktop:     true,
+	})
+	if _, err := service.Start(context.Background(), root, request); err != nil {
+		t.Fatal(err)
+	}
+	executed := make(chan error, 1)
+	go func() { executed <- service.ExecutePending(context.Background(), root) }()
+	<-desktop.started
+	receipt, err := service.Status(root, StatusRequest{SchemaVersion: 1, RunID: request.Claim.RunID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	type settleResult struct {
+		cleanup orchestrator.CleanupState
+		err     error
+	}
+	settleStarted := make(chan struct{})
+	settled := make(chan settleResult, 1)
+	go func() {
+		close(settleStarted)
+		cleanup, err := service.Settle(context.Background(), root, settleHostRequest(receipt))
+		settled <- settleResult{cleanup: cleanup, err: err}
+	}()
+	<-settleStarted
+	close(desktop.release)
+	if err := <-executed; err != nil {
+		t.Fatalf("capture task failed before settlement: %v", err)
+	}
+	result := <-settled
+	if result.err != nil || !result.cleanup.Known() {
+		t.Fatalf("cleanup = %+v, error = %v", result.cleanup, result.err)
+	}
+	if _, err := os.Stat(runPath(root, request.Claim.RunID)); !os.IsNotExist(err) {
+		t.Fatalf("capture recreated settled Run root: %v", err)
+	}
 }
 
 func TestScenarioReadTimeoutPersistsTimedOutReceipt(t *testing.T) {
@@ -424,7 +731,8 @@ func TestViewportEvidenceRequiresMatchingPNGDimensions(t *testing.T) {
 			SessionBrokerExecutable: `C:\Fake\blendersessiond.exe`,
 		},
 	}
-	path := filepath.Join(runPath(root, runID), "evidence", "screenshots", "viewport.png")
+	definition, _ := capture.Describe(capture.Viewport)
+	path := captureTemporaryPath(root, request, definition)
 	response, err := json.Marshal(map[string]any{"success": true, "method": "offscreen", "width": 640, "height": 480, "filepath": path})
 	if err != nil {
 		t.Fatal(err)
@@ -1438,17 +1746,22 @@ func TestSettleAnchorsDaemonStopOutsideTamperedStoredRunRequest(t *testing.T) {
 
 func stageHostTestRun(t *testing.T, service *Service, root string, now time.Time, capture bool) orchestrator.RunRequest {
 	t.Helper()
+	return stageHostScenarioTestRun(t, service, root, now, 1, payload.Scenario{Script: "scenario.py", ReadTimeoutSeconds: 600, CaptureViewport: capture})
+}
+
+func stageHostScenarioTestRun(t *testing.T, service *Service, root string, now time.Time, schemaVersion int, scenario payload.Scenario) orchestrator.RunRequest {
+	t.Helper()
 	script := []byte("print scenario result\n")
 	hash := sha256.Sum256(script)
 	manifest := payload.Payload{
-		SchemaVersion: 1,
+		SchemaVersion: schemaVersion,
 		Files: []payload.File{{
 			Source:      "scenario.py",
 			Destination: "scenario.py",
 			Size:        int64(len(script)),
 			SHA256:      hex.EncodeToString(hash[:]),
 		}},
-		Scenario: payload.Scenario{Script: "scenario.py", ReadTimeoutSeconds: 600, CaptureViewport: capture},
+		Scenario: scenario,
 	}
 	claim := testHostClaim(now, "HOSTSTAGETEST")
 	body := orchestrator.RequestBody{
