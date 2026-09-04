@@ -31,6 +31,24 @@ type SetupResult struct {
 	HostSHA256    string `json:"host_sha256"`
 }
 
+type setupTransfer struct {
+	prepareGuard string
+	hostBinary   string
+	ownerScript  string
+}
+
+func newSetupTransfer(selected target.Target, transferID, attemptID string) setupTransfer {
+	return setupTransfer{
+		prepareGuard: fmt.Sprintf(`%s\.setup-%s-prepare.ps1`, selected.WorkRoot, transferID),
+		hostBinary:   fmt.Sprintf(`%s\.setup-%s.bin`, selected.WorkRoot, transferID),
+		ownerScript:  setupOwnerScriptPath(selected, attemptID),
+	}
+}
+
+func (transfer setupTransfer) remotePaths() [3]string {
+	return [3]string{transfer.prepareGuard, transfer.hostBinary, transfer.ownerScript}
+}
+
 func Setup(ctx context.Context, ssh SetupSSH, selected target.Target, source string, apply bool) (SetupResult, error) {
 	if err := selected.Validate(); err != nil {
 		return SetupResult{}, err
@@ -68,8 +86,7 @@ func Setup(ctx context.Context, ssh SetupSSH, selected target.Target, source str
 	if err != nil {
 		return SetupResult{}, fmt.Errorf("create setup Launch identity: %w", err)
 	}
-	stagedBinary := fmt.Sprintf(`%s\.setup-%s.bin`, selected.WorkRoot, transferID)
-	stagedScript := setupOwnerScriptPath(selected, attemptID)
+	transfer := newSetupTransfer(selected, transferID, attemptID)
 	localBinary, err := writeHostBinarySnapshot(contents)
 	if err != nil {
 		return SetupResult{}, err
@@ -78,7 +95,7 @@ func Setup(ctx context.Context, ssh SetupSSH, selected target.Target, source str
 		_ = os.Remove(localBinary)
 		_ = os.Remove(filepath.Dir(localBinary))
 	}()
-	script := setupScript(selected, result, stagedBinary)
+	script := setupScript(selected, result, transfer.hostBinary)
 	localScript, err := writeSetupScript(script)
 	if err != nil {
 		return SetupResult{}, err
@@ -88,14 +105,22 @@ func Setup(ctx context.Context, ssh SetupSSH, selected target.Target, source str
 	if len(prepare) == 0 || len(prepare) > maxSetupScript {
 		return SetupResult{}, fmt.Errorf("setup guard script exceeds its limit")
 	}
-	if _, err := ssh.Run(ctx, selected.SSHAlias, powerShellInputArguments(), []byte(prepare)); err != nil {
-		return SetupResult{}, fmt.Errorf("prepare Windows setup: %w", err)
+	localPrepare, err := writeSetupScript(prepare)
+	if err != nil {
+		return SetupResult{}, err
 	}
-	if err := ssh.Upload(ctx, selected.SSHAlias, localBinary, stagedBinary); err != nil {
-		return SetupResult{}, cleanupSetupUploads(ctx, ssh, selected, []string{stagedBinary, stagedScript}, fmt.Errorf("upload Windows host binary: %w", err))
+	defer os.Remove(localPrepare)
+	if err := ssh.Upload(ctx, selected.SSHAlias, localPrepare, transfer.prepareGuard); err != nil {
+		return SetupResult{}, cleanupSetupTransfer(ctx, ssh, selected, transfer, fmt.Errorf("upload Windows setup guard: %w", err))
 	}
-	if err := ssh.Upload(ctx, selected.SSHAlias, localScript, stagedScript); err != nil {
-		return SetupResult{}, cleanupSetupUploads(ctx, ssh, selected, []string{stagedBinary, stagedScript}, fmt.Errorf("upload Windows setup script: %w", err))
+	if _, err := ssh.Run(ctx, selected.SSHAlias, prepareSetupArguments(transfer.prepareGuard, []byte(prepare)), nil); err != nil {
+		return SetupResult{}, cleanupSetupTransfer(ctx, ssh, selected, transfer, fmt.Errorf("prepare Windows setup: %w", err))
+	}
+	if err := ssh.Upload(ctx, selected.SSHAlias, localBinary, transfer.hostBinary); err != nil {
+		return SetupResult{}, cleanupSetupTransfer(ctx, ssh, selected, transfer, fmt.Errorf("upload Windows host binary: %w", err))
+	}
+	if err := ssh.Upload(ctx, selected.SSHAlias, localScript, transfer.ownerScript); err != nil {
+		return SetupResult{}, cleanupSetupTransfer(ctx, ssh, selected, transfer, fmt.Errorf("upload Windows setup script: %w", err))
 	}
 	output, err := runOwnedSetup(ctx, ssh, selected, attemptID, launchID, []byte(script))
 	if err != nil {
@@ -103,16 +128,16 @@ func Setup(ctx context.Context, ssh SetupSSH, selected target.Target, source str
 		if !setupOwnerCleanupProved(err) {
 			return SetupResult{}, cause
 		}
-		return SetupResult{}, cleanupSetupUploads(ctx, ssh, selected, []string{stagedBinary, stagedScript}, cause)
+		return SetupResult{}, cleanupSetupTransfer(ctx, ssh, selected, transfer, cause)
 	}
 	applied, err := decodeSetupResult(output)
 	if err != nil {
-		return SetupResult{}, cleanupSetupUploads(ctx, ssh, selected, []string{stagedBinary, stagedScript}, fmt.Errorf("decode Windows setup result: %w", err))
+		return SetupResult{}, cleanupSetupTransfer(ctx, ssh, selected, transfer, fmt.Errorf("decode Windows setup result: %w", err))
 	}
 	if applied.SchemaVersion != 1 || applied.Status != "applied" || !applied.Applied || applied.HostSize != int64(len(contents)) || applied.HostSHA256 != hex.EncodeToString(hash[:]) {
-		return SetupResult{}, cleanupSetupUploads(ctx, ssh, selected, []string{stagedBinary, stagedScript}, fmt.Errorf("Windows setup returned an invalid contract"))
+		return SetupResult{}, cleanupSetupTransfer(ctx, ssh, selected, transfer, fmt.Errorf("Windows setup returned an invalid contract"))
 	}
-	if err := cleanupSetupUploads(ctx, ssh, selected, []string{stagedBinary, stagedScript}, nil); err != nil {
+	if err := cleanupSetupTransfer(ctx, ssh, selected, transfer, nil); err != nil {
 		return SetupResult{}, err
 	}
 	return applied, nil
@@ -170,8 +195,37 @@ func powerShellArguments(script string) []string {
 	return []string{"powershell.exe", "-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand", encodePowerShell(script)}
 }
 
-func powerShellInputArguments() []string {
-	return powerShellArguments("[Console]::In.ReadToEnd() | Invoke-Expression")
+func prepareSetupArguments(path string, contents []byte) []string {
+	hash := sha256.Sum256(contents)
+	script := fmt.Sprintf(`$ErrorActionPreference = 'Stop'
+$path = %s
+$expectedSize = [int64]%d
+$expectedHash = %s
+try {
+    $item = Get-Item -Force -LiteralPath $path -ErrorAction Stop
+    if ($item.PSIsContainer -or ([int64]$item.Attributes -band [int64][System.IO.FileAttributes]::ReparsePoint) -ne 0) { throw 'Setup guard is not a regular file.' }
+    $stream = [System.IO.File]::Open($path, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::Read)
+    try {
+        if ($stream.Length -ne $expectedSize) { throw 'Setup guard size mismatch.' }
+        $bytes = [byte[]]::new($expectedSize)
+        $total = 0
+        while ($total -lt $expectedSize) {
+            $read = $stream.Read($bytes, $total, [Math]::Min(4096, $expectedSize - $total))
+            if ($read -eq 0) { throw 'Setup guard ended early.' }
+            $total += $read
+        }
+        if ($stream.ReadByte() -ne -1) { throw 'Setup guard exceeds its declared size.' }
+    } finally { $stream.Dispose() }
+    $sha256 = [System.Security.Cryptography.SHA256]::Create()
+    try { $digest = $sha256.ComputeHash($bytes) } finally { $sha256.Dispose() }
+    $actualHash = ([System.BitConverter]::ToString($digest)).Replace('-', '').ToLowerInvariant()
+    if ($actualHash -ne $expectedHash) { throw 'Setup guard hash mismatch.' }
+    Remove-Item -Force -LiteralPath $path
+    [ScriptBlock]::Create([System.Text.Encoding]::UTF8.GetString($bytes)).Invoke()
+} finally {
+    if (Test-Path -LiteralPath $path -PathType Leaf) { Remove-Item -Force -LiteralPath $path }
+}`, powerShellLiteral(path), len(contents), powerShellLiteral(hex.EncodeToString(hash[:])))
+	return powerShellArguments(script)
 }
 
 func writeSetupScript(script string) (string, error) {
@@ -206,11 +260,11 @@ func writeSetupScript(script string) (string, error) {
 	return path, nil
 }
 
-func cleanupSetupUploads(ctx context.Context, ssh SetupSSH, selected target.Target, paths []string, cause error) error {
+func cleanupSetupTransfer(ctx context.Context, ssh SetupSSH, selected target.Target, transfer setupTransfer, cause error) error {
 	cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
 	defer cancel()
 	cleanupScript := "$ErrorActionPreference = 'Stop'\n"
-	for _, path := range paths {
+	for _, path := range transfer.remotePaths() {
 		literal := powerShellLiteral(path)
 		cleanupScript += fmt.Sprintf("if (Test-Path -LiteralPath %s -PathType Leaf) { Remove-Item -Force -LiteralPath %s }\n", literal, literal)
 	}

@@ -13,19 +13,20 @@ import (
 
 func TestRunOwnedSetupBoundsOwnerCallsByRequestDeadline(t *testing.T) {
 	fake := &scriptedSSH{}
-	fake.runResult = func(callCtx context.Context, call int, _ []string, input []byte) ([]byte, error) {
+	fake.runResult = func(callCtx context.Context, call int, arguments []string, input []byte) ([]byte, error) {
 		if call != 0 {
 			t.Fatalf("unexpected SSH call %d", call)
 		}
 		var request setupOwnerRequest
-		if err := json.Unmarshal(input, &request); err != nil {
+		rawRequest := setupOwnerRequestBytes(t, arguments, input)
+		if err := json.Unmarshal(rawRequest, &request); err != nil {
 			t.Fatal(err)
 		}
 		deadline, ok := callCtx.Deadline()
 		if !ok || !deadline.Equal(request.DeadlineUTC) {
 			t.Fatalf("SSH deadline = %v, present = %v; request deadline = %v", deadline, ok, request.DeadlineUTC)
 		}
-		hash := sha256.Sum256(input)
+		hash := sha256.Sum256(rawRequest)
 		return mustJSON(t, map[string]any{
 			"schema_version":   1,
 			"attempt_id":       request.AttemptID,
@@ -58,19 +59,20 @@ func TestRunOwnedSetupClampsRequestDeadlineToCaller(t *testing.T) {
 	ctx, cancel := context.WithDeadline(context.Background(), callerDeadline)
 	defer cancel()
 	fake := &scriptedSSH{}
-	fake.runResult = func(callCtx context.Context, call int, _ []string, input []byte) ([]byte, error) {
+	fake.runResult = func(callCtx context.Context, call int, arguments []string, input []byte) ([]byte, error) {
 		if call != 0 {
 			t.Fatalf("unexpected SSH call %d", call)
 		}
 		var request setupOwnerRequest
-		if err := json.Unmarshal(input, &request); err != nil {
+		rawRequest := setupOwnerRequestBytes(t, arguments, input)
+		if err := json.Unmarshal(rawRequest, &request); err != nil {
 			t.Fatal(err)
 		}
 		callDeadline, ok := callCtx.Deadline()
 		if !ok || !callDeadline.Equal(callerDeadline) || !request.DeadlineUTC.Equal(callerDeadline) {
 			t.Fatalf("caller = %v, SSH = %v, present = %v, request = %v", callerDeadline, callDeadline, ok, request.DeadlineUTC)
 		}
-		hash := sha256.Sum256(input)
+		hash := sha256.Sum256(rawRequest)
 		return mustJSON(t, map[string]any{
 			"schema_version":   1,
 			"attempt_id":       request.AttemptID,
@@ -96,15 +98,16 @@ func TestRunOwnedSetupClampsRequestDeadlineToCaller(t *testing.T) {
 
 func TestRunOwnedSetupPreservesProvenCleanupOnTerminalFailure(t *testing.T) {
 	fake := &scriptedSSH{}
-	fake.runResult = func(_ context.Context, call int, _ []string, input []byte) ([]byte, error) {
+	fake.runResult = func(_ context.Context, call int, arguments []string, input []byte) ([]byte, error) {
 		if call != 0 {
 			t.Fatalf("terminal tree_gone triggered redundant SSH call %d", call)
 		}
 		var request setupOwnerRequest
-		if err := json.Unmarshal(input, &request); err != nil {
+		rawRequest := setupOwnerRequestBytes(t, arguments, input)
+		if err := json.Unmarshal(rawRequest, &request); err != nil {
 			t.Fatal(err)
 		}
-		hash := sha256.Sum256(input)
+		hash := sha256.Sum256(rawRequest)
 		return mustJSON(t, map[string]any{
 			"schema_version":   1,
 			"attempt_id":       request.AttemptID,
@@ -219,13 +222,14 @@ func TestRunOwnedSetupPreservesStructuredLaunchError(t *testing.T) {
 	var request setupOwnerRequest
 	var requestHash string
 	fake := &scriptedSSH{}
-	fake.runResult = func(_ context.Context, call int, _ []string, input []byte) ([]byte, error) {
+	fake.runResult = func(_ context.Context, call int, arguments []string, input []byte) ([]byte, error) {
 		switch call {
 		case 0:
-			if err := json.Unmarshal(input, &request); err != nil {
+			rawRequest := setupOwnerRequestBytes(t, arguments, input)
+			if err := json.Unmarshal(rawRequest, &request); err != nil {
 				t.Fatal(err)
 			}
-			hash := sha256.Sum256(input)
+			hash := sha256.Sum256(rawRequest)
 			requestHash = hex.EncodeToString(hash[:])
 			return mustJSON(t, map[string]any{
 				"schema_version": 1,

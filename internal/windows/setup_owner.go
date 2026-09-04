@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strings"
 	"time"
 
 	"github.com/BramVR/blender-box/internal/target"
@@ -259,12 +260,8 @@ func invokeSetupOwner(ctx context.Context, ssh SetupSSH, selected target.Target,
 	arguments := []string{"setup-owner", operation}
 	arguments = append(arguments, fence...)
 	arguments = append(arguments, "--json")
-	command := "$ErrorActionPreference = 'Stop'\n$env:BLENDERSESSIOND_STATE_DIR = " + powerShellLiteral(setupOwnerRoot(selected)) + "\n& " + powerShellLiteral(selected.SessionBrokerExecutable)
-	for _, argument := range arguments {
-		command += " " + powerShellLiteral(argument)
-	}
-	command += "\nif ($LASTEXITCODE -notin @(0, 1)) { throw 'setup owner command returned an invalid exit code' }\nexit 0"
-	output, err := ssh.Run(ctx, selected.SSHAlias, powerShellArguments(command), input)
+	command := setupOwnerCommand(selected, arguments, input)
+	output, err := ssh.Run(ctx, selected.SSHAlias, powerShellArguments(command), nil)
 	if err != nil {
 		return setupOwnerView{}, fmt.Errorf("setup owner %s: %w", operation, err)
 	}
@@ -288,6 +285,73 @@ func invokeSetupOwner(ctx context.Context, ssh SetupSSH, selected target.Target,
 		return setupOwnerView{}, fmt.Errorf("decode setup owner %s response: %w", operation, err)
 	}
 	return view, nil
+}
+
+func setupOwnerCommand(selected target.Target, arguments []string, input []byte) string {
+	if len(input) == 0 {
+		command := "$ErrorActionPreference = 'Stop'\n$env:BLENDERSESSIOND_STATE_DIR = " + powerShellLiteral(setupOwnerRoot(selected)) + "\n& " + powerShellLiteral(selected.SessionBrokerExecutable)
+		for _, argument := range arguments {
+			command += " " + powerShellLiteral(argument)
+		}
+		return command + "\nif ($LASTEXITCODE -notin @(0, 1)) { throw 'setup owner command returned an invalid exit code' }\nexit 0"
+	}
+	command := fmt.Sprintf(`$ErrorActionPreference = 'Stop'
+$r = [Convert]::FromBase64String(%s)
+$i = [Diagnostics.ProcessStartInfo]::new()
+$i.FileName = %s
+$i.Arguments = %s
+$i.UseShellExecute = $false
+$i.RedirectStandardInput = $true
+$i.RedirectStandardOutput = $true
+$i.RedirectStandardError = $true
+$i.EnvironmentVariables['BLENDERSESSIOND_STATE_DIR'] = %s
+$p = [Diagnostics.Process]::new()
+$p.StartInfo = $i
+if (-not $p.Start()) { throw 'setup owner process did not start' }
+try {
+    $s = $p.StandardInput.BaseStream
+    try { $s.Write($r, 0, $r.Length); $s.Flush() } finally { $s.Close() }
+    $o = [IO.MemoryStream]::new()
+    $e = [IO.MemoryStream]::new()
+    $ob = [byte[]]::new(4096)
+    $eb = [byte[]]::new(4096)
+    $od = $false
+    $ed = $false
+    $ot = $p.StandardOutput.BaseStream.ReadAsync($ob, 0, $ob.Length)
+    $et = $p.StandardError.BaseStream.ReadAsync($eb, 0, $eb.Length)
+    while (-not ($od -and $ed)) {
+        $q = @()
+        if (-not $od) { $q += $ot }
+        if (-not $ed) { $q += $et }
+        [void][Threading.Tasks.Task]::WaitAny([Threading.Tasks.Task[]]$q)
+        if (-not $od -and $ot.IsCompleted) {
+            $n = $ot.GetAwaiter().GetResult()
+            if ($n -eq 0) { $od = $true } else {
+                if ($o.Length + $n -gt %d) { throw 'setup owner stdout exceeded its limit' }
+                $o.Write($ob, 0, $n)
+                $ot = $p.StandardOutput.BaseStream.ReadAsync($ob, 0, $ob.Length)
+            }
+        }
+        if (-not $ed -and $et.IsCompleted) {
+            $n = $et.GetAwaiter().GetResult()
+            if ($n -eq 0) { $ed = $true } else {
+                if ($e.Length + $n -gt %d) { throw 'setup owner stderr exceeded its limit' }
+                $e.Write($eb, 0, $n)
+                $et = $p.StandardError.BaseStream.ReadAsync($eb, 0, $eb.Length)
+            }
+        }
+    }
+    $p.WaitForExit()
+    [Console]::Out.Write([Text.Encoding]::UTF8.GetString($o.ToArray()))
+    [Console]::Error.Write([Text.Encoding]::UTF8.GetString($e.ToArray()))
+    if ($p.ExitCode -notin @(0, 1)) { throw 'setup owner command returned an invalid exit code' }
+} catch {
+    if (-not $p.HasExited) { $p.Kill(); $p.WaitForExit() }
+    throw
+} finally { $p.Dispose() }
+exit 0`, powerShellLiteral(base64.StdEncoding.EncodeToString(input)), powerShellLiteral(selected.SessionBrokerExecutable), powerShellLiteral(strings.Join(arguments, " ")), powerShellLiteral(setupOwnerRoot(selected)), maxSetupOwnerResponse, maxSetupOwnerResponse)
+	command = strings.ReplaceAll(command, "\n        ", "\n")
+	return strings.ReplaceAll(command, "\n    ", "\n")
 }
 
 func validateSetupOwnerResponseShape(status string, fields map[string]json.RawMessage) error {

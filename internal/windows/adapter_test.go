@@ -20,12 +20,13 @@ import (
 )
 
 type scriptedSSH struct {
-	outputs   [][]byte
-	arguments [][]string
-	inputs    [][]byte
-	uploads   []scriptedUpload
-	runHook   func()
-	runResult func(context.Context, int, []string, []byte) ([]byte, error)
+	outputs      [][]byte
+	arguments    [][]string
+	inputs       [][]byte
+	uploads      []scriptedUpload
+	runHook      func()
+	runResult    func(context.Context, int, []string, []byte) ([]byte, error)
+	uploadResult func(context.Context, int, string, string, string) error
 }
 
 type scriptedUpload struct {
@@ -54,12 +55,15 @@ func (fake *scriptedSSH) Run(ctx context.Context, _ string, arguments []string, 
 	return output, nil
 }
 
-func (fake *scriptedSSH) Upload(_ context.Context, host, source, destination string) error {
+func (fake *scriptedSSH) Upload(ctx context.Context, host, source, destination string) error {
 	contents, err := os.ReadFile(source)
 	if err != nil {
 		return err
 	}
 	fake.uploads = append(fake.uploads, scriptedUpload{host: host, source: source, destination: destination, contents: contents})
+	if fake.uploadResult != nil {
+		return fake.uploadResult(ctx, len(fake.uploads)-1, host, source, destination)
+	}
 	return nil
 }
 
