@@ -1049,7 +1049,7 @@ func validateUIBatchReceipt(receipt RunReceipt, batch *uiaction.Batch) error {
 	}
 	for i, r := range receipt.UIActions.Receipts {
 		if r.Kind != batch.Actions[i].Kind() || r.Outcome == uiaction.Queued && r.EventCount != batch.Actions[i].EventCount() {
-			return fmt.Errorf("UI action kind changed")
+			return fmt.Errorf("UI action differs from declared batch")
 		}
 		if receipt.State.terminal() && r.Outcome == uiaction.Pending {
 			return fmt.Errorf("terminal UI receipt is pending")
