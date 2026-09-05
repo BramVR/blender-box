@@ -1,0 +1,24 @@
+# Blender Box
+
+> A command-line tool for running Python test scripts in Blender on an owned Windows desktop over SSH. Results and requested screenshots return to the development checkout.
+
+Blender Box orchestrates runs, transfers declared files, and collects evidence. Scenario scripts define assertions. The host-local blendersessiond owns Blender's process lifecycle. Blender opens in a logged-in Windows desktop; this is not a headless render service or a built-in AI model.
+
+## Documentation
+
+- [Overview, setup tutorial, and FAQ](https://bramvr.github.io/blender-box/): Requirements, the complete cube test, capture types, and recovery.
+- [Command reference](https://bramvr.github.io/blender-box/commands.html): Setup, plan, doctor, run, status, and stop.
+- [Source and CLI examples](https://github.com/BramVR/blender-box/blob/main/README.md): Current implementation and executable examples in Markdown.
+
+## Contracts
+
+- [Run and evidence contract](https://github.com/BramVR/blender-box/blob/main/docs/architecture/0001-slice-0-run-boundary.md): Scenario result format, evidence, and cleanup.
+- [Windows identity requirements](https://github.com/BramVR/blender-box/blob/main/docs/architecture/0002-slice-0-windows-identity.md): SSH and interactive-user identity.
+- [Broker capability requirements](https://github.com/BramVR/blender-box/blob/main/docs/architecture/0003-session-broker-capability-gate.md): Required blendersessiond operations.
+- [Windows setup ownership](https://github.com/BramVR/blender-box/blob/main/docs/architecture/0004-fenced-windows-setup-owner.md): Setup process ownership.
+
+## Optional
+
+- [blendersessiond](https://github.com/BramVR/blendersessiond): Companion process manager installed on Windows.
+- [Automated checks](https://github.com/BramVR/blender-box/blob/main/docs/architecture/ci.md): Test boundaries and opt-in live verification.
+- [Issues](https://github.com/BramVR/blender-box/issues): Report problems and follow development.

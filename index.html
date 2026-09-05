@@ -4,14 +4,155 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="theme-color" content="#f6f5f1">
-  <meta name="description" content="Run your Python scripts in Blender on a Windows machine you control. Start from your development checkout and get JSON results and screenshots back in your project.">
-  <title>Blender Box · Run Blender scripts on a remote Windows desktop</title>
+  <meta name="description" content="Run and test Blender Python scripts on your Windows machine over SSH. Get JSON results and screenshots back. Setup guide, examples, and FAQ.">
+  <title>Blender Box | Remote Blender automation and testing</title>
+  <link rel="canonical" href="https://bramvr.github.io/blender-box/">
+  <link rel="sitemap" type="application/xml" href="sitemap.xml">
+  <link rel="alternate" type="text/plain" href="llms.txt" title="Blender Box documentation for agents">
+  <meta name="robots" content="index, follow, max-image-preview:large, max-snippet:-1, max-video-preview:-1">
+  <meta property="og:type" content="website">
+  <meta property="og:site_name" content="Blender Box">
+  <meta property="og:locale" content="en_US">
+  <meta property="og:title" content="Blender Box | Remote Blender automation and testing">
+  <meta property="og:description" content="Run and test Blender Python scripts on your Windows machine over SSH. Get JSON results and screenshots back. Setup guide, examples, and FAQ.">
+  <meta property="og:url" content="https://bramvr.github.io/blender-box/">
+  <meta property="og:image" content="https://bramvr.github.io/blender-box/social-preview.png">
+  <meta property="og:image:width" content="2172">
+  <meta property="og:image:height" content="724">
+  <meta property="og:image:alt" content="Blender Box sends scripts to a remote Blender host and brings back test evidence.">
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="Blender Box | Remote Blender automation and testing">
+  <meta name="twitter:description" content="Run and test Blender Python scripts on your Windows machine over SSH. Get JSON results and screenshots back. Setup guide, examples, and FAQ.">
+  <meta name="twitter:image" content="https://bramvr.github.io/blender-box/social-preview.png">
+  <meta name="twitter:image:alt" content="Blender Box remote Blender testing workflow.">
+  <script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@graph": [
+    {
+      "@type": "WebSite",
+      "@id": "https://bramvr.github.io/blender-box/#website",
+      "name": "Blender Box",
+      "url": "https://bramvr.github.io/blender-box/",
+      "inLanguage": "en"
+    },
+    {
+      "@type": "SoftwareSourceCode",
+      "@id": "https://bramvr.github.io/blender-box/#software",
+      "name": "Blender Box",
+      "description": "A command-line tool that runs Python test scripts in Blender on an owned Windows desktop over SSH and returns JSON results and screenshots.",
+      "url": "https://bramvr.github.io/blender-box/",
+      "codeRepository": "https://github.com/BramVR/blender-box",
+      "programmingLanguage": "Go",
+      "runtimePlatform": "Windows Blender host; macOS or Linux development checkout",
+      "author": {
+        "@type": "Person",
+        "name": "Bram Van Rompuy",
+        "url": "https://github.com/BramVR"
+      },
+      "sameAs": [
+        "https://github.com/BramVR/blender-box"
+      ]
+    },
+    {
+      "@type": [
+        "WebPage",
+        "FAQPage"
+      ],
+      "@id": "https://bramvr.github.io/blender-box/#page",
+      "url": "https://bramvr.github.io/blender-box/",
+      "name": "Blender Box documentation and FAQ",
+      "isPartOf": {
+        "@id": "https://bramvr.github.io/blender-box/#website"
+      },
+      "about": {
+        "@id": "https://bramvr.github.io/blender-box/#software"
+      },
+      "inLanguage": "en",
+      "mainEntity": [
+        {
+          "@type": "Question",
+          "@id": "https://bramvr.github.io/blender-box/#faq-what-is-blender-box",
+          "name": "What is Blender Box?",
+          "acceptedAnswer": {
+            "@type": "Answer",
+            "text": "Blender Box is a command-line tool for running Python scripts in Blender on a Windows machine you control. It copies declared files over SSH, starts Blender in the logged-in desktop, and returns the script's JSON result and requested screenshots to your development checkout."
+          }
+        },
+        {
+          "@type": "Question",
+          "@id": "https://bramvr.github.io/blender-box/#faq-who-is-it-for",
+          "name": "Who is Blender Box for?",
+          "acceptedAnswer": {
+            "@type": "Answer",
+            "text": "It is for developers testing Blender scripts and add-ons on Windows, including developers working from macOS or Linux. You write the test script and its assertions. Blender Box handles the remote run, file transfer, screenshots, and cleanup."
+          }
+        },
+        {
+          "@type": "Question",
+          "@id": "https://bramvr.github.io/blender-box/#faq-headless-or-gui",
+          "name": "Does Blender Box run Blender headlessly?",
+          "acceptedAnswer": {
+            "@type": "Answer",
+            "text": "No. Blender opens in a logged-in Windows desktop through a Scheduled Task. This lets a test capture the Blender window and its controls as well as viewport imagery. Blender Box requires an interactive Windows user session."
+          }
+        },
+        {
+          "@type": "Question",
+          "@id": "https://bramvr.github.io/blender-box/#faq-requirements",
+          "name": "What do I need to run it?",
+          "acceptedAnswer": {
+            "@type": "Answer",
+            "text": "You need Go 1.23 or later, Git, and SSH on your development machine. The Windows host needs OpenSSH, Blender, compatible blendersessiond, a work directory, and a logged-in desktop user. The SSH account and Scheduled Task user must resolve to the same Windows security identifier. Blender Box setup installs the runner; it does not install Blender or blendersessiond."
+          }
+        },
+        {
+          "@type": "Question",
+          "@id": "https://bramvr.github.io/blender-box/#faq-tailscale",
+          "name": "Is Tailscale required?",
+          "acceptedAnswer": {
+            "@type": "Answer",
+            "text": "No. Blender Box connects through an SSH configuration alias. Tailscale can provide private network access, but a LAN, another VPN, or a bastion can provide that access too. The Blender MCP add-on stays on Windows loopback and is not exposed or forwarded."
+          }
+        },
+        {
+          "@type": "Question",
+          "@id": "https://bramvr.github.io/blender-box/#faq-coding-agents",
+          "name": "Can a coding agent use Blender Box?",
+          "acceptedAnswer": {
+            "@type": "Answer",
+            "text": "Yes. A coding agent can invoke the same CLI, use --json for structured command results, and read the returned test result and screenshots. Your Scenario script defines what a passing test means. Blender Box does not write the test or provide a built-in AI model."
+          }
+        },
+        {
+          "@type": "Question",
+          "@id": "https://bramvr.github.io/blender-box/#faq-returned-results",
+          "name": "What comes back after a successful test?",
+          "acceptedAnswer": {
+            "@type": "Answer",
+            "text": "A successful run returns an Evidence Bundle under artifacts/blender-box/<run-id>/ by default. It contains the script's JSON result, requested screenshots, file hashes, run and session identities, and cleanup facts. Viewport, Blender-window, and Windows-desktop captures are distinct. Desktop capture is opt-in."
+          }
+        },
+        {
+          "@type": "Question",
+          "@id": "https://bramvr.github.io/blender-box/#faq-connection-lost",
+          "name": "What happens if the SSH connection drops?",
+          "acceptedAnswer": {
+            "@type": "Answer",
+            "text": "Save the Run ID printed when the run starts. Use the status command to read the saved run state on Windows, or stop with that Run ID to stop the Blender session owned by the run. Blender Box uses the recorded session identity instead of matching unrelated Blender processes by name."
+          }
+        }
+      ]
+    }
+  ]
+}
+  </script>
   <link rel="icon" href="favicon.svg" type="image/svg+xml">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=Manrope:wght@400;500;600;650;700;750;800&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="styles.css?v=sidebar-1">
-  <script src="navigation.js?v=sidebar-1" defer></script>
+  <link rel="stylesheet" href="styles.css?v=discovery-1">
+  <script src="navigation.js?v=discovery-1" defer></script>
 </head>
 <body>
   <a class="skip-link" href="#main">Skip to content</a>
@@ -49,7 +190,8 @@
         <div class="nav-group">
           <p class="nav-heading">Reference</p>
           <a href="#evidence">Results and screenshots</a>
-          <a href="#reference">Commands</a>
+          <a href="#faq">FAQ</a>
+          <a href="commands.html">Command reference <span aria-hidden="true">↗</span></a>
           <a href="#architecture">Architecture</a>
         </div>
         <a class="sidebar-source" href="https://github.com/BramVR/blender-box/blob/main/README.md">Repository guide <span aria-hidden="true">↗</span></a>
@@ -284,17 +426,19 @@ go run ./cmd/blender-box doctor \
       <div class="wrap capture-note"><span class="capture-symbol" aria-hidden="true">↗</span><p>Use a viewport image to inspect the scene. Use a Blender window screenshot to check an add-on's controls or panels. Desktop capture is off by default because it can include other applications and private information. Review those images before sharing.</p></div>
     </section>
 
-    <section class="reference-section wrap" id="reference" aria-labelledby="reference-title">
-      <div class="reference-heading"><p class="eyebrow">REFERENCE</p><h2 id="reference-title">Command reference</h2><p>Use <code>--json</code> to read command results from a script or coding agent.</p></div>
-      <dl class="command-reference">
-        <div><dt><code>windows setup</code></dt><dd>Preview installation. With <code>--apply</code>, install the runner and register its Windows Scheduled Task.</dd></div>
-        <div><dt><code>windows check</code></dt><dd>Check the Windows installation without changing it or starting Blender.</dd></div>
-        <div><dt><code>plan</code></dt><dd>Validate the connection settings and file list locally.</dd></div>
-        <div><dt><code>doctor</code></dt><dd>Check the Windows installation and support for your requested screenshots.</dd></div>
-        <div><dt><code>run</code></dt><dd>Run your script in Blender and collect the result and requested screenshots.</dd></div>
-        <div><dt><code>status</code></dt><dd>Read the saved state of a run, including after a lost connection.</dd></div>
-        <div><dt><code>stop</code></dt><dd>Stop the Blender session created for the specified Run ID.</dd></div>
-      </dl>
+    <section class="faq-section wrap" id="faq" aria-labelledby="faq-title">
+      <p class="eyebrow">COMMON QUESTIONS</p>
+      <h2 id="faq-title">Blender Box FAQ</h2>
+      <p class="section-lead">Requirements, remote testing, and what to expect from a run.</p>
+      <details id="faq-what-is-blender-box"><summary>What is Blender Box?</summary><div class="details-body"><p>Blender Box is a command-line tool for running Python scripts in Blender on a Windows machine you control. It copies declared files over SSH, starts Blender in the logged-in desktop, and returns the script's JSON result and requested screenshots to your development checkout.</p></div></details>
+      <details id="faq-who-is-it-for"><summary>Who is Blender Box for?</summary><div class="details-body"><p>It is for developers testing Blender scripts and add-ons on Windows, including developers working from macOS or Linux. You write the test script and its assertions. Blender Box handles the remote run, file transfer, screenshots, and cleanup.</p></div></details>
+      <details id="faq-headless-or-gui"><summary>Does Blender Box run Blender headlessly?</summary><div class="details-body"><p>No. Blender opens in a logged-in Windows desktop through a Scheduled Task. This lets a test capture the Blender window and its controls as well as viewport imagery. Blender Box requires an interactive Windows user session.</p></div></details>
+      <details id="faq-requirements"><summary>What do I need to run it?</summary><div class="details-body"><p>You need Go 1.23 or later, Git, and SSH on your development machine. The Windows host needs OpenSSH, Blender, compatible blendersessiond, a work directory, and a logged-in desktop user. The SSH account and Scheduled Task user must resolve to the same Windows security identifier. Blender Box setup installs the runner; it does not install Blender or blendersessiond.</p></div></details>
+      <details id="faq-tailscale"><summary>Is Tailscale required?</summary><div class="details-body"><p>No. Blender Box connects through an SSH configuration alias. Tailscale can provide private network access, but a LAN, another VPN, or a bastion can provide that access too. The Blender MCP add-on stays on Windows loopback and is not exposed or forwarded.</p></div></details>
+      <details id="faq-coding-agents"><summary>Can a coding agent use Blender Box?</summary><div class="details-body"><p>Yes. A coding agent can invoke the same CLI, use --json for structured command results, and read the returned test result and screenshots. Your Scenario script defines what a passing test means. Blender Box does not write the test or provide a built-in AI model.</p></div></details>
+      <details id="faq-returned-results"><summary>What comes back after a successful test?</summary><div class="details-body"><p>A successful run returns an Evidence Bundle under artifacts/blender-box/&lt;run-id&gt;/ by default. It contains the script's JSON result, requested screenshots, file hashes, run and session identities, and cleanup facts. Viewport, Blender-window, and Windows-desktop captures are distinct. Desktop capture is opt-in.</p></div></details>
+      <details id="faq-connection-lost"><summary>What happens if the SSH connection drops?</summary><div class="details-body"><p>Save the Run ID printed when the run starts. Use the status command to read the saved run state on Windows, or stop with that Run ID to stop the Blender session owned by the run. Blender Box uses the recorded session identity instead of matching unrelated Blender processes by name.</p></div></details>
+      <p class="small-copy">Need a command or its flags? Open the <a href="commands.html">command reference</a>.</p>
     </section>
 
     <section class="architecture wrap" id="architecture" aria-labelledby="architecture-title">
@@ -309,7 +453,7 @@ go run ./cmd/blender-box doctor \
     </section>
   </main>
 
-  <footer class="site-footer wrap"><a class="footer-wordmark" href="#">blenderbox<span>.</span></a><p>An open-source command-line tool for remote Blender scripts.</p><a href="https://github.com/BramVR/blender-box">Source on GitHub <span aria-hidden="true">↗</span></a></footer>
+  <footer class="site-footer wrap"><a class="footer-wordmark" href="#">blenderbox<span>.</span></a><p>A command-line tool for remote Blender scripts.</p><div class="footer-links"><a href="llms.txt">Docs for agents</a><a href="sitemap.xml">Sitemap</a><a href="https://github.com/BramVR/blender-box">Source on GitHub <span aria-hidden="true">↗</span></a></div></footer>
   </div>
 </body>
 </html>

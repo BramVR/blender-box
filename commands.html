@@ -1,0 +1,173 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#f6f5f1">
+  <meta name="description" content="Blender Box CLI commands for Windows setup, planning, diagnostics, remote Blender tests, run status, and safe session cleanup.">
+  <title>Blender Box command reference | Setup, run, status and stop</title>
+  <link rel="canonical" href="https://bramvr.github.io/blender-box/commands.html">
+  <link rel="sitemap" type="application/xml" href="sitemap.xml">
+  <link rel="alternate" type="text/plain" href="llms.txt" title="Blender Box documentation for agents">
+  <meta name="robots" content="index, follow, max-image-preview:large, max-snippet:-1, max-video-preview:-1">
+  <meta property="og:type" content="website">
+  <meta property="og:site_name" content="Blender Box">
+  <meta property="og:locale" content="en_US">
+  <meta property="og:title" content="Blender Box command reference | Setup, run, status and stop">
+  <meta property="og:description" content="Blender Box CLI commands for Windows setup, planning, diagnostics, remote Blender tests, run status, and safe session cleanup.">
+  <meta property="og:url" content="https://bramvr.github.io/blender-box/commands.html">
+  <meta property="og:image" content="https://bramvr.github.io/blender-box/social-preview.png">
+  <meta property="og:image:width" content="2172">
+  <meta property="og:image:height" content="724">
+  <meta property="og:image:alt" content="Blender Box sends scripts to a remote Blender host and brings back test evidence.">
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="Blender Box command reference | Setup, run, status and stop">
+  <meta name="twitter:description" content="Blender Box CLI commands for Windows setup, planning, diagnostics, remote Blender tests, run status, and safe session cleanup.">
+  <meta name="twitter:image" content="https://bramvr.github.io/blender-box/social-preview.png">
+  <meta name="twitter:image:alt" content="Blender Box remote Blender testing workflow.">
+  <script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@graph": [
+    {
+      "@type": "WebSite",
+      "@id": "https://bramvr.github.io/blender-box/#website",
+      "name": "Blender Box",
+      "url": "https://bramvr.github.io/blender-box/",
+      "inLanguage": "en"
+    },
+    {
+      "@type": "SoftwareSourceCode",
+      "@id": "https://bramvr.github.io/blender-box/#software",
+      "name": "Blender Box",
+      "description": "A command-line tool that runs Python test scripts in Blender on an owned Windows desktop over SSH and returns JSON results and screenshots.",
+      "url": "https://bramvr.github.io/blender-box/",
+      "codeRepository": "https://github.com/BramVR/blender-box",
+      "programmingLanguage": "Go",
+      "runtimePlatform": "Windows Blender host; macOS or Linux development checkout",
+      "author": {
+        "@type": "Person",
+        "name": "Bram Van Rompuy",
+        "url": "https://github.com/BramVR"
+      },
+      "sameAs": [
+        "https://github.com/BramVR/blender-box"
+      ]
+    },
+    {
+      "@type": "WebPage",
+      "@id": "https://bramvr.github.io/blender-box/commands.html#page",
+      "url": "https://bramvr.github.io/blender-box/commands.html",
+      "name": "Blender Box command reference",
+      "isPartOf": {
+        "@id": "https://bramvr.github.io/blender-box/#website"
+      },
+      "about": {
+        "@id": "https://bramvr.github.io/blender-box/#software"
+      },
+      "inLanguage": "en",
+      "breadcrumb": {
+        "@type": "BreadcrumbList",
+        "itemListElement": [
+          {
+            "@type": "ListItem",
+            "position": 1,
+            "name": "Documentation",
+            "item": "https://bramvr.github.io/blender-box/"
+          },
+          {
+            "@type": "ListItem",
+            "position": 2,
+            "name": "Command reference",
+            "item": "https://bramvr.github.io/blender-box/commands.html"
+          }
+        ]
+      }
+    }
+  ]
+}
+  </script>
+  <link rel="icon" href="favicon.svg" type="image/svg+xml">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=Manrope:wght@400;500;600;650;700;750;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="styles.css?v=discovery-1">
+  <script src="navigation.js?v=discovery-1" defer></script>
+</head>
+<body>
+  <a class="skip-link" href="#main">Skip to content</a>
+  <header class="site-header wrap">
+    <a class="wordmark" href="./" aria-label="Blender Box home">
+      <svg viewBox="0 0 36 40" width="30" height="34" aria-hidden="true"><path d="M18 1 35 10.5v19L18 39 1 29.5v-19Z" fill="currentColor"/><path d="m1 10.5 17 9.6 17-9.6M18 20v19" fill="none" stroke="#f6f5f1" stroke-width="1.7"/></svg>
+      <span>blender<span class="wordmark-light">box</span><span class="wordmark-dot">.</span></span>
+    </a>
+    <nav aria-label="Main navigation">
+      <a class="header-docs" href="./#overview">Documentation</a>
+      <a class="github-link" href="https://github.com/BramVR/blender-box">GitHub <span aria-hidden="true">↗</span></a>
+    </nav>
+  </header>
+
+  <div class="docs-shell">
+    <aside class="docs-sidebar" aria-label="Documentation contents">
+      <button class="contents-toggle" type="button" aria-expanded="false" aria-controls="docs-navigation">On this page <span aria-hidden="true">+</span></button>
+      <nav id="docs-navigation" aria-label="Documentation sections">
+        <div class="nav-group">
+          <p class="nav-heading">Start here</p>
+          <a href="./#overview">Overview</a>
+          <a href="./#why">Why Blender Box?</a>
+          <a href="./#how-it-works">How it works</a>
+        </div>
+        <div class="nav-group">
+          <p class="nav-heading">Your first test</p>
+          <a href="./#before-you-start">Before you start</a>
+          <a href="./#build">Build from source</a>
+          <a href="./#target">Configure the connection</a>
+          <a href="./#setup">Install the Windows runner</a>
+          <a href="./#payload">Create the test files</a>
+          <a href="./#run">Run the cube test</a>
+          <a href="./#recover">Check or stop a run</a>
+        </div>
+        <div class="nav-group">
+          <p class="nav-heading">Reference</p>
+          <a href="./#evidence">Results and screenshots</a>
+          <a href="./#faq">FAQ</a>
+          <a href="commands.html" aria-current="page">Command reference <span aria-hidden="true">↗</span></a>
+          <a href="./#architecture">Architecture</a>
+        </div>
+        <a class="sidebar-source" href="https://github.com/BramVR/blender-box/blob/main/README.md">Repository guide <span aria-hidden="true">↗</span></a>
+      </nav>
+    </aside>
+  <main id="main" class="command-page wrap" tabindex="-1">
+    <nav class="breadcrumbs" aria-label="Breadcrumb"><a href="./">Documentation</a><span aria-hidden="true">/</span><span aria-current="page">Command reference</span></nav>
+    <p class="eyebrow">CLI REFERENCE</p>
+    <h1>Blender Box<br><span>command reference.</span></h1>
+    <p class="section-lead">Look up the commands for Windows setup, test execution, results, and recovery.</p>
+    <p>The usage below names the built executable <code>blender-box</code>. From a development checkout, replace it with <code>go run ./cmd/blender-box</code>. Use <code>--json</code> for structured output. The <a href="./#get-started">first-test guide</a> walks through the required files and a complete cube test.</p>
+    <div class="code-block"><div class="code-title"><span>SHELL</span><span>Usage · optional flags in brackets</span></div><pre tabindex="0"><code>blender-box plan --target PATH --payload PATH [--json]
+blender-box doctor --target PATH --payload PATH [--timeout 2m] [--json]
+blender-box windows check --target PATH [--json]
+blender-box windows setup --target PATH --host-binary PATH [--apply] [--json]
+blender-box run --target PATH --payload PATH [--evidence-dir PATH] [--timeout 15m] [--json]
+blender-box status --target PATH --run RUN_ID [--timeout 2m] [--json]
+blender-box stop --target PATH --run RUN_ID [--timeout 2m] [--json]</code></pre></div>
+    <section class="command-page-list" id="commands" aria-labelledby="reference-title">
+      <h2 id="reference-title">Available commands</h2>
+      <dl class="command-reference">
+        <div><dt><code>windows setup</code></dt><dd>Preview installation. With <code>--apply</code>, install the runner and register its Windows Scheduled Task.</dd></div>
+        <div><dt><code>windows check</code></dt><dd>Check the Windows installation without changing it or starting Blender.</dd></div>
+        <div><dt><code>plan</code></dt><dd>Validate the connection settings and file list locally.</dd></div>
+        <div><dt><code>doctor</code></dt><dd>Check the Windows installation and support for your requested screenshots.</dd></div>
+        <div><dt><code>run</code></dt><dd>Run your script in Blender and collect the result and requested screenshots.</dd></div>
+        <div><dt><code>status</code></dt><dd>Read the saved state of a run, including after a lost connection.</dd></div>
+        <div><dt><code>stop</code></dt><dd>Stop the Blender session created for the specified Run ID.</dd></div>
+      </dl>
+    </section>
+
+    <div class="note"><span class="note-label">RUN SAFETY</span><p><code>plan</code> and setup preview run locally. <code>windows check</code> and <code>doctor</code> inspect the host. <code>windows setup --apply</code> writes to Windows, <code>run</code> starts Blender, and <code>stop</code> stops the run's owned session.</p></div>
+    <p>Replace <code>PATH</code> with the appropriate local file path and <code>RUN_ID</code> with the ID printed when the run starts. Square brackets mark optional flags. The cube tutorial uses a 20-minute timeout; the default run timeout is 15 minutes.</p>
+    <a class="button" href="./#get-started">Follow the setup guide <span aria-hidden="true">↗</span></a>
+  </main>
+  <footer class="site-footer wrap"><a class="footer-wordmark" href="./">blenderbox<span>.</span></a><p>A command-line tool for remote Blender scripts.</p><div class="footer-links"><a href="llms.txt">Docs for agents</a><a href="sitemap.xml">Sitemap</a><a href="https://github.com/BramVR/blender-box">Source on GitHub <span aria-hidden="true">↗</span></a></div></footer>
+  </div>
+</body>
+</html>
