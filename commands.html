@@ -1,9 +1,9 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" data-theme="dark">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="theme-color" content="#f6f5f1">
+  <meta name="theme-color" content="#191e1b">
   <meta name="description" content="Blender Box CLI commands for Windows setup, planning, diagnostics, remote Blender tests, run status, and safe session cleanup.">
   <title>Blender Box command reference | Setup, run, status and stop</title>
   <link rel="canonical" href="https://bramvr.github.io/blender-box/commands.html">
@@ -91,7 +91,9 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=Manrope:wght@400;500;600;650;700;750;800&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="styles.css?v=readability-1">
+  <script>try { document.documentElement.dataset.theme = localStorage.getItem('blenderbox-theme') === 'light' ? 'light' : 'dark'; } catch {}</script>
+  <script src="theme.js?v=1" defer></script>
+  <link rel="stylesheet" href="styles.css?v=lamp-3d-1">
   <script src="navigation.js?v=readability-1" defer></script>
 </head>
 <body>
@@ -103,6 +105,7 @@
     </a>
     <nav aria-label="Main navigation">
       <a class="header-docs" href="./#overview">Documentation</a>
+      <button class="theme-toggle" type="button" aria-label="Dark mode" aria-pressed="false" title="Turn on dark mode" hidden><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="M20 15.5A8.6 8.6 0 0 1 8.5 4a8.7 8.7 0 1 0 11.5 11.5Z"/></svg><span>Dark mode</span></button>
       <a class="github-link" href="https://github.com/BramVR/blender-box">GitHub <span aria-hidden="true">↗</span></a>
     </nav>
   </header>
@@ -144,7 +147,7 @@
     <p class="eyebrow">CLI REFERENCE</p>
     <h1>Blender Box<br><span>command reference.</span></h1>
     <p class="section-lead">Look up the commands for Windows setup, test execution, results, and recovery.</p>
-    <p>The usage below names the built executable <code>blender-box</code>. From a development checkout, replace it with <code>go run ./cmd/blender-box</code>. Use <code>--json</code> for structured output. The <a href="./#get-started">first-test guide</a> walks through the required files and a complete cube test.</p>
+    <p>The usage below names the built executable <code>blender-box</code>. From a development checkout, replace it with <code>go run ./cmd/blender-box</code>. Use <code>--json</code> for structured output. The <a href="./#get-started">first-test guide</a> walks through the required files and a complete lamp test.</p>
     <div class="code-block"><div class="code-title"><span>SHELL</span><span>Usage · optional flags in brackets</span></div><pre tabindex="0"><code>blender-box plan --target PATH --payload PATH [--json]
 blender-box doctor --target PATH --payload PATH [--timeout 2m] [--json]
 blender-box windows check --target PATH [--json]

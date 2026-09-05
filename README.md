@@ -36,6 +36,16 @@ The [website-before-sidebar-2026-09-05 tag](https://github.com/BramVR/blender-bo
 
 `examples/lamp/scenario.py` is the complete script displayed in the tutorial. Keep the inline copy identical to this downloadable file. `examples/lamp/payload.json` requests the viewport and Blender-window captures, with desktop capture disabled.
 
-The two PNGs in `images/` are unedited Blender Box evidence from one successful Windows run. `examples/lamp/scenario-result.json` is the actual returned result; `provenance.json` records the Run and Session identities, tested runner and daemon commits, script and payload hashes, capture methods, original image hashes, and cleanup facts. It contains no target profile or private host details.
+`images/lamp-viewport.png` and `images/lamp-blender-window.png` are unedited Blender Box evidence from one successful Windows run. `examples/lamp/scenario-result.json` is the actual returned result; `provenance.json` records the Run and Session identities, tested runner and daemon commits, script and payload hashes, capture methods, original image hashes, and cleanup facts. It contains no target profile or private host details.
 
 To replace the gallery, run the exact example through Blender Box on an explicitly authorized owned host, verify every returned hash and cleanup flag, inspect both images for private information, then copy the original PNGs and result. Refresh provenance and the displayed JSON together. Do not substitute generated images for captured evidence. The screenshots use Blender's solid studio view with material colors; they are not final renders.
+
+## Interactive lamp and theme
+
+The hero uses `lamp-model.js` to recreate the tutorial lamp in Three.js. `lamp-viewer.js` loads the renderer near the viewport, renders on demand, and caps pixel density. Drag or use arrow keys to rotate; buttons and +/− zoom; Reset or R restores the initial view and solid shading. Wheel and vertical touch scrolling remain available for the page.
+
+The header Dark mode button works on both pages. `theme.js` remembers the choice in local storage when available; the early inline script applies it before paint. Dark mode dims the scene and turns on the lamp's warm light. The default is dark mode with the lamp lit; a saved light-mode choice takes precedence.
+
+`images/lamp-preview-light.png` and `images/lamp-preview-dark.png` are transparent browser renders of the default camera view. They appear before the viewer loads, without JavaScript or WebGL, after context loss, and in print. Regenerate both from the viewer when changing the model, camera, or lighting. They are illustrations; the Results gallery remains the original Blender evidence.
+
+Three.js is self-hosted under `vendor/three-r185/`, with its MIT license and verified package provenance. No CDN or build tool is needed. Check rotation, zoom direction, wireframe/reset, dark-mode persistence across pages, fallback images, and mobile page scrolling after viewer changes.

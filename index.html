@@ -1,9 +1,9 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" data-theme="dark">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="theme-color" content="#f6f5f1">
+  <meta name="theme-color" content="#191e1b">
   <meta name="description" content="Run and test Blender Python scripts on your Windows machine over SSH. Get JSON results and screenshots back. Setup guide, examples, and FAQ.">
   <title>Blender Box | Remote Blender automation and testing</title>
   <link rel="canonical" href="https://bramvr.github.io/blender-box/">
@@ -151,8 +151,12 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=Manrope:wght@400;500;600;650;700;750;800&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="styles.css?v=readability-1">
+  <script>try { document.documentElement.dataset.theme = localStorage.getItem('blenderbox-theme') === 'light' ? 'light' : 'dark'; } catch {}</script>
+  <script src="theme.js?v=1" defer></script>
+  <link rel="stylesheet" href="styles.css?v=lamp-3d-1">
   <script src="navigation.js?v=readability-1" defer></script>
+  <script type="importmap">{"imports":{"three":"./vendor/three-r185/three.module.min.js"}}</script>
+  <script type="module" src="lamp-viewer.js?v=1"></script>
 </head>
 <body>
   <a class="skip-link" href="#main">Skip to content</a>
@@ -163,6 +167,7 @@
     </a>
     <nav aria-label="Main navigation">
       <a class="header-docs" href="#overview">Documentation</a>
+      <button class="theme-toggle" type="button" aria-label="Dark mode" aria-pressed="false" title="Turn on dark mode" hidden><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="M20 15.5A8.6 8.6 0 0 1 8.5 4a8.7 8.7 0 1 0 11.5 11.5Z"/></svg><span>Dark mode</span></button>
       <a class="github-link" href="https://github.com/BramVR/blender-box">GitHub <span aria-hidden="true">↗</span></a>
     </nav>
   </header>
@@ -211,46 +216,20 @@
         </div>
         <p class="hero-footnote">Requires your own Windows machine with Blender installed.</p>
       </div>
-      <figure class="hero-figure">
-        <div class="figure-topline"><span>YOUR PROJECT → BLENDER</span><span>OVER SSH</span></div>
-        <svg class="run-diagram" viewBox="0 0 540 430" role="img" aria-labelledby="diagram-title diagram-desc">
-          <title id="diagram-title">Your project sends files to Blender and receives test results</title>
-          <desc id="diagram-desc">Blender Box copies your listed files over SSH to your Windows machine. Blender runs your Python script there. The JSON result and requested screenshots return to your project. The orange cube represents Blender in this diagram.</desc>
-          <defs>
-            <pattern id="grid" width="24" height="24" patternUnits="userSpaceOnUse"><path d="M24 0H0V24" fill="none" stroke="#dedfd8" stroke-width=".7"/></pattern>
-            <linearGradient id="cube-front" x1="0" x2="1" y2="1"><stop stop-color="#ff954e"/><stop offset="1" stop-color="#ed6326"/></linearGradient>
-            <marker id="arrow" markerWidth="6" markerHeight="6" refX="5" refY="3" orient="auto"><path d="m0 0 5 3-5 3" fill="none" stroke="#7b8177" stroke-width="1"/></marker>
-          </defs>
-          <path d="M28 82H513V374H28Z" fill="url(#grid)"/>
-          <path d="M24 82h9m-5-4v9m481-5h9m-5-4v9M24 374h9m-5-4v9m481-5h9m-5-4v9" fill="none" stroke="#9b9f94"/>
-          <g fill="none" stroke="#bfc3b7" stroke-width="1.1">
-            <path d="m155 154 119-66 119 66v134l-119 67-119-67Z"/>
-            <path d="m155 154 119 67 119-67m-119 67v134"/>
-            <path d="m134 171 119-66 119 66v134l-119 67-119-67Z"/>
-            <path d="m134 171 119 67 119-67m-119 67v134"/>
-          </g>
-          <path d="m199 302 105 59 112-62-106-58Z" fill="#d5d7ce" opacity=".35"/>
-          <path d="m173 152 111-62 111 62-111 63Z" fill="#ffac71"/>
-          <path d="m173 152 111 63v126l-111-64Z" fill="url(#cube-front)"/>
-          <path d="m284 215 111-63v125l-111 64Z" fill="#df5c26"/>
-          <path d="m173 152 111 63 111-63m-111 63v126" fill="none" stroke="#ffc091" stroke-width="1"/>
-          <path d="M311 74V41h153" fill="none" stroke="#7b8177"/>
-          <circle cx="311" cy="74" r="3" fill="#f47732"/>
-          <text x="353" y="28" class="diagram-label">YOUR WINDOWS MACHINE</text>
-          <path d="M133 236H58v79" fill="none" stroke="#7b8177" marker-end="url(#arrow)"/>
-          <text x="31" y="220" class="diagram-label">RESULTS</text>
-          <path d="M68 177V117h91" fill="none" stroke="#7b8177" stroke-dasharray="4 4" marker-end="url(#arrow)"/>
-          <text x="30" y="102" class="diagram-label">FILES</text>
-          <rect x="25" y="325" width="131" height="61" rx="3" fill="#f6f5f1" stroke="#aeb3a5"/>
-          <path d="m41 347 6 5-6 5m11 0h7" fill="none" stroke="#252724" stroke-width="1.5"/>
-          <text x="64" y="356" class="diagram-node">project</text>
-          <path d="M362 301h77v47h-44" fill="none" stroke="#7b8177"/>
-          <circle cx="362" cy="301" r="3" fill="#252724"/>
-          <rect x="231" y="371" width="218" height="31" rx="3" fill="#252724"/>
-          <text x="246" y="391" class="diagram-code">Blender runs your script</text>
-          <text x="304" y="275" transform="rotate(-29 304 275)" fill="#ffd9bf" class="cube-label">BLENDER</text>
-        </svg>
-        <figcaption><span><span class="figure-key" aria-hidden="true"></span> Workflow diagram</span><span>Results include requested screenshots.</span></figcaption>
+      <figure class="lamp-viewer" aria-label="Interactive desk lamp example">
+        <div class="lamp-stage">
+          <div class="lamp-poster"><img class="lamp-poster-light" src="images/lamp-preview-light.png" width="1200" height="1200" alt="Orange desk lamp with a brass stem on a teal circular plinth"><img class="lamp-poster-dark" src="images/lamp-preview-dark.png" width="1200" height="1200" alt="The orange desk lamp lit, casting warm light onto its base"></div>
+          <canvas hidden tabindex="0" aria-label="3D desk lamp. Arrow keys rotate, plus and minus zoom, R resets." aria-describedby="lamp-help"></canvas>
+        </div>
+        <div class="lamp-controls" hidden>
+          <span id="lamp-help">Drag to rotate</span>
+          <span class="lamp-turn"><button type="button" data-lamp="left" aria-label="Rotate lamp left">‹</button><button type="button" data-lamp="right" aria-label="Rotate lamp right">›</button></span>
+          <span class="lamp-zoom"><button type="button" data-lamp="zoom-out" aria-label="Zoom out">−</button><button type="button" data-lamp="zoom-in" aria-label="Zoom in">+</button></span>
+          <button type="button" data-lamp="wireframe" aria-pressed="false">◇ <span>Wireframe</span></button>
+          <button type="button" data-lamp="reset">↻ <span>Reset</span></button>
+        </div>
+        <figcaption>Interactive example · <a href="#evidence">View Blender screenshots ↗</a></figcaption>
+        <p class="lamp-feedback visually-hidden" role="status"></p>
       </figure>
     </section>
 

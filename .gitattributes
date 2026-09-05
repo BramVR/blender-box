@@ -1,0 +1,2 @@
+# Preserve upstream vendor bytes, including their indentation.
+vendor/** -whitespace
