@@ -31,3 +31,11 @@ After changes, check both pages at desktop and mobile widths, follow every local
 ## Saved version
 
 The [website-before-sidebar-2026-09-05 tag](https://github.com/BramVR/blender-box/tree/website-before-sidebar-2026-09-05) preserves the complete published website before the sidebar redesign. Restore its files in a new commit on `gh-pages` to publish that version again while keeping the branch history.
+
+## Desk lamp example and gallery
+
+`examples/lamp/scenario.py` is the complete script displayed in the tutorial. Keep the inline copy identical to this downloadable file. `examples/lamp/payload.json` requests the viewport and Blender-window captures, with desktop capture disabled.
+
+The two PNGs in `images/` are unedited Blender Box evidence from one successful Windows run. `examples/lamp/scenario-result.json` is the actual returned result; `provenance.json` records the Run and Session identities, tested runner and daemon commits, script and payload hashes, capture methods, original image hashes, and cleanup facts. It contains no target profile or private host details.
+
+To replace the gallery, run the exact example through Blender Box on an explicitly authorized owned host, verify every returned hash and cleanup flag, inspect both images for private information, then copy the original PNGs and result. Refresh provenance and the displayed JSON together. Do not substitute generated images for captured evidence. The screenshots use Blender's solid studio view with material colors; they are not final renders.

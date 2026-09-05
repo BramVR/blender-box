@@ -1,0 +1,52 @@
+{
+  "schema_version": 1,
+  "run_id": "bbx_eb2f9afedefbcf8767e62e9a1ae42e7d",
+  "session_id": "bss_t4MAdqqKYmDisTQ0U_n1nFcH0s-cakHnup_4WPvbwAg",
+  "tested_commit": "615959de89839d6f88e0f4fa4fad8116ccd67422",
+  "blendersessiond_commit": "6d40e40376897b09c18fc13c60296d37c5bef2ba",
+  "blender_version": "4.5.13",
+  "state": "complete",
+  "cleanup": {
+    "session_stopped": true,
+    "payload_removed": true,
+    "run_root_removed": true,
+    "lock_released": true
+  },
+  "script_sha256": "68329f409cdc3893caf7b9854e3020f6ba49916fc71a06d5da5335c6e5b51d25",
+  "payload_sha256": "15f9f6ce6418477e5cc3a6a5a78c818967757c70a03493ef1d363cfbc1e1dedd",
+  "files": [
+    {
+      "path": "result/scenario-result.json",
+      "type": "scenario-result",
+      "source_path": "evidence/result/scenario-result.json",
+      "media_type": "application/json",
+      "session_id": "bss_t4MAdqqKYmDisTQ0U_n1nFcH0s-cakHnup_4WPvbwAg",
+      "size": 126,
+      "sha256": "d5670ef3ef3ba03adcba056c80dbba4d40cf975407711224b5929bc28679ffe0"
+    },
+    {
+      "path": "screenshots/viewport.png",
+      "type": "viewport",
+      "source_path": "evidence/screenshots/viewport.png",
+      "media_type": "image/png",
+      "session_id": "bss_t4MAdqqKYmDisTQ0U_n1nFcH0s-cakHnup_4WPvbwAg",
+      "size": 217930,
+      "sha256": "44c60fb1b42141c17cc1c6d738a381d67e5aae7c6491cd374881f2f93f403eb5",
+      "capture_method": "offscreen",
+      "width": 1585,
+      "height": 893
+    },
+    {
+      "path": "screenshots/blender-window.png",
+      "type": "blender-window",
+      "source_path": "evidence/screenshots/blender-window.png",
+      "media_type": "image/png",
+      "session_id": "bss_t4MAdqqKYmDisTQ0U_n1nFcH0s-cakHnup_4WPvbwAg",
+      "size": 321290,
+      "sha256": "61d2f73bdb5619c18c348951283425be8522bc7e7fd3f8af4a49dceaa9bfcb3c",
+      "capture_method": "bpy.ops.screen.screenshot",
+      "width": 1920,
+      "height": 1017
+    }
+  ]
+}

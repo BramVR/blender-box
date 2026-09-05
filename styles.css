@@ -315,3 +315,38 @@ summary:hover { background: #eeeee7; }
   pre { white-space: pre-wrap; overflow-wrap: anywhere; }
   .step, .code-block, details { break-inside: avoid; }
 }
+
+/* Real evidence from the downloadable lamp Scenario. */
+.evidence-heading { max-width: 760px; margin-bottom: 30px; }
+.evidence-heading .eyebrow { color: #ffac7b; }
+.evidence-heading h2 { font-size: clamp(30px, 3vw, 42px); line-height: 1.15; letter-spacing: -1.6px; margin: 14px 0 20px; }
+.evidence-heading > p:last-child { color: #c7cabe; font-size: 14px; line-height: 1.85; }
+.capture-gallery { display: grid; grid-template-columns: minmax(0, 1.55fr) minmax(0, 1fr); align-items: start; gap: 20px; }
+.capture-card { margin: 0; overflow: hidden; border: 1px solid #50554c; border-radius: 7px; background: #303532; }
+.capture-label { display: flex; justify-content: space-between; gap: 12px; padding: 13px 15px; font: 10px/1.5 var(--mono); color: #d6dacc; letter-spacing: .5px; }
+.capture-card > a { display: block; }
+.capture-card > a:focus-visible { outline-color: #ffac7b; outline-offset: -3px; }
+.capture-card img { display: block; width: 100%; height: auto; }
+.capture-card figcaption { padding: 14px 16px; color: #c7cabe; font-size: 11px; line-height: 1.7; }
+.capture-card figcaption code { font-size: 10px; overflow-wrap: anywhere; }
+.capture-side { display: grid; gap: 18px; min-width: 0; }
+.capture-result { border: 1px solid #50554c; border-radius: 7px; background: #20251f; overflow: hidden; }
+.capture-result pre { margin: 0; padding: 5px 16px 14px; font: 11px/1.8 var(--mono); overflow: auto; }
+.capture-result > a { display: inline-block; margin: 0 16px 15px; font-size: 11px; color: #ffb889; }
+.capture-pass { color: #b9df99; }
+.capture-provenance { margin: 20px 0 42px; font-size: 11px; line-height: 1.8; color: #c7cabe; }
+.capture-provenance a { color: #ffb889; }
+.evidence-intro h3 { font-size: 23px; letter-spacing: -.6px; margin: 0 0 18px; line-height: 1.3; }
+@media (max-width: 1100px) {
+  .capture-gallery { grid-template-columns: 1fr; }
+  .capture-side { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); align-items: start; }
+}
+@media (max-width: 560px) {
+  .capture-side { grid-template-columns: 1fr; }
+  .capture-label { font-size: 9px; }
+}
+@media print {
+  .capture-gallery, .capture-side { display: block; }
+  .capture-card, .capture-result { break-inside: avoid; margin-bottom: 16px; }
+  .capture-card figcaption, .capture-result pre, .capture-label { color: black; background: white; }
+}

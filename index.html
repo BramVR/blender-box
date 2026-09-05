@@ -151,7 +151,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=Manrope:wght@400;500;600;650;700;750;800&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="styles.css?v=discovery-1">
+  <link rel="stylesheet" href="styles.css?v=lamp-1">
   <script src="navigation.js?v=discovery-1" defer></script>
 </head>
 <body>
@@ -184,7 +184,7 @@
           <a href="#target">Configure the connection</a>
           <a href="#setup">Install the Windows runner</a>
           <a href="#payload">Create the test files</a>
-          <a href="#run">Run the cube test</a>
+          <a href="#run">Run the lamp test</a>
           <a href="#recover">Check or stop a run</a>
         </div>
         <div class="nav-group">
@@ -275,9 +275,9 @@
       <div class="guide-content">
         <section class="guide-intro" id="before-you-start" aria-labelledby="guide-title">
           <p class="eyebrow">00 / BEFORE YOU START</p>
-          <h2 id="guide-title">Run the example cube test.</h2>
-          <p class="section-lead">This example creates a cube in Blender on your Windows machine and checks that it has eight vertices. You get the JSON result and two images back in your project, then Blender Box stops the Blender session.</p>
-          <p>The images show the viewport and the Blender window. The JSON result contains <code>"status": "pass"</code> and <code>"vertices": 8</code> when the assertion passes.</p>
+          <h2 id="guide-title">Build and test a studio desk lamp.</h2>
+          <p class="section-lead">Build an orange desk lamp with a curved shade, brass stem, and display plinth. The script checks its geometry and materials, then Blender Box returns the JSON result and two screenshots before stopping its Blender session.</p>
+          <p>The test expects ten mesh objects, four materials, and 2,305 faces in the shade before modifiers. <a href="#evidence">See the actual screenshots and result below.</a></p>
           <p>Run the shell commands below on macOS or Linux. Before you start, prepare these requirements.</p>
           <ul class="requirements">
             <li><span class="requirement-mark" aria-hidden="true">↗</span><div><strong>A developer machine</strong><span>Go 1.23 or later, Git, and SSH.</span></div></li>
@@ -339,7 +339,7 @@ GOOS=windows GOARCH=amd64 go build \
 
           <li class="step" id="payload">
             <div class="step-heading"><span class="step-number" aria-hidden="true">04</span><h2>Create the script and file list</h2></div>
-            <p>Blender Box calls a declared Blender workflow a <strong>Scenario</strong>. This Scenario has one Python script that creates and checks a cube.</p>
+            <p>Blender Box calls a declared Blender workflow a <strong>Scenario</strong>. This Scenario has one Python script that builds the lamp and checks its parts, shade geometry, and material assignments.</p>
             <p>Create <code>payload.json</code> in your checkout. This <strong>Run Payload</strong> lists the files to copy, the script to execute, and the screenshots to collect. The example requests both a viewport image and a Blender window screenshot.</p>
             <details open><summary><span>payload.json</span><span class="detail-hint">Schema 2</span></summary><div class="details-body"><pre tabindex="0"><code>{
 	"schema_version": 2,
@@ -358,19 +358,142 @@ GOOS=windows GOARCH=amd64 go build \
 	}
 }</code></pre></div></details>
             <p>Create <code>scenario.py</code> beside <code>payload.json</code> and copy in this script. For additional files, use source paths relative to <code>payload.json</code> and destination paths relative to the test's directory on Windows.</p>
-            <details><summary><span>scenario.py</span><span class="detail-hint">Cube test</span></summary><div class="details-body"><p>The script creates a cube, checks its vertex count with a Python assertion, and prints a JSON result. Change the script and its assertions to test your own Blender work.</p><pre tabindex="0"><code>import json
-import bpy
+            <p><a href="examples/lamp/scenario.py" download="scenario.py">Download scenario.py</a> and save it beside your payload file, or copy the full script below. The script clears the fresh session's starting scene and builds the lamp from scratch. It uses Blender's solid studio view with material colors for the screenshots.</p>
+            <details><summary><span>scenario.py</span><span class="detail-hint">Desk lamp test · full script</span></summary><div class="details-body"><p>The shade comes from a revolved profile, with thickness and bevel modifiers. Assertions check the part count, shade faces, material assignments, and positive wall thickness before printing the result.</p><pre tabindex="0" data-language="python"><code>&quot;&quot;&quot;Build and validate a desk lamp in the isolated Blender Box session.&quot;&quot;&quot;
+import json
+import math
 
-bpy.ops.mesh.primitive_cube_add(size=2, location=(0, 0, 0))
-cube = bpy.context.active_object
-cube.name = "ProofCube"
-assert len(cube.data.vertices) == 8
+import bpy
+from mathutils import Vector
+
+# This scene belongs to the fresh session created for this Run.
+bpy.ops.object.select_all(action=&quot;SELECT&quot;)
+bpy.ops.object.delete(use_global=False)
+
+
+def material(name, color, metallic=0.0):
+    mat = bpy.data.materials.new(name)
+    mat.diffuse_color = (*color, 1)
+    mat.use_nodes = True
+    shader = mat.node_tree.nodes.get(&quot;Principled BSDF&quot;)
+    shader.inputs[&quot;Base Color&quot;].default_value = (*color, 1)
+    shader.inputs[&quot;Metallic&quot;].default_value = metallic
+    shader.inputs[&quot;Roughness&quot;].default_value = 0.28
+    return mat
+
+
+orange = material(&quot;Burnt orange enamel&quot;, (0.85, 0.19, 0.045), 0.25)
+brass = material(&quot;Brushed brass&quot;, (0.58, 0.36, 0.12), 0.8)
+cream = material(&quot;Warm ivory&quot;, (0.92, 0.82, 0.60))
+charcoal = material(&quot;Deep teal&quot;, (0.045, 0.105, 0.115), 0.15)
+
+
+def finish(obj, name, mat, bevel=0.0):
+    obj.name = name
+    obj.data.materials.append(mat)
+    for face in obj.data.polygons:
+        face.use_smooth = True
+    if bevel:
+        mod = obj.modifiers.new(&quot;Soft edges&quot;, &quot;BEVEL&quot;)
+        mod.width = bevel
+        mod.segments = 4
+        obj.modifiers.new(&quot;Weighted normals&quot;, &quot;WEIGHTED_NORMAL&quot;)
+    return obj
+
+
+def cylinder(name, radius, depth, z, mat, bevel=0.03):
+    bpy.ops.mesh.primitive_cylinder_add(
+        vertices=96, radius=radius, depth=depth, location=(0, 0, z)
+    )
+    return finish(bpy.context.object, name, mat, bevel)
+
+
+plinth = cylinder(&quot;Display plinth&quot;, 1.65, 0.18, 0.09, charcoal, 0.07)
+base = cylinder(&quot;Lamp base&quot;, 0.70, 0.18, 0.27, orange, 0.07)
+stem = cylinder(&quot;Brass stem&quot;, 0.105, 1.34, 1.01, brass, 0.015)
+for index, z in enumerate((0.39, 0.45, 0.51), start=1):
+    cylinder(f&quot;Collar {index}&quot;, 0.15, 0.035, z, brass, 0.008)
+
+# Revolve a dome profile into a smooth, open lampshade.
+segments, rings = 96, 24
+vertices = []
+for row in range(rings + 1):
+    angle = 0.025 + (math.pi / 2 - 0.025) * row / rings
+    radius = 1.12 * math.sin(angle)
+    z = 1.62 + 0.80 * math.cos(angle)
+    for column in range(segments):
+        turn = math.tau * column / segments
+        vertices.append((radius * math.cos(turn), radius * math.sin(turn), z))
+faces = []
+for row in range(rings):
+    for column in range(segments):
+        a = row * segments + column
+        b = row * segments + (column + 1) % segments
+        faces.append((a, a + segments, b + segments, b))
+faces.append(tuple(range(segments)))
+mesh = bpy.data.meshes.new(&quot;Revolved shade mesh&quot;)
+mesh.from_pydata(vertices, [], faces)
+mesh.update()
+shade = bpy.data.objects.new(&quot;Lamp shade&quot;, mesh)
+bpy.context.collection.objects.link(shade)
+finish(shade, &quot;Lamp shade&quot;, orange)
+wall = shade.modifiers.new(&quot;Shade wall&quot;, &quot;SOLIDIFY&quot;)
+wall.thickness = 0.045
+rim = shade.modifiers.new(&quot;Rounded rim&quot;, &quot;BEVEL&quot;)
+rim.width, rim.segments = 0.015, 3
+
+cylinder(&quot;Ivory diffuser&quot;, 1.06, 0.025, 1.63, cream, 0.01)
+bpy.ops.mesh.primitive_torus_add(
+    major_segments=96, minor_segments=16,
+    location=(0, 0, 1.62), major_radius=1.105, minor_radius=0.022,
+)
+finish(bpy.context.object, &quot;Brass shade trim&quot;, brass)
+switch = cylinder(&quot;Power switch&quot;, 0.065, 0.045, 0.385, brass, 0.01)
+switch.location.y = -0.46
+
+# Set a repeatable studio view for both requested captures.
+bpy.ops.object.select_all(action=&quot;DESELECT&quot;)
+bpy.context.view_layer.objects.active = shade
+view_target = Vector((0, 0, 1.20))
+view_rotation = (Vector((5, -8, 4.4)) - view_target).to_track_quat(&quot;Z&quot;, &quot;Y&quot;)
+for screen in bpy.data.screens:
+    for area in screen.areas:
+        if area.type == &quot;VIEW_3D&quot;:
+            space = area.spaces.active
+            space.overlay.show_overlays = False
+            space.show_gizmo = False
+            space.shading.type = &quot;SOLID&quot;
+            space.shading.light = &quot;STUDIO&quot;
+            space.shading.color_type = &quot;MATERIAL&quot;
+            space.shading.show_shadows = True
+            space.shading.show_cavity = True
+            space.shading.cavity_type = &quot;BOTH&quot;
+            space.shading.curvature_ridge_factor = 1.3
+            space.shading.curvature_valley_factor = 1.0
+            space.shading.background_type = &quot;VIEWPORT&quot;
+            space.shading.background_color = (0.035, 0.045, 0.05)
+            space.region_3d.view_rotation = view_rotation
+            space.region_3d.view_distance = 6.2
+            space.region_3d.view_location = view_target
+            space.region_3d.view_perspective = &quot;ORTHO&quot;
+            area.tag_redraw()
+
+# Assert scene properties that matter to this model.
+parts = [obj for obj in bpy.context.scene.objects if obj.type == &quot;MESH&quot;]
+assert len(parts) == 10, &quot;Expected ten lamp and display parts&quot;
+assert len(shade.data.polygons) == rings * segments + 1
+assert shade.data.materials[0] == orange
+assert stem.data.materials[0] == brass
+assert wall.thickness &gt; 0, &quot;The shade needs a physical wall&quot;
+assert all(value &gt; 0 for value in base.dimensions)
 
 print(json.dumps({
-	"schema_version": 1,
-	"status": "pass",
-	"object": cube.name,
-	"vertices": len(cube.data.vertices),
+    &quot;schema_version&quot;: 1,
+    &quot;status&quot;: &quot;pass&quot;,
+    &quot;scene&quot;: &quot;Studio desk lamp&quot;,
+    &quot;mesh_objects&quot;: len(parts),
+    &quot;shade_faces&quot;: len(shade.data.polygons),
+    &quot;materials&quot;: len({slot.name for obj in parts for slot in obj.data.materials}),
 }))</code></pre></div></details>
             <div class="note"><span class="note-label">SCRIPT OUTPUT</span><p>Print exactly one JSON document with <code>schema_version: 1</code> and <code>status: "pass"</code> after your assertions pass. Extra text on stdout makes the result invalid. Returning a dictionary from a function is not enough; the script must print it. <a href="https://github.com/BramVR/blender-box/blob/main/docs/architecture/0001-slice-0-run-boundary.md">Read the result format ↗</a></p></div>
             <p>Check the files and configuration locally with <code>plan</code>. Then run <code>doctor</code> to confirm that the Windows installation supports the requested screenshots.</p>
@@ -383,7 +506,7 @@ go run ./cmd/blender-box doctor \
           </li>
 
           <li class="step" id="run">
-            <div class="step-heading"><span class="step-number" aria-hidden="true">05</span><h2>Run the cube test</h2></div>
+            <div class="step-heading"><span class="step-number" aria-hidden="true">05</span><h2>Run the lamp test</h2></div>
             <p>One execution of a Scenario is a <strong>Run</strong>, identified by a unique Run ID. Start this example with a 20-minute timeout.</p>
             <div class="code-block"><div class="code-title"><span>SHELL</span><span>Launches Blender on your host</span></div><pre tabindex="0"><code>go run ./cmd/blender-box run \
 	--target target.json \
@@ -392,7 +515,7 @@ go run ./cmd/blender-box doctor \
 	--json</code></pre></div>
             <p>The command prints <code>RUN_ID=bbx_...</code> to stderr before it starts work. Save this ID so you can check or stop the test if the connection drops. With <code>--json</code>, stdout contains one JSON success or failure result.</p>
             <div class="run-flow" aria-label="Test execution"><span>Copy files</span><span>Run script</span><span>Fetch results</span><span>Stop Blender</span></div>
-            <p>On success, open <code>result/scenario-result.json</code> in the run's local results directory. It contains <code>"vertices": 8</code>. The <code>screenshots</code> directory contains the viewport and Blender window images.</p>
+            <p>On success, open <code>result/scenario-result.json</code> in the run's local results directory. It reports <code>"mesh_objects": 10</code>, <code>"shade_faces": 2305</code>, and <code>"materials": 4</code>. The <code>screenshots</code> directory contains the viewport and Blender window images.</p>
             <p class="small-copy">Blender Box checks the transferred files before stopping the Blender session it created and removing that run's temporary Windows files.</p>
           </li>
 
@@ -411,12 +534,38 @@ go run ./cmd/blender-box doctor \
     </div>
 
     <section class="evidence-section" id="evidence" aria-labelledby="evidence-title">
+      <div class="wrap">
+        <div class="evidence-heading"><p class="eyebrow">07 / RESULTS</p><h2 id="evidence-title">The model, the Blender window, and the result.</h2><p>These are real captures from the desk lamp test above, run with Blender Box on Windows in Blender 4.5.13. Both images and the JSON came from the same run. Open either image to inspect it at full size.</p></div>
+        <div class="capture-gallery">
+          <figure class="capture-card capture-window">
+            <div class="capture-label"><span>BLENDER WINDOW</span><span>1920 × 1017</span></div>
+            <a href="images/lamp-blender-window.png"><img src="images/lamp-blender-window.png" width="1920" height="1017" loading="lazy" decoding="async" alt="Actual Blender window showing the orange desk lamp and brass stem on a teal plinth, with ten named model parts in the Outliner"></a>
+            <figcaption>The complete Blender window, including the Outliner and properties. Captured with <code>bpy.ops.screen.screenshot</code>.</figcaption>
+          </figure>
+          <div class="capture-side">
+            <figure class="capture-card">
+              <div class="capture-label"><span>VIEWPORT</span><span>1585 × 893</span></div>
+              <a href="images/lamp-viewport.png"><img src="images/lamp-viewport.png" width="1585" height="893" loading="lazy" decoding="async" alt="Viewport capture of the orange dome-shaped desk lamp with brass trim, a power switch, and a dark teal display plinth"></a>
+              <figcaption>Scene pixels from the solid studio view, captured offscreen. No Blender panels or desktop.</figcaption>
+            </figure>
+            <div class="capture-result"><div class="capture-label"><span>SCENARIO RESULT</span><span class="capture-pass">PASS</span></div><pre tabindex="0"><code>{
+  &quot;schema_version&quot;: 1,
+  &quot;status&quot;: &quot;pass&quot;,
+  &quot;scene&quot;: &quot;Studio desk lamp&quot;,
+  &quot;mesh_objects&quot;: 10,
+  &quot;shade_faces&quot;: 2305,
+  &quot;materials&quot;: 4
+}</code></pre><a href="examples/lamp/scenario-result.json">Open returned JSON ↗</a></div>
+          </div>
+        </div>
+        <p class="capture-provenance">Original, unedited captures. File hashes verified; Blender session stopped and run files cleaned up. <a href="examples/lamp/provenance.json">View capture provenance ↗</a></p>
+      </div>
       <div class="wrap evidence-inner">
-        <div class="evidence-intro"><p class="eyebrow">07 / RESULTS</p><h2 id="evidence-title">Find your test results and screenshots.</h2><p>After a successful run, Blender Box saves the run's files in a new directory in your checkout. This Evidence Bundle contains the script's JSON result, requested screenshots, file checksums, and a record of whether cleanup completed.</p><p class="evidence-path"><code>artifacts/blender-box/&lt;run-id&gt;/</code></p><p class="small-copy">Use <code>--evidence-dir</code> to choose another new directory. Blender Box never replaces an existing evidence file.</p></div>
+        <div class="evidence-intro"><h3>Find these files in your project.</h3><p>After a successful run, Blender Box saves the run's files in a new directory in your checkout. This Evidence Bundle contains the script's JSON result, requested screenshots, file checksums, and a record of whether cleanup completed.</p><p class="evidence-path"><code>artifacts/blender-box/&lt;run-id&gt;/</code></p><p class="small-copy">Use <code>--evidence-dir</code> to choose another new directory. Blender Box never replaces an existing evidence file.</p></div>
         <div class="evidence-files"><p class="file-list-title"><span>SUCCESSFUL RUN</span><span>WHAT EACH FILE TELLS YOU</span></p><dl>
           <div><dt>manifest.json</dt><dd>The returned files, their sizes and SHA-256 hashes, and how each screenshot was captured.</dd></div>
           <div><dt>evidence.json</dt><dd>The run and Blender session IDs, deadline, final state, and cleanup result.</dd></div>
-          <div><dt>result/scenario-result.json</dt><dd>The JSON printed by your script. The cube example reports eight vertices.</dd></div>
+          <div><dt>result/scenario-result.json</dt><dd>The JSON printed by your script. The lamp example reports its part, face, and material counts.</dd></div>
           <div><dt>screenshots/viewport.png</dt><dd>An image of the Blender scene. Included when requested.</dd></div>
           <div><dt>screenshots/blender-window.png</dt><dd>The full Blender window, including its controls and panels. Included when requested.</dd></div>
           <div><dt>screenshots/desktop.png</dt><dd>The Windows desktop across its displays. Collected only when you enable desktop capture.</dd></div>

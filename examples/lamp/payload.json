@@ -1,0 +1,11 @@
+{
+  "schema_version": 2,
+  "files": [{"source": "scenario.py", "destination": "scenario.py"}],
+  "scenario": {
+    "script": "scenario.py",
+    "read_timeout_seconds": 600,
+    "capture_viewport": true,
+    "capture_blender_window": true,
+    "capture_desktop": false
+  }
+}

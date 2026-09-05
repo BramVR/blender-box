@@ -6,9 +6,12 @@ Blender Box orchestrates runs, transfers declared files, and collects evidence. 
 
 ## Documentation
 
-- [Overview, setup tutorial, and FAQ](https://bramvr.github.io/blender-box/): Requirements, the complete cube test, capture types, and recovery.
+- [Overview, setup tutorial, and FAQ](https://bramvr.github.io/blender-box/): Requirements, the complete desk lamp test, capture types, and recovery.
 - [Command reference](https://bramvr.github.io/blender-box/commands.html): Setup, plan, doctor, run, status, and stop.
 - [Source and CLI examples](https://github.com/BramVR/blender-box/blob/main/README.md): Current implementation and executable examples in Markdown.
+
+- [Desk lamp script](https://bramvr.github.io/blender-box/examples/lamp/scenario.py): Reproducible scene construction and assertions used for the published screenshots.
+- [Desk lamp payload](https://bramvr.github.io/blender-box/examples/lamp/payload.json): Declared script and viewport/window capture policy.
 
 ## Contracts
 
