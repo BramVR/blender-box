@@ -192,7 +192,6 @@
           <a href="#evidence">Results and screenshots</a>
           <a href="#faq">FAQ</a>
           <a href="commands.html">Command reference <span aria-hidden="true">↗</span></a>
-          <a href="#architecture">Architecture</a>
         </div>
         <a class="sidebar-source" href="https://github.com/BramVR/blender-box/blob/main/README.md">Repository guide <span aria-hidden="true">↗</span></a>
       </nav>
@@ -441,16 +440,6 @@ go run ./cmd/blender-box doctor \
       <p class="small-copy">Need a command or its flags? Open the <a href="commands.html">command reference</a>.</p>
     </section>
 
-    <section class="architecture wrap" id="architecture" aria-labelledby="architecture-title">
-      <div class="architecture-top"><div><p class="eyebrow">ARCHITECTURE</p><h2 id="architecture-title">How the Windows runner works</h2></div><p>Blender Box sends commands and files over SSH. The Windows Scheduled Task starts work in the logged-in desktop, where <a href="https://github.com/BramVR/blendersessiond">blendersessiond</a> launches and stops the correct Blender process. The Blender MCP add-on stays on Windows loopback; its port is never exposed or forwarded.</p></div>
-      <div class="architecture-links">
-        <a href="https://github.com/BramVR/blender-box/blob/main/docs/architecture/0001-slice-0-run-boundary.md"><span>ADR 001</span><strong>How runs return results and clean up</strong><span aria-hidden="true">↗</span></a>
-        <a href="https://github.com/BramVR/blender-box/blob/main/docs/architecture/0002-slice-0-windows-identity.md"><span>ADR 002</span><strong>Why both Windows users need one SID</strong><span aria-hidden="true">↗</span></a>
-        <a href="https://github.com/BramVR/blender-box/blob/main/docs/architecture/0003-session-broker-capability-gate.md"><span>ADR 003</span><strong>Required blendersessiond operations</strong><span aria-hidden="true">↗</span></a>
-        <a href="https://github.com/BramVR/blender-box/blob/main/docs/architecture/0004-fenced-windows-setup-owner.md"><span>ADR 004</span><strong>How setup tracks its Windows processes</strong><span aria-hidden="true">↗</span></a>
-      </div>
-      <p class="architecture-more"><a href="https://github.com/BramVR/blender-box/blob/main/docs/research/blender-box-research.html">Research brief ↗</a><a href="https://github.com/BramVR/blender-box/blob/main/docs/architecture/ci.md">Automated tests and Windows verification ↗</a></p>
-    </section>
   </main>
 
   <footer class="site-footer wrap"><a class="footer-wordmark" href="#">blenderbox<span>.</span></a><p>A command-line tool for remote Blender scripts.</p><div class="footer-links"><a href="llms.txt">Docs for agents</a><a href="sitemap.xml">Sitemap</a><a href="https://github.com/BramVR/blender-box">Source on GitHub <span aria-hidden="true">↗</span></a></div></footer>
