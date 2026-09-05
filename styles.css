@@ -351,3 +351,53 @@ summary:hover { background: #eeeee7; }
   .capture-card, .capture-result { break-inside: avoid; margin-bottom: 16px; }
   .capture-card figcaption, .capture-result pre, .capture-label { color: black; background: white; }
 }
+
+/* Keep the guide's instructions and example visible in a clear reading order. */
+.guide-preview { display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr); gap: 44px; align-items: center; }
+.guide-preview > div > p:not(.eyebrow, .section-lead) { font-size: 15px; line-height: 1.85; color: var(--muted); }
+.guide-example { margin: 0; }
+.guide-example a { display: block; }
+.guide-example img { display: block; width: 100%; height: auto; border-radius: 6px; }
+.guide-example figcaption { margin-top: 10px; font-size: 12px; color: var(--muted); }
+.guide-route { display: flex; flex-wrap: wrap; align-items: center; gap: 16px 24px; border-bottom: 1px solid var(--line); padding-block: 28px; margin-bottom: 32px; font-size: 14px; }
+.guide-route a { text-decoration: none; }
+.guide-route a:first-child, .guide-route > span { color: var(--orange-ink); }
+.requirements-title { font-size: 26px; line-height: 1.3; letter-spacing: -.8px; margin: 0 0 24px; }
+.machine-requirements { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 44px; }
+.machine-requirements > div { border-top: 1px solid var(--line); padding-top: 20px; }
+.machine-requirements h4 { font-size: 16px; margin: 0 0 5px; }
+.machine-requirements p { font-size: 14px; color: var(--muted); }
+.machine-requirements ul { padding-left: 18px; font-size: 14px; line-height: 1.85; }
+.machine-requirements li { padding-left: 4px; margin-bottom: 10px; }
+.machine-requirements li::marker { color: var(--orange-ink); }
+.step > .step-phase { color: var(--orange-ink); font-size: 10px; margin-bottom: 24px; }
+.step > p { font-size: 15px; }
+.steps pre { font-size: 13px; }
+.expected-result { border-left: 2px solid #b7c7a4; padding: 2px 0 2px 18px; margin-block: 24px; }
+.expected-result > strong { display: block; font-size: 14px; margin-bottom: 6px; }
+.expected-result > p { margin: 0; font-size: 14px; color: var(--muted); line-height: 1.85; }
+.example-downloads { display: flex; flex-wrap: wrap; align-items: center; gap: 16px 24px; margin-block: 24px; }
+.details-body p:last-child { padding-bottom: 20px; }
+.copy-toolbar { display: flex; justify-content: flex-end; padding: 10px 20px 0; background: #efefe8; }
+.copy-button { border: 1px solid currentColor; border-radius: 4px; background: transparent; color: inherit; padding: 6px 10px; font: 11px/1.4 var(--mono); cursor: pointer; flex-shrink: 0; }
+.copy-button:hover { background: #ffffff18; }
+.copy-button:disabled { cursor: wait; }
+.code-title { flex-wrap: wrap; align-items: center; }
+.code-title .copy-button { margin-left: auto; }
+.visually-hidden { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; border: 0; }
+@media (max-width: 1100px) {
+  .guide-preview { gap: 28px; }
+}
+@media (max-width: 900px) {
+  .docs-sidebar nav { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@media (max-width: 600px) {
+  .guide-preview, .machine-requirements { grid-template-columns: 1fr; gap: 24px; }
+  .guide-example { max-width: 400px; }
+  .guide-route { gap: 10px 14px; font-size: 12px; }
+  .docs-sidebar nav { grid-template-columns: 1fr; }
+  .copy-toolbar { padding-inline: 14px; }
+}
+@media print {
+  .copy-button, .copy-toolbar { display: none; }
+}

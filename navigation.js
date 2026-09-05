@@ -60,3 +60,53 @@ window.addEventListener('resize', updateCurrentSection);
 window.addEventListener('load', updateCurrentSection);
 mobile.addEventListener('change', closeContents);
 updateCurrentSection();
+
+// Add controls only with JavaScript; code remains selectable without it.
+const copyFeedback = document.createElement('p');
+copyFeedback.className = 'visually-hidden';
+copyFeedback.setAttribute('role', 'status');
+document.body.append(copyFeedback);
+
+document.querySelectorAll('.steps pre').forEach((pre, index) => {
+  const code = pre.querySelector('code');
+  if (!code) return;
+  const button = document.createElement('button');
+  const label = pre.closest('details')?.querySelector('summary')?.textContent.trim()
+    || pre.closest('.step')?.querySelector('h2')?.textContent.trim()
+    || 'example';
+  button.type = 'button';
+  button.className = 'copy-button';
+  button.textContent = 'Copy';
+  button.setAttribute('aria-label', `Copy code ${index + 1}: ${label}`);
+  let toolbar = pre.parentElement.querySelector(':scope > .code-title');
+  if (!toolbar) {
+    toolbar = document.createElement('div');
+    toolbar.className = 'copy-toolbar';
+    pre.before(toolbar);
+  }
+  toolbar.append(button);
+  let resetTimer;
+  button.addEventListener('click', async () => {
+    clearTimeout(resetTimer);
+    button.disabled = true;
+    copyFeedback.textContent = '';
+    try {
+      await navigator.clipboard.writeText(code.textContent);
+      button.textContent = 'Copied';
+      copyFeedback.textContent = `${label} copied.`;
+    } catch {
+      // Denied clipboard access still leaves a keyboard-copyable selection.
+      const range = document.createRange();
+      range.selectNodeContents(code);
+      const selection = window.getSelection();
+      pre.focus();
+      selection.removeAllRanges();
+      selection.addRange(range);
+      button.textContent = 'Code selected';
+      copyFeedback.textContent = 'Clipboard access is unavailable. Code selected; press Control+C or Command+C to copy.';
+    } finally {
+      button.disabled = false;
+      resetTimer = window.setTimeout(() => { button.textContent = 'Copy'; }, 3000);
+    }
+  });
+});

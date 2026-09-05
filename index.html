@@ -151,8 +151,8 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=Manrope:wght@400;500;600;650;700;750;800&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="styles.css?v=guide-alignment-1">
-  <script src="navigation.js?v=discovery-1" defer></script>
+  <link rel="stylesheet" href="styles.css?v=readability-1">
+  <script src="navigation.js?v=readability-1" defer></script>
 </head>
 <body>
   <a class="skip-link" href="#main">Skip to content</a>
@@ -178,18 +178,21 @@
           <a href="#how-it-works">How it works</a>
         </div>
         <div class="nav-group">
-          <p class="nav-heading">Your first test</p>
+          <p class="nav-heading">Set up once</p>
           <a href="#before-you-start">Before you start</a>
-          <a href="#build">Build from source</a>
-          <a href="#target">Configure the connection</a>
-          <a href="#setup">Install the Windows runner</a>
-          <a href="#payload">Create the test files</a>
-          <a href="#run">Run the lamp test</a>
-          <a href="#recover">Check or stop a run</a>
+          <a href="#build">Build the runner</a>
+          <a href="#target">Connect to Windows</a>
+          <a href="#setup">Install and check</a>
         </div>
         <div class="nav-group">
-          <p class="nav-heading">Reference</p>
-          <a href="#evidence">Results and screenshots</a>
+          <p class="nav-heading">Run your test</p>
+          <a href="#payload">Download the example</a>
+          <a href="#run">Run the lamp test</a>
+          <a href="#recover">Check or stop a run</a>
+          <a href="#evidence">Read the results</a>
+        </div>
+        <div class="nav-group">
+          <p class="nav-heading">Help</p>
           <a href="#faq">FAQ</a>
           <a href="commands.html">Command reference <span aria-hidden="true">↗</span></a>
         </div>
@@ -274,29 +277,35 @@
     <div class="guide-layout wrap" id="get-started">
       <div class="guide-content">
         <section class="guide-intro" id="before-you-start" aria-labelledby="guide-title">
-          <p class="eyebrow">00 / BEFORE YOU START</p>
-          <h2 id="guide-title">Build and test a studio desk lamp.</h2>
-          <p class="section-lead">Build an orange desk lamp with a curved shade, brass stem, and display plinth. The script checks its geometry and materials, then Blender Box returns the JSON result and two screenshots before stopping its Blender session.</p>
-          <p>The test expects ten mesh objects, four materials, and 2,305 faces in the shade before modifiers. <a href="#evidence">See the actual screenshots and result below.</a></p>
-          <p>Run the shell commands below on macOS or Linux. Before you start, prepare these requirements.</p>
-          <ul class="requirements">
-            <li><span class="requirement-mark" aria-hidden="true">↗</span><div><strong>A developer machine</strong><span>Go 1.23 or later, Git, and SSH.</span></div></li>
-            <li><span class="requirement-mark" aria-hidden="true">↗</span><div><strong>A Windows machine you control</strong><span>OpenSSH, a host alias in your SSH config, and a user logged in to the desktop.</span></div></li>
-            <li><span class="requirement-mark" aria-hidden="true">↗</span><div><strong>Blender and its process manager</strong><span>Install Blender and <a href="https://github.com/BramVR/blendersessiond">blendersessiond</a> on Windows. This companion program starts and stops Blender for each test.</span></div></li>
-            <li><span class="requirement-mark" aria-hidden="true">↗</span><div><strong>A Windows work directory</strong><span>Create a directory for the runner and temporary test files, such as <code>C:\BlenderBox</code>.</span></div></li>
-          </ul>
-          <div class="note"><span class="note-label">BEFORE SETUP</span><p>Blender Box's setup command installs its Windows runner. You must install Blender and blendersessiond separately and configure SSH access yourself.</p></div>
+          <div class="guide-preview">
+            <div>
+              <p class="eyebrow">00 / BEFORE YOU START</p>
+              <h2 id="guide-title">Build and test a desk lamp.</h2>
+              <p class="section-lead">Run a Python script in Blender on your Windows machine. Get its JSON result and screenshots back on your development machine.</p>
+              <p>The example builds this lamp and checks its parts, shade geometry, and materials. <a href="#evidence">See the verified results ↗</a></p>
+            </div>
+            <figure class="guide-example"><a href="#evidence"><img src="images/lamp-viewport.png" width="1585" height="893" loading="lazy" decoding="async" alt="The orange desk lamp built by the example, with a brass stem and dark teal plinth"></a><figcaption>The example you will build. Captured in Blender.</figcaption></figure>
+          </div>
+          <nav class="guide-route" aria-label="Tutorial stages"><a href="#build">Set up once</a><span aria-hidden="true">→</span><a href="#payload">Run after each change</a><span aria-hidden="true">→</span><a href="#evidence">Inspect results</a></nav>
+          <h3 class="requirements-title">What you need</h3>
+          <div class="machine-requirements">
+            <div><h4>Your development machine</h4><p>Run the guide commands here.</p><ul><li>macOS or Linux</li><li>Go 1.23 or later, Git, and SSH</li></ul></div>
+            <div><h4>Your Windows machine</h4><p>Blender runs here.</p><ul><li>Blender and <a href="https://github.com/BramVR/blendersessiond">blendersessiond</a> installed</li><li>OpenSSH, an SSH host alias, and a logged-in desktop user</li><li>A work folder for the runner and temporary files, such as <code>C:\BlenderBox</code></li></ul></div>
+          </div>
+          <div class="note"><span class="note-label">BEFORE SETUP</span><p>Blender Box installs its runner. Install Blender and blendersessiond separately, and configure SSH access first.</p></div>
         </section>
 
         <ol class="steps">
           <li class="step" id="build">
+            <p class="eyebrow step-phase">SET UP ONCE · STEPS 01–03</p>
             <div class="step-heading"><span class="step-number" aria-hidden="true">01</span><h2>Build the Windows runner</h2></div>
-            <p>Clone Blender Box, then build its Windows executable. A later step copies this executable to your Windows machine so it can receive and run test requests.</p>
+            <p>From your development machine, clone Blender Box and build the program that will run on Windows.</p>
             <div class="code-block"><div class="code-title"><span>SHELL</span><span>Developer machine</span></div><pre tabindex="0"><code>git clone https://github.com/BramVR/blender-box.git
 cd blender-box
 GOOS=windows GOARCH=amd64 go build \
 	-o /tmp/blender-box.exe ./cmd/blender-box</code></pre></div>
-            <p class="small-copy">The commands in this guide use <code>go run ./cmd/blender-box</code> from this checkout.</p>
+            <div class="expected-result"><strong>Expected result</strong><p>A <code>blender-box.exe</code> file in <code>/tmp</code>. Nothing has connected to Windows yet.</p></div>
+            <details><summary>Why is a Windows runner needed?</summary><div class="details-body"><p>Blender Box copies this executable to Windows during setup. It receives requests and starts each test in the logged-in desktop. Run the remaining commands from this checkout using <code>go run ./cmd/blender-box</code>.</p></div></details>
           </li>
 
           <li class="step" id="target">
@@ -315,18 +324,19 @@ GOOS=windows GOARCH=amd64 go build \
 	"host_executable": "C:\\BlenderBox\\bin\\blender-box.exe"
 }</code></pre></div></details>
             <p>Keep connection details and SSH key paths in your SSH configuration. Do not put secrets in <code>target.json</code>.</p>
-            <p class="small-copy">Use an ASCII drive path without spaces for <code>work_root</code>. Both <code>session_broker_executable</code> and <code>host_executable</code> must be in a dedicated directory below that root. Blender can be installed elsewhere.</p>
+            <details><summary>Work directory and executable path requirements</summary><div class="details-body"><p>Use an ASCII drive path without spaces for <code>work_root</code>. Both <code>session_broker_executable</code> and <code>host_executable</code> must be in a dedicated directory below that root. Blender can be installed elsewhere.</p></div></details>
+            <div class="expected-result"><strong>Expected result</strong><p>A <code>target.json</code> file in your checkout, filled in with your own Windows settings. The next step checks it before installation.</p></div>
           </li>
 
           <li class="step" id="setup">
             <div class="step-heading"><span class="step-number" aria-hidden="true">03</span><h2>Install the runner on Windows</h2></div>
-            <p>Blender needs to open in the logged-in desktop. Setup registers a Windows Scheduled Task for this because an SSH connection cannot launch an interactive Blender window directly.</p>
+            <p>Preview the installation, apply it to your Windows machine, then check that the host is ready. Setup registers a Scheduled Task so Blender can open in the logged-in desktop.</p>
             <p>Preview setup first. Without <code>--apply</code>, this command checks your profile locally and makes no SSH connection.</p>
             <div class="code-block"><div class="code-title"><span>SHELL</span><span>Preview · local only</span></div><pre tabindex="0"><code>go run ./cmd/blender-box windows setup \
 	--target target.json \
 	--host-binary /tmp/blender-box.exe \
 	--json</code></pre></div>
-            <details><summary><span>Install the runner and Scheduled Task</span><span class="detail-hint">Writes to Windows</span></summary><div class="details-body"><p>After you verify the target settings, add <code>--apply</code> to install the runner. Setup copies the executable, sets access permissions on its managed directories, checks that blendersessiond supports the required operations, and registers the Scheduled Task.</p><pre tabindex="0"><code>go run ./cmd/blender-box windows setup \
+            <details><summary><span>Apply the installation to Windows</span><span class="detail-hint">Writes to Windows</span></summary><div class="details-body"><p>After you verify the target settings, add <code>--apply</code> to install the runner. Setup copies the executable, sets access permissions on its managed directories, checks that blendersessiond supports the required operations, and registers the Scheduled Task.</p><pre tabindex="0"><code>go run ./cmd/blender-box windows setup \
 	--target target.json \
 	--host-binary /tmp/blender-box.exe \
 	--apply \
@@ -334,14 +344,16 @@ GOOS=windows GOARCH=amd64 go build \
             <p>After installation, check that the Windows users, paths, programs, and Scheduled Task are configured correctly. This command reads host settings without changing them or launching Blender.</p>
             <div class="code-block"><div class="code-title"><span>SHELL</span><span>Read-only host check</span></div><pre tabindex="0"><code>go run ./cmd/blender-box windows check \
 	--target target.json --json</code></pre></div>
-            <p class="small-copy">A failed requirement returns <code>status: "fail"</code>. Fix the reported problem before running the test.</p>
+            <div class="expected-result"><strong>Expected result</strong><p>After applying setup, <code>windows check</code> returns <code>"status": "pass"</code>. If it reports <code>"fail"</code>, fix the listed requirement before continuing.</p></div>
           </li>
 
           <li class="step" id="payload">
+            <p class="eyebrow step-phase">RUN YOUR TEST · STEPS 04–05</p>
             <div class="step-heading"><span class="step-number" aria-hidden="true">04</span><h2>Create the script and file list</h2></div>
-            <p>Blender Box calls a declared Blender workflow a <strong>Scenario</strong>. This Scenario has one Python script that builds the lamp and checks its parts, shade geometry, and material assignments.</p>
-            <p>Create <code>payload.json</code> in your checkout. This <strong>Run Payload</strong> lists the files to copy, the script to execute, and the screenshots to collect. The example requests both a viewport image and a Blender window screenshot.</p>
-            <details open><summary><span>payload.json</span><span class="detail-hint">Schema 2</span></summary><div class="details-body"><pre tabindex="0"><code>{
+            <p>Download the example files into your checkout. The Python script builds and checks the lamp. Blender Box calls this workflow a <strong>Scenario</strong>.</p>
+            <p>The <strong>Run Payload</strong>, <code>payload.json</code>, lists the script and requests a viewport image and a Blender window screenshot. Keep both downloaded files together.</p>
+            <div class="example-downloads"><a class="button" href="examples/lamp/scenario.py" download="scenario.py">Download scenario.py ↓</a><a class="text-link" href="examples/lamp/payload.json" download="payload.json">Download payload.json ↓</a></div>
+            <details><summary><span>payload.json</span><span class="detail-hint">Schema 2</span></summary><div class="details-body"><pre tabindex="0"><code>{
 	"schema_version": 2,
 	"files": [
 		{
@@ -357,8 +369,8 @@ GOOS=windows GOARCH=amd64 go build \
 		"capture_desktop": false
 	}
 }</code></pre></div></details>
-            <p>Create <code>scenario.py</code> beside <code>payload.json</code> and copy in this script. For additional files, use source paths relative to <code>payload.json</code> and destination paths relative to the test's directory on Windows.</p>
-            <p><a href="examples/lamp/scenario.py" download="scenario.py">Download scenario.py</a> and save it beside your payload file, or copy the full script below. The script clears the fresh session's starting scene and builds the lamp from scratch. It uses Blender's solid studio view with material colors for the screenshots.</p>
+            <p>For your own tests, edit <code>scenario.py</code>. If you add files, list their source paths relative to <code>payload.json</code> and their destinations relative to the test directory on Windows.</p>
+            <p>The full example is below. It clears the fresh session's starting scene and builds the lamp from scratch, using Blender's solid studio view with material colors for the screenshots.</p>
             <details><summary><span>scenario.py</span><span class="detail-hint">Desk lamp test · full script</span></summary><div class="details-body"><p>The shade comes from a revolved profile, with thickness and bevel modifiers. Assertions check the part count, shade faces, material assignments, and positive wall thickness before printing the result.</p><pre tabindex="0" data-language="python"><code>&quot;&quot;&quot;Build and validate a desk lamp in the isolated Blender Box session.&quot;&quot;&quot;
 import json
 import math
@@ -503,6 +515,7 @@ print(json.dumps({
 go run ./cmd/blender-box doctor \
 	--target target.json --payload payload.json --json</code></pre></div>
             <p class="small-copy"><code>plan</code> does not contact Windows. <code>doctor</code> connects to Windows but does not change settings or launch Blender. This schema 2 example requires a Windows runner built from the matching source version.</p>
+            <div class="expected-result"><strong>Expected result</strong><p>Both <code>plan</code> and <code>doctor</code> return <code>"status": "pass"</code>. You are ready to run the script. Repeat these checks when you change its files or capture settings.</p></div>
           </li>
 
           <li class="step" id="run">
@@ -515,7 +528,8 @@ go run ./cmd/blender-box doctor \
 	--json</code></pre></div>
             <p>The command prints <code>RUN_ID=bbx_...</code> to stderr before it starts work. Save this ID so you can check or stop the test if the connection drops. With <code>--json</code>, stdout contains one JSON success or failure result.</p>
             <div class="run-flow" aria-label="Test execution"><span>Copy files</span><span>Run script</span><span>Fetch results</span><span>Stop Blender</span></div>
-            <p>On success, open <code>result/scenario-result.json</code> in the run's local results directory. It reports <code>"mesh_objects": 10</code>, <code>"shade_faces": 2305</code>, and <code>"materials": 4</code>. The <code>screenshots</code> directory contains the viewport and Blender window images.</p>
+            <div class="expected-result"><strong>Expected result</strong><p>The run reports <code>"state": "complete"</code>. Its <code>result/scenario-result.json</code> reports ten mesh objects, 2,305 shade faces, and four materials. The <code>screenshots</code> folder contains both images. <a href="#evidence">Compare with the captured example ↗</a></p></div>
+            <p>Edit your script and repeat this run command to test the next change. You only need to revisit host setup if the Windows installation or connection settings change.</p>
             <p class="small-copy">Blender Box checks the transferred files before stopping the Blender session it created and removing that run's temporary Windows files.</p>
           </li>
 
@@ -527,6 +541,7 @@ go run ./cmd/blender-box doctor \
             <p>To stop an active run, pass the same ID to <code>stop</code>.</p>
             <div class="code-block"><div class="code-title"><span>SHELL</span><span>Stop this run's Blender session</span></div><pre tabindex="0"><code>go run ./cmd/blender-box stop \
 	--target target.json --run bbx_... --json</code></pre></div>
+            <div class="expected-result"><strong>Expected result</strong><p><code>status</code> reports the saved run state. After a successful <code>stop</code>, the response reports <code>"status": "settled"</code> and cleanup flags confirm that the session stopped, run files were removed, and the lock was released.</p></div>
             <p class="small-copy">The saved run state identifies the Blender session that Blender Box created. <code>stop</code> uses that recorded identity, so it cannot stop an unrelated Blender window by matching its process name or port.</p>
           </li>
         </ol>

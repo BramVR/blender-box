@@ -4,7 +4,7 @@ The public documentation lives at https://bramvr.github.io/blender-box/.
 
 This branch contains the complete static website. Edit `index.html` for the guide and FAQ, `commands.html` for the command reference, `styles.css` for presentation, `navigation.js` for the contents menu and current-section indicator, and `favicon.svg` for the tab icon. Keep the examples aligned with the current CLI and the [project README](https://github.com/BramVR/blender-box/blob/main/README.md).
 
-The sidebar covers the introduction, setup guide, and reference. On smaller screens, use the **On this page** button to open it. The navigation remains available without JavaScript.
+The sidebar separates the introduction, one-time setup, repeat runs, and help. The guide introduces the real lamp example and groups prerequisites by machine. Each step includes an expected result. JavaScript adds Copy controls to the tutorial code blocks, with a selectable-code fallback when clipboard access is denied; code remains readable without JavaScript. On smaller screens, use the **On this page** button to open it. The navigation remains available without JavaScript.
 
 Preview this branch from its root:
 
