@@ -30,7 +30,7 @@ Keep secrets, resolved host details, and raw check output private. Do not copy a
 
 ## Run the candidate locally
 
-Use a macOS or Linux controller with Python 3.12, the repository's Go version, and a clean candidate checkout. Windows controllers are unsupported by this proof runner; Windows is the remote Blender host. Set the private configuration's permissions to `0600`. Supply the full commit SHA, private configuration, and a fresh proof-output directory outside the checkout or under its ignored `.blender-box/` directory. The output's parent must exist.
+Use Python 3.13 or newer on macOS, or Python 3.12 or newer on Linux, with the repository's Go version and a clean candidate checkout. Python added macOS support for [os.waitid](https://docs.python.org/3/library/os.html#os.waitid) in 3.13; the runner uses it to retain exact process-group ownership during cleanup. Windows controllers are unsupported by this proof runner; Windows is the remote Blender host. Set the private configuration's permissions to `0600`. Supply the full commit SHA, private configuration, and a fresh proof-output directory outside the checkout or under its ignored `.blender-box/` directory. The output's parent must exist.
 
 ```sh
 python3 scripts/onboarding_proof.py baseline \
