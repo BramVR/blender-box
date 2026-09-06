@@ -73,6 +73,8 @@ The baseline accepts noninterlaced 8-bit RGB or RGBA PNG captures with valid pix
 
 Evidence validation and cleanup are separate outcomes. A rejected or missing retained image fails the proof while preserving cleanup facts established by matching public status and stop receipts.
 
+Local receipt or process setup failures still trigger graceful command cancellation and exact process-group cleanup. If cleanup cannot be verified, the runner reports it as unknown and stops further recovery commands.
+
 Inspect the actual hosted job conclusion and returned receipts. A missing, skipped, cancelled, fake-only, or merely local gate leaves the required proof incomplete. Local success does not establish environment policy or hosted reachability.
 
 ## Extend the proof

@@ -413,29 +413,34 @@ class Commands:
         require(recovery or not self.cancelled.is_set(), "interrupted")
         self.sequence += 1
         prefix = self.private / f"command-{self.sequence:03d}"
-        process = subprocess.Popen([str(a) for a in args], cwd=self.cwd, env=env or self.env,
-                                   stdin=subprocess.PIPE if stdin is not None else subprocess.DEVNULL,
-                                   stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True)
-        Path(str(prefix) + ".process.json").write_bytes(canonical({
-            "pid": process.pid, "process_group": process.pid, "parent_pid": os.getpid(), "started_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
-            "command": [str(a) for a in args], "task": "windows-onboarding-baseline"}))
-        errors, outputs = [], {}
+        identity = {"parent_pid": os.getpid(), "started_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                    "command": [str(a) for a in args], "task": "windows-onboarding-baseline"}
+        errors, outputs, started_readers = [], {}, []
         readers_done = threading.Event()
         tick = threading.Event()
+        failure = None
 
         def leader_exited():
             return os.waitid(os.P_PID, process.pid, os.WEXITED | os.WNOHANG | os.WNOWAIT) is not None
 
         def wait_owned(timeout):
+            nonlocal failure
             deadline = time.monotonic() + timeout
-            while not leader_exited():
+            while True:
+                try:
+                    if leader_exited():
+                        return True
+                except ChildProcessError:
+                    raise
+                except OSError as error:
+                    failure = failure or error
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
                     return False
                 tick.wait(min(0.05, remaining))
-            return True
 
-        def consume(name, pipe, maximum):
+        def consume(name, maximum):
+            pipe = process.stderr if name == "stderr" else process.stdout
             content, pending = bytearray(), b""
             try:
                 with Path(str(prefix) + "." + name).open("xb") as log:
@@ -461,67 +466,95 @@ class Commands:
                 if len(outputs) == 2:
                     readers_done.set()
 
-        threads = [threading.Thread(target=consume, args=(name, pipe, maximum), daemon=True)
-                   for name, pipe, maximum in (("stdout", process.stdout, limit), ("stderr", process.stderr, 64 << 10))]
-        for thread in threads:
-            thread.start()
-        if stdin is not None:
+        threads = [threading.Thread(target=consume, args=(name, maximum), daemon=True)
+                   for name, maximum in (("stderr", 64 << 10), ("stdout", limit))]
+
+        def settle_process():
+            nonlocal failure
             try:
-                process.stdin.write(stdin)
-                process.stdin.close()
-            except BrokenPipeError:
-                pass
-        deadline = time.monotonic() + timeout
-        failure = None
-        while not leader_exited():
-            if errors or time.monotonic() >= deadline or (self.cancelled.is_set() and not recovery):
-                failure = errors[0] if errors else ProofError("interrupted" if self.cancelled.is_set() else "command-timeout")
                 try:
+                    exited = leader_exited()
+                except ChildProcessError:
+                    raise
+                except OSError as error:
+                    failure = failure or error
+                    exited = False
+                if not exited:
                     os.kill(process.pid, signal.SIGINT)
-                except OSError:
-                    failure = ProofError("command-cleanup-unknown")
-                    break
-                # Run may settle twice and recover status, each with a 30-second deadline.
-                wait_owned(95 if marker else 65 if recovery else cleanup_grace)
-                break
-            tick.wait(0.05)
-        if not readers_done.wait(2):
-            failure = failure or ProofError("command-pipe-timeout")
-        # WNOWAIT retains the task-owned group leader identity until all group signals finish.
-        try:
-            for signum in (signal.SIGTERM, signal.SIGKILL):
-                try:
-                    os.killpg(process.pid, signum)
-                except ProcessLookupError:
-                    pass
-                except PermissionError:
-                    observation = subprocess.run(["/bin/ps", "-axo", "pid=,pgid=,stat="],
-                                                 stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-                                                 timeout=5, check=True)
-                    require(len(observation.stdout) <= 1 << 20, "command-cleanup-unknown")
-                    members = []
-                    for line in observation.stdout.splitlines():
-                        fields = line.split()
-                        require(len(fields) == 3 and fields[0].isdigit() and fields[1].isdigit(),
-                                "command-cleanup-unknown")
-                        if int(fields[1]) == process.pid:
-                            members.append((int(fields[0]), fields[2]))
-                    require(any(pid == process.pid and state.startswith(b"Z") for pid, state in members)
-                            and all(state.startswith(b"Z") for _, state in members), "command-cleanup-unknown")
-                if signum == signal.SIGTERM:
-                    wait_owned(5)
-                    readers_done.wait(2)
-            process.wait(timeout=5)
-        except (OSError, subprocess.SubprocessError, ProofError) as error:
-            self.group_cleanup_known = False
-            if leader_exited():
+                    # Run may settle twice and recover status, each with a 30-second deadline.
+                    wait_owned(95 if marker else 65 if recovery else cleanup_grace)
+                if all(thread.ident is not None for thread in threads) and not readers_done.wait(2):
+                    failure = failure or ProofError("command-pipe-timeout")
+                # WNOWAIT retains the task-owned group leader identity until all group signals finish.
+                for signum in (signal.SIGTERM, signal.SIGKILL):
+                    try:
+                        os.killpg(process.pid, signum)
+                    except ProcessLookupError:
+                        pass
+                    except PermissionError:
+                        observation = subprocess.run(["/bin/ps", "-axo", "pid=,pgid=,stat="],
+                                                     stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                                                     timeout=5, check=True)
+                        require(len(observation.stdout) <= 1 << 20, "command-cleanup-unknown")
+                        members = []
+                        for line in observation.stdout.splitlines():
+                            fields = line.split()
+                            require(len(fields) == 3 and fields[0].isdigit() and fields[1].isdigit(),
+                                    "command-cleanup-unknown")
+                            if int(fields[1]) == process.pid:
+                                members.append((int(fields[0]), fields[2]))
+                        require(any(pid == process.pid and state.startswith(b"Z") for pid, state in members)
+                                and all(state.startswith(b"Z") for _, state in members), "command-cleanup-unknown")
+                    if signum == signal.SIGTERM:
+                        wait_owned(5)
+                        if all(thread.ident is not None for thread in threads):
+                            readers_done.wait(2)
                 process.wait(timeout=5)
-            raise ProofError("command-cleanup-unknown") from error
-        for thread in threads:
-            thread.join(timeout=2)
-        if any(thread.is_alive() for thread in threads):
-            self.group_cleanup_known = False
-            raise ProofError("command-cleanup-unknown")
+            except BaseException as error:
+                self.group_cleanup_known = False
+                self.unsettled_process = process
+                raise ProofError("command-cleanup-unknown") from error
+            finally:
+                for thread in started_readers:
+                    if thread.ident is not None:
+                        thread.join(timeout=2)
+                if any(thread.is_alive() for thread in started_readers):
+                    self.group_cleanup_known = False
+                else:
+                    for pipe in (process.stdin, process.stdout, process.stderr):
+                        if pipe is not None and not pipe.closed:
+                            try:
+                                pipe.close()
+                            except BrokenPipeError:
+                                pass
+            require(self.group_cleanup_known, "command-cleanup-unknown")
+
+        process = subprocess.Popen(identity["command"], cwd=self.cwd, env=env or self.env,
+                                   stdin=subprocess.PIPE if stdin is not None else subprocess.DEVNULL,
+                                   stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True)
+        try:
+            identity.update(pid=process.pid, process_group=process.pid)
+            self.process_identity = identity
+            for thread in threads:
+                started_readers.append(thread)
+                thread.start()
+            Path(str(prefix) + ".process.json").write_bytes(canonical(identity))
+            if stdin is not None:
+                try:
+                    process.stdin.write(stdin)
+                    process.stdin.close()
+                except BrokenPipeError:
+                    pass
+            deadline = time.monotonic() + timeout
+            while not leader_exited():
+                if errors or time.monotonic() >= deadline or (self.cancelled.is_set() and not recovery):
+                    failure = errors[0] if errors else ProofError("interrupted" if self.cancelled.is_set() else "command-timeout")
+                    break
+                tick.wait(0.05)
+        except BaseException as error:
+            failure = error
+        finally:
+            settle_process()
         if failure or errors:
             raise failure or errors[0]
         require(process.returncode == 0, "command-failed")
