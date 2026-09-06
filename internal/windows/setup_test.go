@@ -15,6 +15,9 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/BramVR/blender-box/internal/target"
+	"github.com/BramVR/blender-box/internal/windowstarget"
 )
 
 const testSetupAttemptID = "bbsa_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
@@ -162,7 +165,7 @@ func TestSetupCleansExactTransferAfterPreOwnerFailure(t *testing.T) {
 			if len(fake.arguments) == 0 {
 				t.Fatal("setup omitted transfer cleanup")
 			}
-			assertSetupTransferCleanup(t, fake.arguments[len(fake.arguments)-1], fake.uploads, adapterTarget().WorkRoot+`\.setup-ffffffffffffffffffffffffffffffff-prepare.ps1`)
+			assertSetupTransferCleanup(t, fake.arguments[len(fake.arguments)-1], fake.uploads, adapterTarget().Windows().WorkRoot+`\.setup-ffffffffffffffffffffffffffffffff-prepare.ps1`)
 		})
 	}
 }
@@ -284,7 +287,7 @@ func TestSetupRunsApplyThroughFencedSetupOwner(t *testing.T) {
 	}
 	scriptUpload := fake.uploads[2]
 	wantSuffix := `\setup-owner\setup-attempts\` + request.AttemptID + `\` + request.AttemptID + `.ps1`
-	if scriptUpload.destination != selected.WorkRoot+wantSuffix || request.Script.ArtifactID != request.AttemptID+".ps1" || request.Script.Size != len(scriptUpload.contents) {
+	if scriptUpload.destination != selected.Windows().WorkRoot+wantSuffix || request.Script.ArtifactID != request.AttemptID+".ps1" || request.Script.Size != len(scriptUpload.contents) {
 		t.Fatalf("request script = %+v, upload = %+v", request.Script, scriptUpload)
 	}
 	scriptHash := sha256.Sum256(scriptUpload.contents)
@@ -294,10 +297,10 @@ func TestSetupRunsApplyThroughFencedSetupOwner(t *testing.T) {
 	launch := decodedAdapterScript(t, fake.arguments[1])
 	for _, required := range []string{
 		`[Diagnostics.ProcessStartInfo]::new()`,
-		`$i.FileName = '` + selected.SessionBrokerExecutable + `'`,
+		`$i.FileName = '` + selected.Windows().SessionBrokerExecutable + `'`,
 		`$i.Arguments = 'setup-owner launch --json'`,
 		`$i.RedirectStandardInput = $true`,
-		`$i.EnvironmentVariables['BLENDERSESSIOND_STATE_DIR'] = '` + selected.WorkRoot + `\setup-owner'`,
+		`$i.EnvironmentVariables['BLENDERSESSIOND_STATE_DIR'] = '` + selected.Windows().WorkRoot + `\setup-owner'`,
 		`$s = $p.StandardInput.BaseStream`,
 		`$s.Close()`,
 		`$p.StandardOutput.BaseStream.ReadAsync`,
@@ -309,7 +312,7 @@ func TestSetupRunsApplyThroughFencedSetupOwner(t *testing.T) {
 			t.Fatalf("launch wrapper missing %q: %s", required, launch)
 		}
 	}
-	assertSetupTransferCleanup(t, fake.arguments[2], fake.uploads, selected.WorkRoot+`\.setup-ffffffffffffffffffffffffffffffff-prepare.ps1`)
+	assertSetupTransferCleanup(t, fake.arguments[2], fake.uploads, selected.Windows().WorkRoot+`\.setup-ffffffffffffffffffffffffffffffff-prepare.ps1`)
 	if _, err := base64.RawURLEncoding.DecodeString(strings.TrimPrefix(request.AttemptID, "bbsa_")); err != nil {
 		t.Fatalf("Attempt ID is not random URL-safe bytes: %v", err)
 	}
@@ -357,7 +360,7 @@ func TestSetupCleansExactTransferAfterTerminalFailure(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "terminal failed") {
 		t.Fatalf("Setup() error = %v", err)
 	}
-	assertSetupTransferCleanup(t, fake.arguments[2], fake.uploads, adapterTarget().WorkRoot+`\.setup-ffffffffffffffffffffffffffffffff-prepare.ps1`)
+	assertSetupTransferCleanup(t, fake.arguments[2], fake.uploads, adapterTarget().Windows().WorkRoot+`\.setup-ffffffffffffffffffffffffffffffff-prepare.ps1`)
 }
 
 func TestRepeatedSetupUsesDistinctPrepareTransfers(t *testing.T) {
@@ -384,9 +387,9 @@ func TestRepeatedSetupUsesDistinctPrepareTransfers(t *testing.T) {
 }
 
 func TestSetupCommandsFitWindowsBoundaryAtMaximumValidatedPaths(t *testing.T) {
-	selected := adapterTarget()
+	selected := adapterTarget().Windows()
 	for length := 1; length < 240; length++ {
-		candidate := adapterTarget()
+		candidate := adapterTarget().Windows()
 		candidate.WorkRoot = `C:\` + strings.Repeat("r", length)
 		candidate.HostExecutable = candidate.WorkRoot + `\host\blender-box.exe`
 		candidate.SessionBrokerExecutable = candidate.WorkRoot + `\daemon\blendersessiond.exe`
@@ -411,7 +414,7 @@ func TestSetupCommandsFitWindowsBoundaryAtMaximumValidatedPaths(t *testing.T) {
 	hash := sha256.Sum256(binary)
 	fake := &scriptedSSH{}
 	setSetupOwnerTerminalResponse(t, fake, mustJSON(t, SetupResult{SchemaVersion: 1, Status: "applied", Applied: true, HostSize: int64(len(binary)), HostSHA256: hex.EncodeToString(hash[:])}))
-	if _, err := Setup(context.Background(), fake, selected, path, true); err != nil {
+	if _, err := Setup(context.Background(), fake, setupTarget(t, selected), path, true); err != nil {
 		t.Fatal(err)
 	}
 	for index, arguments := range fake.arguments {
@@ -662,7 +665,7 @@ func TestSetupCancellationStopsOnlyTheExactAttemptWithFreshContext(t *testing.T)
 			t.Fatalf("stop command missing %q: %s", required, stop)
 		}
 	}
-	assertSetupTransferCleanup(t, fake.arguments[3], fake.uploads, adapterTarget().WorkRoot+`\.setup-ffffffffffffffffffffffffffffffff-prepare.ps1`)
+	assertSetupTransferCleanup(t, fake.arguments[3], fake.uploads, adapterTarget().Windows().WorkRoot+`\.setup-ffffffffffffffffffffffffffffffff-prepare.ps1`)
 }
 
 func TestSetupRetriesStatusWhenLostLaunchIsNotYetVisible(t *testing.T) {
@@ -1002,23 +1005,23 @@ func TestSetupPlansWithoutSSHAndAppliesOneBoundedHostBinary(t *testing.T) {
 			t.Fatalf("setup SSH input %d = %q", index, input)
 		}
 	}
-	if fake.uploads[0].host != adapterTarget().SSHAlias || !strings.HasSuffix(fake.uploads[0].destination, "-prepare.ps1") || string(fake.uploads[0].contents) != prepare {
+	if fake.uploads[0].host != adapterTarget().SSHAlias() || !strings.HasSuffix(fake.uploads[0].destination, "-prepare.ps1") || string(fake.uploads[0].contents) != prepare {
 		t.Fatalf("prepare upload = %+v", fake.uploads[0])
 	}
-	if fake.uploads[1].host != adapterTarget().SSHAlias || fake.uploads[1].source == path || !strings.HasPrefix(fake.uploads[1].destination, adapterTarget().WorkRoot+`\.setup-`) || !strings.HasSuffix(fake.uploads[1].destination, ".bin") || string(fake.uploads[1].contents) != string(binary) {
+	if fake.uploads[1].host != adapterTarget().SSHAlias() || fake.uploads[1].source == path || !strings.HasPrefix(fake.uploads[1].destination, adapterTarget().Windows().WorkRoot+`\.setup-`) || !strings.HasSuffix(fake.uploads[1].destination, ".bin") || string(fake.uploads[1].contents) != string(binary) {
 		t.Fatalf("binary upload = %+v", fake.uploads[1])
 	}
 	if _, err := os.Lstat(fake.uploads[1].source); !os.IsNotExist(err) {
 		t.Fatalf("local binary snapshot remains after setup: %v", err)
 	}
-	if fake.uploads[2].host != adapterTarget().SSHAlias || !strings.HasSuffix(fake.uploads[2].destination, ".ps1") || len(fake.uploads[2].contents) == 0 {
+	if fake.uploads[2].host != adapterTarget().SSHAlias() || !strings.HasSuffix(fake.uploads[2].destination, ".ps1") || len(fake.uploads[2].contents) == 0 {
 		t.Fatalf("script upload = %+v", fake.uploads[2])
 	}
 	launch := decodedAdapterScript(t, fake.arguments[1])
 	if !strings.Contains(launch, `$i.Arguments = 'setup-owner launch --json'`) || !strings.Contains(launch, "BLENDERSESSIOND_STATE_DIR") || !strings.Contains(launch, "$s.Close()") {
 		t.Fatalf("unexpected setup owner launch: %s", launch)
 	}
-	script := setupScript(adapterTarget(), SetupResult{HostSize: int64(len(binary)), HostSHA256: hex.EncodeToString(hash[:])}, fake.uploads[1].destination)
+	script := setupScript(adapterTarget().Windows(), SetupResult{HostSize: int64(len(binary)), HostSHA256: hex.EncodeToString(hash[:])}, fake.uploads[1].destination)
 	if strings.Count(script, "Assert-NoReparsePath $hostPath") < 2 || strings.Count(script, "Assert-RegularFileOrMissing $hostPath") < 2 {
 		t.Fatal("setup apply does not revalidate the existing host executable")
 	}
@@ -1051,8 +1054,8 @@ func TestSetupPlansWithoutSSHAndAppliesOneBoundedHostBinary(t *testing.T) {
 		"$operation.Lock(0, 1)",
 		"$operation.Unlock(0, 1)",
 		"host run-request --state-root",
-		adapterTarget().HostExecutable,
-		adapterTarget().SessionBrokerExecutable,
+		adapterTarget().Windows().HostExecutable,
+		adapterTarget().Windows().SessionBrokerExecutable,
 	} {
 		if !strings.Contains(script, required) {
 			t.Errorf("setup script missing %q", required)
@@ -1091,8 +1094,8 @@ func TestSetupUploadsTheValidatedBinarySnapshot(t *testing.T) {
 }
 
 func TestSetupAncestorsTrustOnlyControllerAndSystemAuthority(t *testing.T) {
-	prepare := prepareSetupScript(adapterTarget(), testSetupAttemptID)
-	apply := setupScript(adapterTarget(), SetupResult{HostSize: 1, HostSHA256: strings.Repeat("a", 64)}, `C:\BlenderBoxTest\.setup-host.bin`)
+	prepare := prepareSetupScript(adapterTarget().Windows(), testSetupAttemptID)
+	apply := setupScript(adapterTarget().Windows(), SetupResult{HostSize: 1, HostSHA256: strings.Repeat("a", 64)}, `C:\BlenderBoxTest\.setup-host.bin`)
 	if !strings.Contains(prepare, "function Assert-TrustedAncestors([string]$Path, [System.Security.Principal.SecurityIdentifier]$ControllerSid)") ||
 		!strings.Contains(prepare, "$trusted = @($ControllerSid.Value, 'S-1-5-18'") ||
 		strings.Contains(prepare, "$trusted = @($PrincipalSid.Value, $ControllerSid.Value") ||
@@ -1104,8 +1107,8 @@ func TestSetupAncestorsTrustOnlyControllerAndSystemAuthority(t *testing.T) {
 
 func TestSetupTrustsExistingManagedPathsBeforePathBasedMutation(t *testing.T) {
 	for name, script := range map[string]string{
-		"prepare": prepareSetupScript(adapterTarget(), testSetupAttemptID),
-		"apply":   setupScript(adapterTarget(), SetupResult{HostSize: 1, HostSHA256: strings.Repeat("a", 64)}, `C:\BlenderBoxTest\.setup-host.bin`),
+		"prepare": prepareSetupScript(adapterTarget().Windows(), testSetupAttemptID),
+		"apply":   setupScript(adapterTarget().Windows(), SetupResult{HostSize: 1, HostSHA256: strings.Repeat("a", 64)}, `C:\BlenderBoxTest\.setup-host.bin`),
 	} {
 		for _, required := range []string{
 			"function Assert-TrustedManagedPath",
@@ -1126,7 +1129,7 @@ func TestSetupTrustsExistingManagedPathsBeforePathBasedMutation(t *testing.T) {
 			t.Fatalf("%s script mutates the work root before trusting its current ACL", name)
 		}
 	}
-	apply := setupScript(adapterTarget(), SetupResult{HostSize: 1, HostSHA256: strings.Repeat("a", 64)}, `C:\BlenderBoxTest\.setup-host.bin`)
+	apply := setupScript(adapterTarget().Windows(), SetupResult{HostSize: 1, HostSHA256: strings.Repeat("a", 64)}, `C:\BlenderBoxTest\.setup-host.bin`)
 	for _, required := range []string{
 		"Assert-TrustedManagedPath $directory.FullName $controllerSid",
 		"Assert-TrustedManagedPath $child.FullName $controllerSid",
@@ -1138,7 +1141,7 @@ func TestSetupTrustsExistingManagedPathsBeforePathBasedMutation(t *testing.T) {
 }
 
 func TestSetupRequiresControllerToOwnInteractiveTaskIdentityBeforeMutation(t *testing.T) {
-	selected := adapterTarget()
+	selected := adapterTarget().Windows()
 	selected.InteractiveUser = "task-user"
 	selected.SSHUser = "controller-user"
 	prepare := prepareSetupScript(selected, testSetupAttemptID)
@@ -1154,8 +1157,8 @@ func TestSetupRequiresControllerToOwnInteractiveTaskIdentityBeforeMutation(t *te
 }
 
 func TestSetupCreatesAndSealsBothHostLockFiles(t *testing.T) {
-	prepare := prepareSetupScript(adapterTarget(), testSetupAttemptID)
-	apply := setupScript(adapterTarget(), SetupResult{HostSize: 1, HostSHA256: strings.Repeat("a", 64)}, `C:\BlenderBoxTest\.setup-host.bin`)
+	prepare := prepareSetupScript(adapterTarget().Windows(), testSetupAttemptID)
+	apply := setupScript(adapterTarget().Windows(), SetupResult{HostSize: 1, HostSHA256: strings.Repeat("a", 64)}, `C:\BlenderBoxTest\.setup-host.bin`)
 	for name, script := range map[string]string{"prepare": prepare, "apply": apply} {
 		for _, required := range []string{
 			"$launchPath = [System.IO.Path]::Combine($root, '.launch.lock')",
@@ -1171,8 +1174,8 @@ func TestSetupCreatesAndSealsBothHostLockFiles(t *testing.T) {
 
 func TestSetupRequiresCompatibleSessionBrokerBeforeTaskRegistration(t *testing.T) {
 	for name, script := range map[string]string{
-		"prepare": prepareSetupScript(adapterTarget(), testSetupAttemptID),
-		"apply":   setupScript(adapterTarget(), SetupResult{HostSize: 1, HostSHA256: strings.Repeat("a", 64)}, `C:\BlenderBoxTest\.setup-host.bin`),
+		"prepare": prepareSetupScript(adapterTarget().Windows(), testSetupAttemptID),
+		"apply":   setupScript(adapterTarget().Windows(), SetupResult{HostSize: 1, HostSHA256: strings.Repeat("a", 64)}, `C:\BlenderBoxTest\.setup-host.bin`),
 	} {
 		for _, required := range []string{
 			"function Assert-CompatibleSessionBroker",
@@ -1198,7 +1201,7 @@ func TestSetupRequiresCompatibleSessionBrokerBeforeTaskRegistration(t *testing.T
 }
 
 func TestSetupPreservesSingleIdentityUpdateAuthority(t *testing.T) {
-	selected := adapterTarget()
+	selected := adapterTarget().Windows()
 	prepare := prepareSetupScript(selected, testSetupAttemptID)
 	script := setupScript(selected, SetupResult{HostSize: 1, HostSHA256: strings.Repeat("a", 64)}, `C:\BlenderBoxTest\.setup-host.bin`)
 
@@ -1223,7 +1226,7 @@ func TestSetupPreservesSingleIdentityUpdateAuthority(t *testing.T) {
 }
 
 func TestSetupEscapesEveryPowerShellLiteralBoundary(t *testing.T) {
-	selected := adapterTarget()
+	selected := adapterTarget().Windows()
 	selected.WorkRoot = `C:\Operator's Box`
 	selected.HostExecutable = `C:\Operator's Box\bin\blender-box.exe`
 	selected.SessionBrokerExecutable = `C:\Operator's Box\daemon\blendersessiond.exe`
@@ -1265,14 +1268,14 @@ func TestSetupEscapesEveryPowerShellLiteralBoundary(t *testing.T) {
 		"command":        "setup-owner launch",
 		"message":        "test response",
 	}), nil}}
-	if _, err := invokeSetupOwner(context.Background(), fake, selected, "launch", nil, []byte("{}")); err != nil {
+	if _, err := fake.Run(context.Background(), "windows-test", powerShellArguments(setupOwnerCommand(selected, []string{"setup-owner", "launch"}, []byte("{}"))), nil); err != nil {
 		t.Fatal(err)
 	}
 	launch := decodedAdapterScript(t, fake.arguments[0])
 	if !strings.Contains(launch, `$i.EnvironmentVariables['BLENDERSESSIOND_STATE_DIR'] = 'C:\Operator''s Box\setup-owner'`) || !strings.Contains(launch, `$i.FileName = 'C:\Operator''s Box\daemon\blendersessiond.exe'`) {
 		t.Fatalf("setup owner command does not escape paths: %s", launch)
 	}
-	_ = cleanupSetupTransfer(context.Background(), fake, selected, setupTransfer{prepareGuard: stagedPrepare, hostBinary: stagedBinary, ownerScript: stagedScript}, context.Canceled)
+	_ = cleanupSetupTransfer(context.Background(), fake, adapterTarget(), setupTransfer{prepareGuard: stagedPrepare, hostBinary: stagedBinary, ownerScript: stagedScript}, context.Canceled)
 	cleanup := decodedAdapterScript(t, fake.arguments[1])
 	if strings.Count(cleanup, `'C:\Operator''s Box\`) != 6 {
 		t.Fatalf("cleanup paths are not escaped: %s", cleanup)
@@ -1298,11 +1301,10 @@ func TestSetupValidatesTargetBeforeAnySSHCall(t *testing.T) {
 	if err := os.WriteFile(path, []byte("host"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	selected := adapterTarget()
-	selected.HostExecutable = `C:\Outside\blender-box.exe`
+	selected := target.Target{}
 	fake := &scriptedSSH{}
 	_, err := Setup(context.Background(), fake, selected, path, true)
-	if err == nil || !strings.Contains(err.Error(), "inside work_root") {
+	if err == nil || !strings.Contains(err.Error(), "platform") {
 		t.Fatalf("Setup() error = %v", err)
 	}
 	if len(fake.arguments) != 0 || len(fake.uploads) != 0 {
@@ -1439,4 +1441,13 @@ func setSetupOwnerTerminalResponse(t *testing.T, fake *scriptedSSH, stdout []byt
 			"finished_at":      time.Now().UTC().Format(time.RFC3339Nano),
 		}), nil
 	}
+}
+
+func setupTarget(t *testing.T, config windowstarget.Config) target.Target {
+	t.Helper()
+	selected, err := target.NewWindows("windows-test", config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return selected
 }

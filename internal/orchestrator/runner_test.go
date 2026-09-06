@@ -21,6 +21,7 @@ import (
 	"github.com/BramVR/blender-box/internal/capture"
 	"github.com/BramVR/blender-box/internal/payload"
 	"github.com/BramVR/blender-box/internal/target"
+	"github.com/BramVR/blender-box/internal/windowstarget"
 )
 
 type fakeHost struct {
@@ -111,7 +112,7 @@ func TestRunRequiresExactScenarioEvidenceSet(t *testing.T) {
 			intent := testIntent(t)
 			intent.Payload.Scenario.CaptureViewport = test.captureViewport
 			intent.EvidenceDir = filepath.Join(t.TempDir(), "evidence")
-			_, err := New(host).Run(context.Background(), intent)
+			_, err := New(host, filepath.Join(t.TempDir(), "private")).Run(context.Background(), intent)
 			if err == nil || !strings.Contains(err.Error(), test.want) {
 				t.Fatalf("Run() error = %v, want %q", err, test.want)
 			}
@@ -158,12 +159,12 @@ func TestRunFromIntentToVerifiedEvidenceAndKnownCleanup(t *testing.T) {
 		RequestID:    "req_01TESTREQUESTIDENTITY00000",
 		ControllerID: "controller-test",
 		Deadline:     deadline,
-		Target:       validPlanTarget(),
+		Target:       testTarget(t),
 		Payload:      loadTestPayload(t),
 		EvidenceDir:  evidenceDir,
 	}
 
-	result, err := New(host).Run(context.Background(), intent)
+	result, err := New(host, filepath.Join(t.TempDir(), "private")).Run(context.Background(), intent)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -240,7 +241,7 @@ func TestRunPublishesEverySchemaV2CaptureWithProvenance(t *testing.T) {
 	intent.Payload = loadTestPayloadV2(t)
 	intent.EvidenceDir = filepath.Join(t.TempDir(), "evidence")
 
-	result, err := New(host).Run(context.Background(), intent)
+	result, err := New(host, filepath.Join(t.TempDir(), "private")).Run(context.Background(), intent)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -387,7 +388,7 @@ func (host *acquireErrorHost) Settle(_ context.Context, _ target.Target, receipt
 func TestAcquireErrorAttemptsExactClaimOnlySettlement(t *testing.T) {
 	host := &acquireErrorHost{fakeHost: fakeHost{evidence: testEvidence()}}
 	intent := testIntent(t)
-	_, err := New(host).Run(context.Background(), intent)
+	_, err := New(host, filepath.Join(t.TempDir(), "private")).Run(context.Background(), intent)
 	if err == nil || !strings.Contains(err.Error(), "acquire Host Lock") {
 		t.Fatalf("error = %v", err)
 	}
@@ -408,7 +409,7 @@ func (host *startErrorHost) Settle(_ context.Context, _ target.Target, receipt R
 func TestStartErrorPreservesClaimForSettlement(t *testing.T) {
 	host := &startErrorHost{fakeHost: fakeHost{evidence: map[string][]byte{}}}
 	intent := testIntent(t)
-	_, err := New(host).Run(context.Background(), intent)
+	_, err := New(host, filepath.Join(t.TempDir(), "private")).Run(context.Background(), intent)
 	if err == nil || !strings.Contains(err.Error(), "start Run") {
 		t.Fatalf("error = %v", err)
 	}
@@ -430,7 +431,7 @@ func TestForgedPayloadFailsBeforeHostInspection(t *testing.T) {
 		}},
 		Scenario: payload.Scenario{Script: "scenario.py", ReadTimeoutSeconds: 180},
 	}
-	_, err := New(host).Run(context.Background(), intent)
+	_, err := New(host, filepath.Join(t.TempDir(), "private")).Run(context.Background(), intent)
 	if err == nil || !strings.Contains(err.Error(), "invalid Run Payload") {
 		t.Fatalf("error = %v", err)
 	}
@@ -445,7 +446,7 @@ func TestRunReportsFailedHostInspectionBeforeAcquisition(t *testing.T) {
 		inspection: HostInspection{SchemaVersion: 1, Status: "fail"},
 	}
 
-	_, err := New(host).Run(context.Background(), testIntent(t))
+	_, err := New(host, filepath.Join(t.TempDir(), "private")).Run(context.Background(), testIntent(t))
 	if err == nil || !strings.Contains(err.Error(), "host checks failed") || strings.Contains(err.Error(), "capture") {
 		t.Fatalf("Run() error = %v", err)
 	}
@@ -466,7 +467,7 @@ func (host *malformedStartHost) Start(ctx context.Context, target target.Target,
 
 func TestStartMustReturnExactSessionIdentity(t *testing.T) {
 	host := &malformedStartHost{startErrorHost: startErrorHost{fakeHost: fakeHost{evidence: testEvidence()}}}
-	_, err := New(host).Run(context.Background(), testIntent(t))
+	_, err := New(host, filepath.Join(t.TempDir(), "private")).Run(context.Background(), testIntent(t))
 	if err == nil || !strings.Contains(err.Error(), "start receipt: invalid Session identity") {
 		t.Fatalf("error = %v", err)
 	}
@@ -487,9 +488,12 @@ func (host *driftingSessionHost) Observe(ctx context.Context, target target.Targ
 
 func TestObserveCannotReplaceSessionIdentity(t *testing.T) {
 	host := &driftingSessionHost{fakeHost: fakeHost{evidence: testEvidence()}}
-	_, err := New(host).Run(context.Background(), testIntent(t))
-	if err == nil || !strings.Contains(err.Error(), "Session identity changed") {
+	_, err := New(host, filepath.Join(t.TempDir(), "private")).Run(context.Background(), testIntent(t))
+	if !IsAuthorityError(err) || !strings.Contains(err.Error(), "Session identity changed") {
 		t.Fatalf("error = %v", err)
+	}
+	if slices.Contains(host.operations, "settle") {
+		t.Fatalf("cleanup after changed Session: %v", host.operations)
 	}
 }
 
@@ -514,7 +518,7 @@ func (host *blockingSettleHost) Settle(ctx context.Context, _ target.Target, _ R
 
 func TestSettlementHasIndependentBoundedDeadline(t *testing.T) {
 	host := &blockingSettleHost{fakeHost: fakeHost{evidence: testEvidence()}}
-	runner := New(host)
+	runner := New(host, filepath.Join(t.TempDir(), "private"))
 	runner.settlementTimeout = 10 * time.Millisecond
 	_, err := runner.Run(context.Background(), testIntent(t))
 	if err == nil || !strings.Contains(err.Error(), "settle Run") {
@@ -548,7 +552,7 @@ func (host *incompleteSettleHost) Settle(context.Context, target.Target, RunRece
 
 func TestIncompleteSettlementGetsFallbackRetry(t *testing.T) {
 	host := &incompleteSettleHost{fakeHost: fakeHost{evidence: testEvidence()}}
-	_, err := New(host).Run(context.Background(), testIntent(t))
+	_, err := New(host, filepath.Join(t.TempDir(), "private")).Run(context.Background(), testIntent(t))
 	if err == nil || !strings.Contains(err.Error(), "cleanup state is not known") {
 		t.Fatalf("error = %v", err)
 	}
@@ -575,7 +579,7 @@ func (host *duplicateEvidenceHost) Fetch(ctx context.Context, target target.Targ
 
 func TestDuplicateEvidencePathsFailBeforeFetch(t *testing.T) {
 	host := &duplicateEvidenceHost{fakeHost: fakeHost{evidence: testEvidence()}}
-	_, err := New(host).Run(context.Background(), testIntent(t))
+	_, err := New(host, filepath.Join(t.TempDir(), "private")).Run(context.Background(), testIntent(t))
 	if err == nil || !strings.Contains(err.Error(), "duplicate path") {
 		t.Fatalf("error = %v", err)
 	}
@@ -598,7 +602,7 @@ func (host *unicodeCollisionEvidenceHost) Observe(ctx context.Context, target ta
 
 func TestWindowsUnicodeEvidenceCollisionFailsBeforeFetch(t *testing.T) {
 	host := &unicodeCollisionEvidenceHost{duplicateEvidenceHost: duplicateEvidenceHost{fakeHost: fakeHost{evidence: testEvidence()}}}
-	_, err := New(host).Run(context.Background(), testIntent(t))
+	_, err := New(host, filepath.Join(t.TempDir(), "private")).Run(context.Background(), testIntent(t))
 	if err == nil || !strings.Contains(err.Error(), "duplicate path") {
 		t.Fatalf("error = %v", err)
 	}
@@ -612,7 +616,7 @@ func TestRunRejectsInvalidViewportBytes(t *testing.T) {
 		"scenario-result.json": []byte(`{"status":"pass"}`),
 		"viewport.png":         []byte("not-a-png"),
 	}}
-	_, err := New(host).Run(context.Background(), testIntent(t))
+	_, err := New(host, filepath.Join(t.TempDir(), "private")).Run(context.Background(), testIntent(t))
 	if err == nil || !strings.Contains(err.Error(), "PNG") {
 		t.Fatalf("error = %v", err)
 	}
@@ -762,7 +766,7 @@ func TestRunRejectsExistingEvidenceDirectoryBeforeHostInspection(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	_, err := New(host).Run(context.Background(), intent)
+	_, err := New(host, filepath.Join(t.TempDir(), "private")).Run(context.Background(), intent)
 	if err == nil || !strings.Contains(err.Error(), "prepare evidence directory") {
 		t.Fatalf("Run() error = %v", err)
 	}
@@ -817,8 +821,8 @@ func TestStatusAndStopRecoverAndSettleExactHostReceipt(t *testing.T) {
 		State:         StateRunning,
 		SessionID:     "bss_exact-fake-session-identity-123456",
 	}}}
-	selected := target.Target{SchemaVersion: 1, TaskName: "BlenderBoxTest"}
-	runner := New(host)
+	selected := testTarget(t)
+	runner := recoveryRunner(t, host, claim)
 
 	status, err := runner.Status(context.Background(), selected, claim.RunID)
 	if err != nil {
@@ -877,7 +881,7 @@ func TestStopReturnsSessionIdentityRecoveredDuringSettlement(t *testing.T) {
 		fakeHost:  fakeHost{receipt: RunReceipt{SchemaVersion: 1, Claim: claim, State: StateStarting}},
 		recovered: "bss_recovered-startup-session-identity-123456",
 	}
-	result, err := New(host).Stop(context.Background(), target.Target{SchemaVersion: 1, TaskName: claim.TaskName}, claim.RunID)
+	result, err := recoveryRunner(t, host, claim).Stop(context.Background(), testTarget(t), claim.RunID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -907,7 +911,7 @@ func TestStopObservesSettledReceiptAfterCallerCancellation(t *testing.T) {
 		State:         StateFailed,
 		SessionID:     "bss_exact-canceled-stop-session-123456",
 	}}}, cancel: cancel}
-	result, err := New(host).Stop(ctx, target.Target{SchemaVersion: 1, TaskName: claim.TaskName}, claim.RunID)
+	result, err := recoveryRunner(t, host, claim).Stop(ctx, testTarget(t), claim.RunID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -932,8 +936,10 @@ func TestStatusRejectsReceiptForReplacementRun(t *testing.T) {
 		State:     StateRunning,
 		SessionID: "bss_replacement-session-identity-123456",
 	}}}
-	_, err := New(host).Status(context.Background(), target.Target{TaskName: "BlenderBoxTest"}, requested)
-	if err == nil || !strings.Contains(err.Error(), "Run ID changed") {
+	original := host.receipt.Claim
+	original.RunID = requested
+	_, err := recoveryRunner(t, host, original).Status(context.Background(), testTarget(t), requested)
+	if !IsAuthorityError(err) || !strings.Contains(err.Error(), "Host Lock claim changed") {
 		t.Fatalf("error = %v", err)
 	}
 }
@@ -954,7 +960,7 @@ func TestStatusAllowsFailedReceiptBeforeSessionStart(t *testing.T) {
 		State:         StateFailed,
 		Error:         "Session start failed",
 	}}}
-	status, err := New(host).Status(context.Background(), target.Target{TaskName: claim.TaskName}, claim.RunID)
+	status, err := recoveryRunner(t, host, claim).Status(context.Background(), testTarget(t), claim.RunID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -978,7 +984,7 @@ func TestStatusAllowsStartingReceiptBeforeSessionPublication(t *testing.T) {
 		Claim:         claim,
 		State:         StateStarting,
 	}}}
-	status, err := New(host).Status(context.Background(), target.Target{TaskName: claim.TaskName}, claim.RunID)
+	status, err := recoveryRunner(t, host, claim).Status(context.Background(), testTarget(t), claim.RunID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -994,7 +1000,7 @@ func testIntent(t *testing.T) RunIntent {
 		RequestID:    "req_01TESTREQUESTIDENTITY00000",
 		ControllerID: "controller-test",
 		Deadline:     time.Now().Add(time.Hour).UTC(),
-		Target:       validPlanTarget(),
+		Target:       testTarget(t),
 		Payload:      loadTestPayload(t),
 		EvidenceDir:  filepath.Join(t.TempDir(), "evidence"),
 	}
@@ -1069,6 +1075,23 @@ func evidenceFile(path string, kind EvidenceType, content []byte) EvidenceFile {
 		file.Height = 600
 	}
 	return file
+}
+
+func testTarget(t *testing.T) target.Target {
+	t.Helper()
+	selected, err := target.NewWindows("windows-test", windowstarget.Config{SSHUser: "test-user", InteractiveUser: "test-user", WorkRoot: `C:\BlenderBoxTest`, TaskName: "BlenderBoxTest", BlenderExecutable: `C:\Apps\blender.exe`, SessionBrokerExecutable: `C:\BlenderBoxTest\bin\blendersessiond.exe`, HostExecutable: `C:\BlenderBoxTest\bin\blender-box.exe`})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return selected
+}
+func recoveryRunner(t *testing.T, host HostAdapter, claim LockClaim) *Runner {
+	t.Helper()
+	runner := New(host, filepath.Join(t.TempDir(), "private"))
+	if err := runner.journal.record(testTarget(t), claim); err != nil {
+		t.Fatal(err)
+	}
+	return runner
 }
 
 func evidenceFileV2(path string, kind EvidenceType, content []byte, mediaType, method string, width, height int, sessionID SessionID) EvidenceFile {

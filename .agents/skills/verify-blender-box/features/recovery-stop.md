@@ -1,10 +1,13 @@
 # Recovery status and exact stop
 
-Recovery reads the host-owned receipt after reconnect and settles only the exact Run, request, hash, deadline, and Session authority stored there.
+Recovery matches the supplied profile against the original user-local Run authority before contacting the host. It then validates the host-owned receipt and settles only the exact Run, request, hash, deadline, and accepted Session identity.
 
 ## Sub-features
 
 - `status-reconnect` returns the durable receipt for one exact Run ID.
+- `target-match` rejects changed target configuration before SSH, for both named and explicit-file selection.
+- `authority-required` rejects missing or corrupt original Run authority before SSH.
+- `session-pin` accepts a first exact Session only after validating the original full claim and rejects later changes.
 - `stop-exact` resolves and stops only the receipt's exact Session identity.
 - `stop-idempotent` accepts structured daemon absence after that exact Run-isolated Session has already stopped, while rejecting a replacement identity.
 - `settle-idempotent` returns already-known cleanup without touching another Session.
@@ -24,6 +27,7 @@ Recovery reads the host-owned receipt after reconnect and settles only the exact
 Preconditions:
 
 - `VERIFY_RUN_ID` came from stderr or stdout of the same public `run` invocation.
+- Keep the same user configuration root, including any `BLENDER_BOX_CONFIG_DIR` override, across Run and recovery processes.
 - Do not substitute a Session name, PID, process pattern, or guessed ID.
 
 - **Reconnect status.** Run `"$VERIFY_CLIENT" status --target "$BLENDER_BOX_TARGET" --run "$VERIFY_RUN_ID" --json | tee "$VERIFY_ROOT/status.json"`. Require the returned Run ID and exact Session ID to match the completed run.
@@ -34,5 +38,7 @@ Preconditions:
 ## Gotchas
 
 - If the recovered claim, task name, request hash, deadline, or Session identity changed, stop must fail closed.
+- A forgotten name fails locally. Identical original configuration under a new name or explicit file can recover; a replacement cannot inherit the Run's authority.
+- A pre-upgrade Run without local authority cannot be adopted from a host reply.
 - Do not remove a Host Lock or Run root manually after an error.
 - A failed exact stop is not permission to kill Blender by process name or port.

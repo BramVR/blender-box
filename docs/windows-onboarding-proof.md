@@ -1,11 +1,11 @@
 ---
-summary: Run the existing Windows Scenario baseline with private authorization and verified evidence.
+summary: Run Windows baseline and named-target proof with private authorization and verified evidence.
 read_when:
   - Running or extending Windows onboarding proof.
   - Configuring trusted live CI or preparing onboarding fixtures.
 ---
 
-# Run the Windows onboarding baseline
+# Run Windows onboarding proof
 
 Use this guide to prove a candidate through the existing Windows Run path. The baseline creates a cube in a fresh Blender Session, returns a viewport Evidence Bundle, reconnects, and verifies exact cleanup. It does not install Blender or the daemon, enroll SSH or Tailscale, pair a host, or reset an installation.
 
@@ -17,7 +17,7 @@ Record the expected hostname, Windows build, Blender version, interactive identi
 
 Use schema version 1 with these fields:
 
-- `target`. The complete existing target JSON from the [target profile guide](../README.md#create-a-target-profile).
+- `target`. The complete target JSON from the [target profile guide](../README.md#create-a-target-profile). Flat target schema version 1 and nested Windows version 2 are accepted; the operator document itself remains schema version 1.
 - `expected_host`. `hostname`, `windows_build` (Windows `BuildNumber`, such as `19045`), `blender_version` (the executable's exact `ProductVersion`), `identity_sid`, and `daemon_sha256`.
 - `fixture`. Its exact `id`, `kind` (`shared-existing` or `dedicated`), and `state` (`prepared`). These declarations do not create ownership or authorize reset.
 - `authorization`. The exact `candidate_sha`, matching `fixture_id`, `launch: true`, and `setup: null` when setup changes are not permitted.
@@ -25,6 +25,8 @@ Use schema version 1 with these fields:
 - `publish_viewport`. Optional boolean, default `false`. Explicitly permit publication only after reviewing the baseline capture policy.
 
 Authorize setup only after reviewing the exact product setup scope. Its `setup` object binds `candidate_sha`, canonical `target_sha256`, `prior_host_sha256`, and `scope: "windows-setup-binary-task-acls"`. The scope includes publishing the host binary, registering the declared Scheduled Task, and applying managed ACLs. It does not authorize runtime installation or fixture reset. A prior hash of `null` is appropriate only when the expected destination is absent.
+
+The setup target hash covers the supplied target document, before version normalization. Keep it distinct from the product's normalized recovery fingerprint. Re-encoding an operator target from version 1 to version 2 requires a new setup authorization hash.
 
 Keep secrets, resolved host details, and raw check output private. Do not copy a previous task's authorization into a new candidate configuration. Readiness and a matching path or task name do not establish ownership.
 
@@ -47,13 +49,32 @@ Read `public/outcome.json` and the private receipts directly. Require a passing 
 
 A fresh `status` invocation proves reconnect through another CLI process. The final `stop` proves idempotent exact recovery after the default Run cleanup. It does not prove stopping a kept Session or surviving a deliberately interrupted SSH transport.
 
-The runner persists the validated Run ID in its public failure result as soon as the CLI emits it. If a command then fails, the runner attempts bounded recovery through public `status` and `stop`. Keep the private journal and receipts when cleanup remains unknown; the public Run ID remains the recovery handle after a hosted controller is gone. Do not reset the fixture, remove host state, or stop Blender by name to make the proof pass.
+The runner persists the validated Run ID in its public failure result as soon as the CLI emits it. If a command then fails, the runner attempts bounded recovery through public `status` and `stop`. Keep the private configuration root, journal, original target, and receipts when cleanup remains unknown. A Run ID alone cannot reconstruct the controller's original authority after a hosted controller is gone. Do not reset the fixture, remove host state, or stop Blender by name to make the proof pass.
+
+## Prove named targets
+
+Run the same candidate with the `named-target` subcommand and a separate fresh output directory:
+
+```sh
+python3 scripts/onboarding_proof.py named-target \
+	--candidate "$CANDIDATE_SHA" \
+	--candidate-checkout "$CANDIDATE_CHECKOUT" \
+	--operator-config "$BLENDER_BOX_PROOF_CONFIG" \
+	--output "$NAMED_TARGET_PROOF_OUTPUT" \
+	--execution local
+```
+
+Both variants use an isolated `BLENDER_BOX_CONFIG_DIR` beneath private output. Named-target proof imports a version 1 profile, checks version 2 output through public show/list commands, and uses the saved name for setup, check, the baseline Scenario, and fresh-process recovery. It then replaces the name with valid configuration whose SSH alias differs while the task name stays identical. Both `status` and `stop` must reject the replacement as an original-target mismatch before attempting SSH or SCP; private tripwires verify that boundary.
+
+The runner restores original configuration before exact recovery and cleanup, including after a failed assertion. Require the baseline outcomes plus `target-catalog`, `target-binding`, `target-restoration`, and `target-forget` in `public/outcome.json`. Forgetting proof names removes only saved profiles; retain private Run authority until cleanup is verified. Fake transport tests establish local refusal behavior, but full feature proof still needs the real Scenario and hosted job.
 
 ## Enable the hosted gate
 
+Hosted execution currently fails preflight with `hosted-recovery-retention-unavailable`, before any candidate or host command. The controller's private original Run claim and Session pin must survive loss of an ephemeral runner when cleanup is unknown. Public outcome/viewport uploads cannot retain those private records. A private durable retention mechanism and its recovery procedure are required before this guard can be removed. Environment approval alone does not satisfy that prerequisite.
+
 Treat workflow preparation and infrastructure enrollment as separate operations. Adding the workflow does not authorize access to a host.
 
-The required workflow is `Windows onboarding proof`, with job `baseline`. Configure `windows-onboarding-approval` with a required reviewer and restrict both it and `windows-onboarding-host` to the trusted main branch. Keep host credentials only in `windows-onboarding-host`. Ordinary pull-request jobs must not receive them. GitHub documents [environment protection and branch restrictions](https://docs.github.com/en/actions/reference/workflows-and-actions/deployments-and-environments); Tailscale documents [ephemeral CI access](https://tailscale.com/kb/1586/secure-github-runners).
+The required workflow is `Windows onboarding proof`, with jobs `baseline` and `named-target`. Named-target runs only after baseline succeeds, on a separate fresh controller against the same authorized fixture. Configure `windows-onboarding-approval` with a required reviewer and restrict both it and `windows-onboarding-host` to the trusted main branch. Keep host credentials only in `windows-onboarding-host`. Ordinary pull-request jobs must not receive them. GitHub documents [environment protection and branch restrictions](https://docs.github.com/en/actions/reference/workflows-and-actions/deployments-and-environments); Tailscale documents [ephemeral CI access](https://tailscale.com/kb/1586/secure-github-runners).
 
 Configure these environment secrets:
 
@@ -81,7 +102,7 @@ Inspect the actual hosted job conclusion and returned receipts. A missing, skipp
 
 Reuse `scripts/onboarding_proof.py` for the expected-host assertion, bundle integrity, complete Run authority comparison, and cleanup assertions. Keep feature-specific Scenario checks separate from those generic assertions. Run the existing baseline fixture when a later job needs to prove the Run path after its feature operation.
 
-The shared outcome vocabulary covers host preparation, pairing, readiness, Scenario execution, evidence, recovery, and cleanup. Baseline requires preparation, readiness, Scenario, evidence, recovery, and cleanup. It does not claim pairing or fixture reset. Later `named-target`, `host-install`, and `pair-and-run` jobs must supply their own required feature outcomes and real hosted proof.
+The shared outcome vocabulary covers host preparation, pairing, readiness, Scenario execution, evidence, recovery, and cleanup. Baseline requires preparation, readiness, Scenario, evidence, recovery, and cleanup. It does not claim pairing or fixture reset. Named-target additionally requires the four target outcomes above. Later `host-install` and `pair-and-run` jobs must supply their own required feature outcomes and real hosted proof.
 
 Prepared and unpaired starting states require an operator-owned restoration mechanism with exact test-resource ownership. Preserve operator SSH access, credentials, users, Blender preferences, Python, and unrelated applications. Do not implement restoration by deleting a root prefix or registering over an unknown task. Until authorized repeatable restoration and automatic trusted execution are proven, dependent onboarding work remains blocked or requires maintainer participation.
 

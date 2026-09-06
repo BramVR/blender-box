@@ -84,7 +84,7 @@ jq -e '.schema_version == 1 and .state == "complete" and (.session_id | startswi
 jq -e --arg run "$VERIFY_RUN_ID" '.schema_version == 1 and .run_id == $run and .state == "complete" and .cleanup.lock_released' "$VERIFY_ROOT/status.json"
 ```
 
-Use `status` as the second user-facing view after reconnect. Use `stop` with only the exact returned Run ID; Blender Box recovers the request and Session fences from the host-owned receipt.
+Use `status` as the second user-facing view after reconnect. Keep the original target and local configuration root. `status` and `stop` compare host-owned receipts with the original local request claim and Session pin before accepting recovery authority.
 
 ## Evidence
 
@@ -119,7 +119,9 @@ Artifacts are ignored product evidence, not scratch. Keep them until proof is re
 
 ## Helpers
 
-For repeatable onboarding baseline proof, use `scripts/onboarding_proof.py` with the private operator configuration described in `docs/windows-onboarding-proof.md`. It drives the public CLI and shares evidence and recovery assertions with later proof jobs. It does not grant setup, fixture reset, or hosted dispatch permission. Distinguish a real local result from the required hosted `Windows onboarding proof` / `baseline` result.
+For repeatable onboarding proof, use `scripts/onboarding_proof.py baseline` or `scripts/onboarding_proof.py named-target` with the private operator configuration described in `docs/windows-onboarding-proof.md`. Both drive the public CLI and share evidence and recovery assertions. They do not grant setup, fixture reset, or hosted dispatch permission. Require actual hosted `Windows onboarding proof` results for both `baseline` and `named-target`; local or skipped jobs do not satisfy them. Read `features/named-targets.md` for target-specific acceptance.
+
+Hosted execution currently fails preflight until private original Run authority can survive an ephemeral controller's loss. Keep this blocker visible; public outcome uploads cannot restore the private journal.
 
 For focused manual proof, drive `blender-box` directly using the recipe above. Use the public `status`/`stop` commands for host recovery and cleanup. Do not infer fixture ownership from a path or task name.
 

@@ -21,8 +21,8 @@ import (
 	"github.com/BramVR/blender-box/internal/capture"
 	"github.com/BramVR/blender-box/internal/orchestrator"
 	"github.com/BramVR/blender-box/internal/safepath"
-	"github.com/BramVR/blender-box/internal/target"
 	"github.com/BramVR/blender-box/internal/uiaction"
+	"github.com/BramVR/blender-box/internal/windowstarget"
 )
 
 const (
@@ -136,7 +136,7 @@ func (service *Service) Capabilities(ctx context.Context, request CapabilitiesRe
 	}
 	result := CapabilitiesResponse{SchemaVersion: 1, Status: "pass"}
 	if request.UIActions {
-		if !target.ValidateWindowsPath(request.BlenderExecutable) || !target.ValidateWindowsPath(request.SessionBrokerExecutable) {
+		if !windowstarget.ValidateWindowsPath(request.BlenderExecutable) || !windowstarget.ValidateWindowsPath(request.SessionBrokerExecutable) {
 			return CapabilitiesResponse{}, fmt.Errorf("invalid UI capability executable paths")
 		}
 		result.UIActions = &orchestrator.UIActionSupport{Capability: uiaction.Capability, Supported: service.uiActor != nil && service.uiActor.CheckUI(ctx, request.SessionBrokerExecutable, request.BlenderExecutable) == nil}
@@ -803,7 +803,7 @@ func (service *Service) Fetch(root string, request FetchRequest) ([]byte, error)
 }
 
 func (service *Service) Settle(ctx context.Context, root string, request SettleRequest) (orchestrator.CleanupState, error) {
-	if request.SchemaVersion != 1 || request.Receipt.Claim.Validate() != nil || !target.ValidateWindowsPath(request.SessionBrokerExecutable) || request.SessionName != orchestrator.SessionNameForRun(request.Receipt.Claim.RunID) {
+	if request.SchemaVersion != 1 || request.Receipt.Claim.Validate() != nil || !windowstarget.ValidateWindowsPath(request.SessionBrokerExecutable) || request.SessionName != orchestrator.SessionNameForRun(request.Receipt.Claim.RunID) {
 		return orchestrator.CleanupState{}, fmt.Errorf("invalid settle contract")
 	}
 	release, err := acquireOperation(ctx, root)
