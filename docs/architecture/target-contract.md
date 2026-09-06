@@ -57,6 +57,8 @@ The application uses `os.UserConfigDir()/blender-box`. An absolute `BLENDER_BOX_
 
 Publication writes complete bounded temporary files before making them visible. Profile creation and Run authority creation are exclusive. Explicit profile replacement publishes a complete new file atomically. Run claims and Session pins are never replaced. Interrupted writes must leave either complete prior data or no new record; an incomplete record never authorizes host contact.
 
+Windows profile replacement uses `FileRenameInfoEx` with POSIX semantics. Existing readers retain the complete previous file; new opens see the replacement. Unsupported filesystems and permission failures return errors without retries or permission changes. File contents are flushed before publication, but replacement does not establish directory-entry durability across power loss. Exclusive creation retains `MoveFileExW` with `MOVEFILE_WRITE_THROUGH`.
+
 POSIX publication flushes parent directories through the configuration hierarchy before it can authorize host contact. A failed directory flush is a storage failure, even if the newly created path is already visible to another process.
 
 Recovery also flushes an authority record's directory entries before accepting it. A concurrent reader or a retry after an interrupted publisher must establish durability itself instead of treating visibility as successful persistence. Ordinary profile inspection does not perform these authority flushes.
