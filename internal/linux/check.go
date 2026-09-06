@@ -6,12 +6,11 @@ import (
 	"time"
 
 	"github.com/BramVR/blender-box/internal/linuxruntime"
+	sshtransport "github.com/BramVR/blender-box/internal/ssh"
 	"github.com/BramVR/blender-box/internal/target"
 )
 
-type SSH interface {
-	Run(context.Context, string, []string, []byte) ([]byte, error)
-}
+type SSH = sshtransport.CommandRunner
 type CheckResult = linuxruntime.CheckResult
 
 func Check(ctx context.Context, ssh SSH, selected target.Target) (CheckResult, error) {

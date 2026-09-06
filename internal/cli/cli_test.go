@@ -531,11 +531,11 @@ func writeTarget(t *testing.T, root string) string {
 
 func (fake *fakeSSH) Run(
 	_ context.Context,
-	host string,
+	connection target.Connection,
 	args []string,
 	stdin []byte,
 ) ([]byte, error) {
-	fake.host = host
+	fake.host = connection.Alias()
 	fake.args = append([]string(nil), args...)
 	fake.stdin = append([]byte(nil), stdin...)
 	if fake.runResult != nil {
@@ -544,8 +544,8 @@ func (fake *fakeSSH) Run(
 	return fake.stdout, nil
 }
 
-func (fake *fakeSSH) Upload(_ context.Context, host, source, destination string) error {
-	fake.host = host
+func (fake *fakeSSH) Upload(_ context.Context, connection target.Connection, source, destination string) error {
+	fake.host = connection.Alias()
 	fake.uploads = append(fake.uploads, [2]string{source, destination})
 	return nil
 }

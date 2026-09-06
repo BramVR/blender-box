@@ -31,7 +31,7 @@ blender-box stop --target /path/to/target.json --run bbx_... --json
 
 Normalize configuration before selecting a host. Keep a saved name, a validated target, and original Run authority separate.
 
-Target schema version 2 requires `platform`, `ssh_alias`, and one platform-specific body. The `windows` body contains both Windows identities, the work root, task name, and executable paths. The `linux` body contains the supported distribution, UID, passwd home, work root, executable paths, static unit name, desktop settings, and reviewed daemon runtime. The two bodies cannot coexist. Version 1 accepts the original flat Windows shape and normalizes to the same target. Import and inspection emit version 2. Unknown versions, platforms, fields, duplicate JSON keys, and invalid platform bodies fail locally. Windows canonical JSON and fingerprints remain byte-for-byte compatible. Linux-specific changes participate in the same target fingerprint and original-authority comparison.
+Target schema version 2 requires `platform`, `ssh_alias`, and one platform-specific body. The `windows` body contains both Windows identities, the work root, task name, and executable paths. The `linux` body contains the supported distribution, UID, passwd home, work root, executable paths, static unit name, desktop settings, and reviewed daemon runtime. The two bodies cannot coexist. Version 1 accepts the original flat Windows shape and normalizes to the same target. Import and inspection emit version 2 for alias targets. Unknown versions, platforms, fields, duplicate JSON keys, and invalid platform bodies fail locally. Windows canonical JSON and fingerprints remain byte-for-byte compatible. Linux-specific changes participate in the same target fingerprint and original-authority comparison.
 
 `internal/windowstarget` owns Windows configuration syntax and the existing path grammar. `internal/windows` retains readiness, SID, ACL, task, and daemon capability checks. Common target selection and storage know no Windows path or launch rules. `internal/linuxtarget` owns Linux syntax, and the Linux adapter and runtime own its concrete policy. See the [Linux host boundary](0006-linux-host.md). No empty macOS implementation is part of this decision.
 
@@ -69,9 +69,15 @@ Managed records reject symlinks, reparse points, nonregular files, and excessive
 
 ## SSH trust boundary
 
-The fingerprint pins declared configuration, including the alias string. SSH continues to resolve and authenticate that alias through operator-managed configuration. Changes behind an unchanged alias, such as a hostname or trust-file edit, are outside profile-content matching. A target fingerprint is not physical-host identity.
+Schema versions 1 and 2 pin the alias string. SSH resolves and authenticates that alias through operator-managed configuration. Changes behind an unchanged alias remain outside profile-content matching. Existing canonical bytes and fingerprints stay unchanged.
 
-Host-key enrollment and pairing remain separate work. The onboarding proof runner verifies its expected hostname and Windows identities before mutation, but that proof assertion does not replace product SSH trust or the Host Lock and exact Session fences.
+Paired schema version 3 contains `platform`, `ssh`, and exactly one platform body. The `ssh` body binds the direct host, port, login user, canonical Ed25519 host public key, and client public-key fingerprint. It contains no alias. All connection fields participate in the existing target fingerprint, so changing any field refuses original Run recovery before transport. The platform bodies keep their existing host readiness and process-ownership meanings.
+
+One validated `target.Connection` reaches both SSH commands and SCP. A paired connection uses the exact stored key and host public key without ambient agent, password, certificate, multiplexed connection, forwarding, or SSH configuration fallback. Missing or replaced private key material refuses before the subprocess starts. Alias connections retain their existing behavior.
+
+The common client stores dedicated pairing keys in the private configuration root. POSIX key operations require current-user ownership and private permissions. Windows paired credential operations refuse until the native owner and ACL checks are implemented. This restriction concerns the client holding the key; a supported POSIX client may select a Windows target.
+
+The [client pairing contract](0008-client-pairing.md) separates local approval, publication and access state from readiness. Native host enrollment, revocation and setup-SSH remain unfinished. A saved paired target or accepted receipt does not prove that a host is ready or that a hosted pair-and-run job passed.
 
 ## Alternatives considered
 

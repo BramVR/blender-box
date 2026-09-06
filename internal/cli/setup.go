@@ -19,6 +19,10 @@ import (
 type targetPublication = windowsinstall.Publication
 
 func setupCommand(ctx context.Context, args []string, stdout, stderr io.Writer, dependencies Dependencies) int {
+	if len(args) > 0 && args[0] == "ssh" {
+		return fail(stderr, "setup ssh", fmt.Errorf("SSH preparation is unsupported; no host changes performed"))
+	}
+
 	if len(args) == 0 {
 		printUsage(stderr)
 		return 2
