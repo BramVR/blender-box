@@ -36,3 +36,4 @@ Each feature file uses the public CLI, names its observable result, and lists co
 - [Explicit Windows setup](./windows-setup.md) covers dry-run planning and authorized apply.
 - [Scenario run and evidence](./scenario-run.md) covers payload transfer, interactive launch, bounded drive, Evidence Bundle return, and known cleanup.
 - [Recovery status and exact stop](./recovery-stop.md) covers reconnect observation and idempotent exact cleanup.
+- [Named targets](./named-targets.md) covers local import, platform migration, named selection, and replacement-safe recovery.

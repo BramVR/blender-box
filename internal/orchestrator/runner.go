@@ -18,6 +18,7 @@ import (
 	"github.com/BramVR/blender-box/internal/payload"
 	"github.com/BramVR/blender-box/internal/safepath"
 	"github.com/BramVR/blender-box/internal/target"
+	"github.com/BramVR/blender-box/internal/windowstarget"
 )
 
 const (
@@ -129,7 +130,7 @@ func (request RunRequest) Validate() error {
 	if request.Body.SessionName != SessionNameForRun(request.Claim.RunID) {
 		return fmt.Errorf("request Session name does not match Run ID")
 	}
-	if !target.ValidateWindowsPath(request.Body.BlenderExecutable) || !target.ValidateWindowsPath(request.Body.SessionBrokerExecutable) {
+	if !windowstarget.ValidateWindowsPath(request.Body.BlenderExecutable) || !windowstarget.ValidateWindowsPath(request.Body.SessionBrokerExecutable) {
 		return fmt.Errorf("request body contains an unsafe Windows executable path")
 	}
 	if err := request.Body.Payload.ValidateManifest(); err != nil {
@@ -241,6 +242,7 @@ type HostAdapter interface {
 
 type Runner struct {
 	host              HostAdapter
+	journal           journal
 	settlementTimeout time.Duration
 }
 
@@ -257,8 +259,8 @@ func IsPreflightError(err error) bool {
 	return errors.As(err, &failure)
 }
 
-func New(host HostAdapter) *Runner {
-	return &Runner{host: host, settlementTimeout: defaultSettleTTL}
+func New(host HostAdapter, configRoot string) *Runner {
+	return &Runner{host: host, journal: journal{root: configRoot}, settlementTimeout: defaultSettleTTL}
 }
 
 // Status reads and validates the host-owned receipt for one exact Run ID.
@@ -271,15 +273,22 @@ func (runner *Runner) Status(ctx context.Context, selected target.Target, runID 
 }
 
 func (runner *Runner) recoverReceipt(ctx context.Context, selected target.Target, runID RunID) (RunReceipt, error) {
-	if err := runID.Validate(); err != nil {
+	record, _, err := runner.journal.load(selected, runID)
+	if err != nil {
 		return RunReceipt{}, err
 	}
 	receipt, err := runner.host.Observe(ctx, selected, runID)
 	if err != nil {
 		return RunReceipt{}, fmt.Errorf("observe Run: %w", err)
 	}
-	if err := validateRecoveredReceipt(receipt, selected, runID); err != nil {
+	if err := receipt.ValidateForClaim(record.Claim); err != nil {
 		return RunReceipt{}, fmt.Errorf("status receipt: %w", err)
+	}
+	if !record.Claim.Equal(receipt.Claim) {
+		return RunReceipt{}, authorityFailure("Host Lock claim changed")
+	}
+	if err := runner.journal.accept(selected, receipt); err != nil {
+		return RunReceipt{}, err
 	}
 	return receipt, nil
 }
@@ -348,6 +357,9 @@ func (runner *Runner) Run(ctx context.Context, intent RunIntent) (_ RunResult, r
 	if err != nil {
 		return RunResult{}, &preflightError{cause: fmt.Errorf("prepare evidence directory: %w", err)}
 	}
+	if err := runner.journal.record(intent.Target, request.Claim); err != nil {
+		return RunResult{}, &preflightError{cause: err}
+	}
 	runCtx, cancelRun := context.WithDeadline(ctx, intent.Deadline)
 	defer cancelRun()
 	if err := runner.host.Inspect(runCtx, intent.Target); err != nil {
@@ -368,7 +380,7 @@ func (runner *Runner) Run(ctx context.Context, intent RunIntent) (_ RunResult, r
 
 	settled := false
 	defer func() {
-		if settled {
+		if settled || IsAuthorityError(resultErr) {
 			return
 		}
 		cleanup, settleErr := runner.settle(ctx, intent.Target, receipt)
@@ -392,11 +404,17 @@ func (runner *Runner) Run(ctx context.Context, intent RunIntent) (_ RunResult, r
 	if err := validateReceipt(startedReceipt, request.Claim, "", receipt.State); err != nil {
 		return RunResult{}, fmt.Errorf("start receipt: %w", err)
 	}
+	if err := runner.journal.accept(intent.Target, startedReceipt); err != nil {
+		return RunResult{}, err
+	}
 	receipt = startedReceipt
 	sessionID := receipt.SessionID
 
 	for !receipt.State.terminal() {
 		if err := waitForPoll(runCtx, intent.Deadline); err != nil {
+			return RunResult{}, err
+		}
+		if _, _, err := runner.journal.load(intent.Target, intent.RunID); err != nil {
 			return RunResult{}, err
 		}
 		observedReceipt, err := runner.host.Observe(runCtx, intent.Target, intent.RunID)
@@ -405,6 +423,9 @@ func (runner *Runner) Run(ctx context.Context, intent RunIntent) (_ RunResult, r
 		}
 		if err := validateReceipt(observedReceipt, request.Claim, sessionID, receipt.State); err != nil {
 			return RunResult{}, fmt.Errorf("observe receipt: %w", err)
+		}
+		if err := runner.journal.accept(intent.Target, observedReceipt); err != nil {
+			return RunResult{}, err
 		}
 		receipt = observedReceipt
 	}
@@ -441,6 +462,9 @@ func (runner *Runner) Run(ctx context.Context, intent RunIntent) (_ RunResult, r
 }
 
 func buildRequest(intent RunIntent) (RunRequest, error) {
+	if err := intent.Target.Validate(); err != nil {
+		return RunRequest{}, err
+	}
 	if err := intent.RunID.Validate(); err != nil {
 		return RunRequest{}, err
 	}
@@ -459,8 +483,8 @@ func buildRequest(intent RunIntent) (RunRequest, error) {
 	body := RequestBody{
 		SchemaVersion:           1,
 		SessionName:             SessionNameForRun(intent.RunID),
-		BlenderExecutable:       intent.Target.BlenderExecutable,
-		SessionBrokerExecutable: intent.Target.SessionBrokerExecutable,
+		BlenderExecutable:       intent.Target.Windows().BlenderExecutable,
+		SessionBrokerExecutable: intent.Target.Windows().SessionBrokerExecutable,
 		Payload:                 intent.Payload,
 	}
 	requestHash, err := requestBodyHash(body)
@@ -474,7 +498,7 @@ func buildRequest(intent RunIntent) (RunRequest, error) {
 		ControllerID:  intent.ControllerID,
 		Deadline:      intent.Deadline.UTC(),
 		RequestHash:   requestHash,
-		TaskName:      intent.Target.TaskName,
+		TaskName:      intent.Target.Windows().TaskName,
 	}
 	return RunRequest{Claim: claim, Body: body}, nil
 }
@@ -516,22 +540,25 @@ func validateReceipt(receipt RunReceipt, claim LockClaim, expectedSession Sessio
 	return nil
 }
 
-func validateRecoveredReceipt(receipt RunReceipt, selected target.Target, runID RunID) error {
+func (receipt RunReceipt) ValidateForClaim(expected LockClaim) error {
 	if receipt.SchemaVersion != 1 || receipt.Claim.SchemaVersion != 1 {
 		return fmt.Errorf("unsupported schema version")
 	}
 	claim := receipt.Claim
-	if claim.RunID != runID {
+	if claim.RunID != expected.RunID {
 		return fmt.Errorf("Run ID changed")
 	}
 	if !requestIDPattern.MatchString(string(claim.RequestID)) || strings.TrimSpace(claim.ControllerID) == "" || claim.Deadline.IsZero() || !hashPattern.MatchString(claim.RequestHash) {
 		return fmt.Errorf("invalid Host Lock claim")
 	}
-	if claim.TaskName != selected.TaskName {
+	if claim.TaskName != expected.TaskName {
 		return fmt.Errorf("Scheduled Task identity changed")
 	}
 	if !knownState(receipt.State) {
 		return fmt.Errorf("unknown Run state %q", receipt.State)
+	}
+	if !claim.Equal(expected) {
+		return fmt.Errorf("Host Lock claim changed")
 	}
 	if stateRequiresSession(receipt.State) {
 		if !sessionIDPattern.MatchString(string(receipt.SessionID)) {
@@ -610,6 +637,11 @@ func validTransition(previous, next RunState) bool {
 }
 
 func (runner *Runner) settle(parent context.Context, target target.Target, receipt RunReceipt) (CleanupState, error) {
+	var err error
+	receipt, err = runner.journal.settlement(target, receipt)
+	if err != nil {
+		return CleanupState{}, err
+	}
 	settleCtx, cancel := context.WithTimeout(context.WithoutCancel(parent), runner.settlementTTL())
 	defer cancel()
 	return runner.host.Settle(settleCtx, target, receipt)
