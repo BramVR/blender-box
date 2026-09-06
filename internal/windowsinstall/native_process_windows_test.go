@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"syscall"
 	"testing"
@@ -96,6 +97,19 @@ func TestNativeProcessHelper(t *testing.T) {
 		os.Exit(92)
 	}
 	defer syscall.CloseHandle(syscall.Handle(event))
+	if mode == "probe-root" {
+		if nativeTestRecord(filepath.Join(directory, "root.json")) != nil {
+			os.Exit(95)
+		}
+		if ok, _, _ := testSetEvent.Call(event); ok == 0 {
+			os.Exit(94)
+		}
+		var release [1]byte
+		if _, err := os.Stdin.Read(release[:]); err != nil {
+			os.Exit(100)
+		}
+		os.Exit(0)
+	}
 	if mode == "leaf" {
 		if nativeTestRecord(filepath.Join(directory, "leaf.json")) != nil {
 			os.Exit(93)
@@ -114,6 +128,13 @@ func TestNativeProcessHelper(t *testing.T) {
 		}
 		if got, err := syscall.WaitForSingleObject(syscall.Handle(event), 10000); err != nil || got != syscall.WAIT_OBJECT_0 {
 			os.Exit(97)
+		}
+		if mode == "probe-parent" {
+			var release [1]byte
+			if _, err := os.Stdin.Read(release[:]); err != nil {
+				os.Exit(100)
+			}
+			os.Exit(0)
 		}
 		if mode == "parent-exits" {
 			os.Exit(0)
@@ -214,8 +235,10 @@ func TestNativeOperationSettlesOwnedDescendants(t *testing.T) {
 			if err == nil {
 				t.Fatal("native operation left descendants without an error")
 			}
-			if got, err := syscall.WaitForSingleObject(child, 0); err != nil || got != syscall.WAIT_OBJECT_0 {
-				t.Fatalf("owned descendant survives native return: wait=%d error=%v", got, err)
+			operationErr := err
+			if got, waitErr := syscall.WaitForSingleObject(child, 0); waitErr != nil || got != syscall.WAIT_OBJECT_0 {
+				later, laterErr := syscall.WaitForSingleObject(child, uint32(nativeCleanupTimeout/time.Millisecond))
+				t.Fatalf("owned descendant survives native return: wait=%d error=%v operation_error=%v cleanup_unknown=%t later_wait=%d later_error=%v", got, waitErr, operationErr, errors.Is(operationErr, errNativeCleanupUnknown), later, laterErr)
 			}
 		})
 	}
@@ -325,5 +348,145 @@ func TestPowerShellIgnoresInheritedSystemRoot(t *testing.T) {
 	}
 	if !strings.EqualFold(observed["modules"], filepath.Join(system, "WindowsPowerShell", "v1.0", "Modules")) {
 		t.Fatalf("unsafe PowerShell module path=%q", data)
+	}
+}
+
+func TestNativeJobCompletionObservations(t *testing.T) {
+	for _, mode := range []string{"probe-root", "probe-parent"} {
+		t.Run(mode, func(t *testing.T) {
+			directory := t.TempDir()
+			executable, err := os.Executable()
+			if err != nil {
+				t.Fatal(err)
+			}
+			id, err := newID("native-observation-")
+			if err != nil {
+				t.Fatal(err)
+			}
+			eventName := `Local\BlenderBox-` + id
+			name, _ := syscall.UTF16PtrFromString(eventName)
+			event, _, callErr := testCreateEvent.Call(0, 1, 0, uintptr(unsafe.Pointer(name)))
+			if event == 0 {
+				t.Fatal(callErr)
+			}
+			defer syscall.CloseHandle(syscall.Handle(event))
+			input, release, err := os.Pipe()
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer input.Close()
+			defer release.Close()
+			null, err := os.OpenFile(os.DevNull, os.O_RDWR, 0)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer null.Close()
+			job, err := newNativeJob()
+			if err != nil {
+				t.Fatal(err)
+			}
+			var spawn nativeSpawn
+			var leaf syscall.Handle
+			leafVerified := false
+			defer func() {
+				nativeTerminateJob.Call(uintptr(job.handle), 101)
+				if leafVerified {
+					if wait, _ := syscall.WaitForSingleObject(leaf, 0); wait == syscall.WAIT_TIMEOUT {
+						_ = syscall.TerminateProcess(leaf, 101)
+					}
+				}
+				deadline := time.Now().Add(nativeCleanupTimeout)
+				for _, handle := range []syscall.Handle{spawn.Info.Process, leaf} {
+					if handle != 0 {
+						remaining := max(time.Until(deadline), 0)
+						wait, err := syscall.WaitForSingleObject(handle, uint32(remaining/time.Millisecond))
+						if err != nil || wait != syscall.WAIT_OBJECT_0 {
+							t.Errorf("native observation cleanup wait=%d error=%v", wait, err)
+						}
+						syscall.CloseHandle(handle)
+					}
+				}
+				if spawn.Info.Thread != 0 {
+					syscall.CloseHandle(spawn.Info.Thread)
+				}
+				job.close()
+			}()
+			spawn, err = job.start(executable, []string{"-test.run=^TestNativeProcessHelper$", "--", mode, eventName, directory}, append(nativeTestEnvironment(t), "BLENDER_BOX_NATIVE_TEST_HELPER=1"), [3]*os.File{input, null, null})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if wait, err := syscall.WaitForSingleObject(syscall.Handle(event), 10000); err != nil || wait != syscall.WAIT_OBJECT_0 {
+				t.Fatalf("native observation readiness=%d error=%v", wait, err)
+			}
+			if mode == "probe-parent" {
+				data, err := os.ReadFile(filepath.Join(directory, "leaf.json"))
+				if err != nil {
+					t.Fatal(err)
+				}
+				var record nativeTestProcess
+				if err := json.Unmarshal(data, &record); err != nil || record.ParentPID != int(spawn.Info.ProcessId) || !strings.EqualFold(record.Executable, executable) || record.PID <= 0 {
+					t.Fatal("native observation leaf receipt mismatch")
+				}
+				leaf, err = syscall.OpenProcess(syscall.SYNCHRONIZE|0x1000|syscall.PROCESS_TERMINATE, false, uint32(record.PID))
+				if err != nil {
+					t.Fatal(err)
+				}
+				var created, exited, kernel, user syscall.Filetime
+				if err := syscall.GetProcessTimes(leaf, &created, &exited, &kernel, &user); err != nil || created != record.Created {
+					t.Fatalf("native observation leaf creation mismatch: %v", err)
+				}
+				leafVerified = true
+			}
+			started := time.Now()
+			observe := func(phase string) {
+				var rows strings.Builder
+				var accounting nativeAccounting
+				var length uint32
+				ok, _, queryErr := nativeQueryJob.Call(uintptr(job.handle), 1, uintptr(unsafe.Pointer(&accounting)), unsafe.Sizeof(accounting), uintptr(unsafe.Pointer(&length)))
+				var list struct {
+					Assigned, Listed uint32
+					PIDs             [8]uintptr
+				}
+				listOK, _, listErr := nativeQueryJob.Call(uintptr(job.handle), 3, uintptr(unsafe.Pointer(&list)), unsafe.Sizeof(list), 0)
+				fmt.Fprintf(&rows, "NATIVE_OBSERVATION mode=%s phase=%s elapsed_ns=%d go=%s arch=%s size=%d active_offset=%d query_ok=%d query_error=%v length=%d accounting=%+v list_ok=%d list_error=%v assigned=%d listed=%d pids=%v\n", mode, phase, time.Since(started).Nanoseconds(), runtime.Version(), runtime.GOARCH, unsafe.Sizeof(accounting), unsafe.Offsetof(accounting.ActiveProcesses), ok, queryErr, length, accounting, listOK, listErr, list.Assigned, list.Listed, list.PIDs)
+				if ok == 0 || length != uint32(unsafe.Sizeof(accounting)) || listOK == 0 || list.Assigned != list.Listed || list.Listed > uint32(len(list.PIDs)) {
+					fmt.Print(rows.String())
+					t.Fatal("native observation query failed or incomplete")
+				}
+				for index, handle := range []syscall.Handle{spawn.Info.Process, leaf} {
+					if handle == 0 {
+						continue
+					}
+					wait, waitErr := syscall.WaitForSingleObject(handle, 0)
+					var member uint32
+					memberOK, _, memberErr := nativeIsProcessInJob.Call(uintptr(handle), uintptr(job.handle), uintptr(unsafe.Pointer(&member)))
+					fmt.Fprintf(&rows, "NATIVE_OBSERVATION mode=%s phase=%s elapsed_ns=%d process=%d wait=%d wait_error=%v member_ok=%d member_error=%v member=%d\n", mode, phase, time.Since(started).Nanoseconds(), index, wait, waitErr, memberOK, memberErr, member)
+					if phase == "before-root-release" && (waitErr != nil || wait != syscall.WAIT_TIMEOUT || memberOK == 0 || member != 1) {
+						fmt.Print(rows.String())
+						t.Fatal("native observation live process is not in the exact job")
+					}
+				}
+				fmt.Print(rows.String())
+			}
+			observe("before-root-release")
+			if _, err := release.Write([]byte{1}); err != nil {
+				t.Fatal(err)
+			}
+			if wait, err := syscall.WaitForSingleObject(spawn.Info.Process, 10000); err != nil || wait != syscall.WAIT_OBJECT_0 {
+				t.Fatalf("native observation root wait=%d error=%v", wait, err)
+			}
+			observe("after-root-wait-before-terminate")
+			terminated, _, terminateErr := nativeTerminateJob.Call(uintptr(job.handle), 1)
+			observe("after-terminate")
+			fmt.Printf("NATIVE_OBSERVATION mode=%s terminate_ok=%d terminate_error=%v\n", mode, terminated, terminateErr)
+			if leaf != 0 {
+				wait, err := syscall.WaitForSingleObject(leaf, uint32(nativeCleanupTimeout/time.Millisecond))
+				fmt.Printf("NATIVE_OBSERVATION mode=%s leaf_bounded_wait=%d error=%v\n", mode, wait, err)
+				if err != nil || wait != syscall.WAIT_OBJECT_0 {
+					t.Fatal("native observation leaf did not terminate")
+				}
+			}
+			observe("after-process-waits-handles-held")
+		})
 	}
 }
