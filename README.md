@@ -14,6 +14,8 @@ The first end-to-end slice supports read-only host checks, explicit setup, remot
 
 The default test suite replaces SSH, the Scheduled Task, `blendersessiond`, the filesystem, and Blender with fakes. Proof against a real Windows Blender host is opt-in.
 
+The repository also supplies a reusable [Windows onboarding baseline](docs/windows-onboarding-proof.md) and a separate `Windows onboarding proof` workflow. Its `baseline` job requires an authorized exact candidate and private host configuration. A local pass does not replace the required hosted job.
+
 ## Requirements
 
 You need:
