@@ -10,7 +10,13 @@ import (
 )
 
 func SafePath(name string, uid uint32, private bool) error {
-	for current := filepath.Clean(name); ; current = filepath.Dir(current) {
+	if !filepath.IsAbs(name) {
+		return fmt.Errorf("Linux path must be absolute: %s", name)
+	}
+	if filepath.Clean(name) != name {
+		return fmt.Errorf("Linux path must be canonical: %s", name)
+	}
+	for current := name; ; current = filepath.Dir(current) {
 		info, err := os.Lstat(current)
 		if err != nil {
 			return err

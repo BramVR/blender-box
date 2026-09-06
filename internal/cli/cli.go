@@ -19,6 +19,8 @@ import (
 )
 
 type RunService interface {
+	Plan(orchestrator.PlanIntent) (orchestrator.PlanResult, error)
+	Doctor(context.Context, orchestrator.PlanIntent) (orchestrator.DoctorResult, error)
 	Run(context.Context, orchestrator.RunIntent) (orchestrator.RunResult, error)
 	Status(context.Context, target.Target, orchestrator.RunID) (orchestrator.StatusResult, error)
 	Stop(context.Context, target.Target, orchestrator.RunID) (orchestrator.StopResult, error)
@@ -45,6 +47,10 @@ func Run(ctx context.Context, args []string, stdin io.Reader, stdout io.Writer, 
 	switch args[0] {
 	case "targets":
 		return targetsCommand(args[1:], stdout, stderr)
+	case "plan":
+		return planCommand(args[1:], stdout, stderr, dependencies)
+	case "doctor":
+		return doctorCommand(ctx, args[1:], stdout, stderr, dependencies)
 	case "run":
 		return runCommand(ctx, args[1:], stdout, stderr, dependencies)
 	case "status":
@@ -81,6 +87,102 @@ func printUsage(output io.Writer) {
 	fmt.Fprintln(output, "  blender-box run (--target PATH | --target-name NAME) --payload PATH [--evidence-dir PATH] [--timeout 15m] [--json]")
 	fmt.Fprintln(output, "  blender-box status (--target PATH | --target-name NAME) --run RUN_ID [--timeout 2m] [--json]")
 	fmt.Fprintln(output, "  blender-box stop (--target PATH | --target-name NAME) --run RUN_ID [--timeout 2m] [--json]")
+	fmt.Fprintln(output, "  blender-box plan (--target PATH | --target-name NAME) --payload PATH [--json]")
+	fmt.Fprintln(output, "  blender-box doctor (--target PATH | --target-name NAME) --payload PATH [--timeout 2m] [--json]")
+}
+
+func doctorCommand(ctx context.Context, args []string, stdout io.Writer, stderr io.Writer, dependencies Dependencies) int {
+	flags := flag.NewFlagSet("doctor", flag.ContinueOnError)
+	flags.SetOutput(stderr)
+	selection := targetFlags(flags)
+	payloadPath := flags.String("payload", "", "path to Run Payload JSON")
+	timeout := flags.Duration("timeout", 2*time.Minute, "host inspection timeout")
+	asJSON := flags.Bool("json", false, "print versioned JSON")
+	if err := flags.Parse(args); err != nil {
+		if err == flag.ErrHelp {
+			return 0
+		}
+		return 2
+	}
+	if !selection.valid(flags) || *payloadPath == "" || *timeout <= 0 || flags.NArg() != 0 {
+		fmt.Fprintln(stderr, "doctor requires exactly one of --target PATH or --target-name NAME and --payload PATH; --timeout must be positive")
+		return 2
+	}
+	selected, err := selection.resolve()
+	if err != nil {
+		return fail(stderr, "load target", err)
+	}
+	loaded, err := payload.Load(*payloadPath)
+	if err != nil {
+		return fail(stderr, "load payload", err)
+	}
+	runner := dependencies.Runner
+	if runner == nil && dependencies.RunnerFor != nil {
+		runner = dependencies.RunnerFor(selected)
+	}
+	if runner == nil {
+		return fail(stderr, "doctor", fmt.Errorf("Run service is unavailable"))
+	}
+	requestCtx, cancel := context.WithTimeout(ctx, *timeout)
+	defer cancel()
+	result, err := runner.Doctor(requestCtx, orchestrator.PlanIntent{Target: selected, Payload: loaded})
+	if err != nil {
+		return fail(stderr, "doctor", err)
+	}
+	if *asJSON {
+		if exitCode := writeJSON(stdout, stderr, result); exitCode != 0 {
+			return exitCode
+		}
+	} else {
+		fmt.Fprintf(stdout, "Doctor: %s\n", result.Status)
+	}
+	if result.Status != "pass" {
+		return 1
+	}
+	return 0
+}
+
+func planCommand(args []string, stdout io.Writer, stderr io.Writer, dependencies Dependencies) int {
+	flags := flag.NewFlagSet("plan", flag.ContinueOnError)
+	flags.SetOutput(stderr)
+	selection := targetFlags(flags)
+	payloadPath := flags.String("payload", "", "path to Run Payload JSON")
+	asJSON := flags.Bool("json", false, "print versioned JSON")
+	if err := flags.Parse(args); err != nil {
+		if err == flag.ErrHelp {
+			return 0
+		}
+		return 2
+	}
+	if !selection.valid(flags) || *payloadPath == "" || flags.NArg() != 0 {
+		fmt.Fprintln(stderr, "plan requires exactly one of --target PATH or --target-name NAME and --payload PATH")
+		return 2
+	}
+	selected, err := selection.resolve()
+	if err != nil {
+		return fail(stderr, "load target", err)
+	}
+	loaded, err := payload.Load(*payloadPath)
+	if err != nil {
+		return fail(stderr, "load payload", err)
+	}
+	runner := dependencies.Runner
+	if runner == nil && dependencies.RunnerFor != nil {
+		runner = dependencies.RunnerFor(selected)
+	}
+	if runner == nil {
+		return fail(stderr, "plan", fmt.Errorf("Run service is unavailable"))
+	}
+	result, err := runner.Plan(orchestrator.PlanIntent{Target: selected, Payload: loaded})
+	if err != nil {
+		return fail(stderr, "plan", err)
+	}
+	if *asJSON {
+		return writeJSON(stdout, stderr, result)
+	}
+	fmt.Fprintf(stdout, "Plan: %s\n", result.Status)
+	fmt.Fprintf(stdout, "Captures: %d\n", len(result.Captures))
+	return 0
 }
 
 func windowsSetupCommand(ctx context.Context, args []string, stdout io.Writer, stderr io.Writer, dependencies Dependencies) int {
@@ -222,7 +324,15 @@ func runCommand(ctx context.Context, args []string, stdout io.Writer, stderr io.
 	})
 	if err != nil {
 		failure := orchestrator.RunResult{SchemaVersion: 1, RunID: runID, State: orchestrator.StateFailed, Error: err.Error()}
-		if *asJSON && !orchestrator.IsPreflightError(err) && !orchestrator.IsAuthorityError(err) {
+		hasUIResult := loaded.Scenario.UIActions != nil && result.RunID != ""
+		if hasUIResult {
+			failure = result
+			if failure.State == orchestrator.StateComplete {
+				failure.State = orchestrator.StateFailed
+			}
+			failure.Error = err.Error()
+		}
+		if *asJSON && !hasUIResult && !orchestrator.IsPreflightError(err) && !orchestrator.IsAuthorityError(err) {
 			recoveryCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
 			defer cancel()
 			if status, statusErr := runner.Status(recoveryCtx, selected, runID); statusErr == nil {
@@ -398,6 +508,7 @@ func runResultFromStatus(status orchestrator.StatusResult) orchestrator.RunResul
 		Evidence:      status.Evidence,
 		Cleanup:       status.Cleanup,
 		Error:         status.Error,
+		UIActions:     status.UIActions,
 	}
 }
 

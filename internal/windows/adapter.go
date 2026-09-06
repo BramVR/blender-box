@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/BramVR/blender-box/internal/capture"
 	"github.com/BramVR/blender-box/internal/host"
 	"github.com/BramVR/blender-box/internal/orchestrator"
 	"github.com/BramVR/blender-box/internal/payload"
@@ -23,13 +24,56 @@ func NewAdapter(ssh SSH) *Adapter {
 	return &Adapter{ssh: ssh, pollInterval: 250 * time.Millisecond}
 }
 
-func (adapter *Adapter) Inspect(ctx context.Context, selected target.Target) error {
+func (adapter *Adapter) Inspect(ctx context.Context, selected target.Target, requirements orchestrator.HostRequirements) (orchestrator.HostInspection, error) {
 	result, err := Check(ctx, adapter.ssh, selected)
 	if err != nil {
-		return err
+		return orchestrator.HostInspection{}, err
 	}
 	if result.Status != "pass" {
-		return fmt.Errorf("Windows host check failed")
+		return orchestrator.HostInspection{SchemaVersion: 1, Status: "fail"}, nil
+	}
+	legacy := make([]orchestrator.CaptureSupport, 0, len(requirements.Captures))
+	for _, kind := range requirements.Captures {
+		if kind != capture.Viewport {
+			legacy = nil
+			break
+		}
+		definition, _ := capture.Describe(kind)
+		legacy = append(legacy, orchestrator.CaptureSupport{Kind: kind, Capability: definition.Capability, Supported: true})
+	}
+	if requirements.PayloadSchemaVersion == 1 && legacy != nil {
+		return orchestrator.HostInspection{SchemaVersion: 1, Status: "pass", Captures: legacy}, nil
+	}
+	var capabilities host.CapabilitiesResponse
+	capabilityRequest := host.CapabilitiesRequest{SchemaVersion: 1}
+	if requirements.UIActions {
+		capabilityRequest.UIActions = true
+		capabilityRequest.BlenderExecutable = selected.Windows().BlenderExecutable
+		capabilityRequest.SessionBrokerExecutable = selected.Windows().SessionBrokerExecutable
+	}
+	if err := adapter.invokeJSON(ctx, selected, "capabilities", capabilityRequest, &capabilities); err != nil {
+		return orchestrator.HostInspection{}, err
+	}
+	if err := validateCapabilities(capabilities); err != nil {
+		return orchestrator.HostInspection{}, err
+	}
+	return orchestrator.HostInspection{SchemaVersion: 1, Status: "pass", Captures: capabilities.Captures, UIActions: capabilities.UIActions}, nil
+}
+
+func validateCapabilities(result host.CapabilitiesResponse) error {
+	if result.SchemaVersion != 1 || result.Status != "pass" || len(result.Captures) != len(capture.Definitions()) {
+		return fmt.Errorf("host returned invalid capture capabilities")
+	}
+	seen := make(map[capture.Kind]struct{}, len(result.Captures))
+	for _, support := range result.Captures {
+		definition, exists := capture.Describe(support.Kind)
+		if !exists || support.Capability != definition.Capability {
+			return fmt.Errorf("host returned invalid capture capabilities")
+		}
+		if _, duplicate := seen[support.Kind]; duplicate {
+			return fmt.Errorf("host returned duplicate capture capability %q", support.Kind)
+		}
+		seen[support.Kind] = struct{}{}
 	}
 	return nil
 }
@@ -68,7 +112,7 @@ func (adapter *Adapter) Start(ctx context.Context, selected target.Target, reque
 		return orchestrator.RunReceipt{}, err
 	}
 	if err := receipt.ValidateForClaim(request.Claim); err != nil {
-		return orchestrator.RunReceipt{}, fmt.Errorf("start receipt: %w", err)
+		return receipt, fmt.Errorf("start receipt: %w", err)
 	}
 	for receipt.SessionID == "" {
 		if terminalState(receipt.State) {
@@ -86,7 +130,7 @@ func (adapter *Adapter) Start(ctx context.Context, selected target.Target, reque
 			return orchestrator.RunReceipt{}, err
 		}
 		if err := replayed.ValidateForClaim(request.Claim); err != nil {
-			return orchestrator.RunReceipt{}, fmt.Errorf("start receipt: %w", err)
+			return replayed, fmt.Errorf("start receipt: %w", err)
 		}
 		receipt = replayed
 	}

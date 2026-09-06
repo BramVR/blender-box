@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/BramVR/blender-box/internal/capture"
 	"github.com/BramVR/blender-box/internal/host"
 	"github.com/BramVR/blender-box/internal/orchestrator"
 	"github.com/BramVR/blender-box/internal/payload"
@@ -23,10 +24,18 @@ func NewAdapter(ssh SSH) *Adapter {
 	return &Adapter{ssh: ssh, pollInterval: 250 * time.Millisecond}
 }
 
-func (adapter *Adapter) Inspect(ctx context.Context, selected target.Target) error {
+func (adapter *Adapter) Inspect(ctx context.Context, selected target.Target, requirements orchestrator.HostRequirements) (orchestrator.HostInspection, error) {
+	if requirements.UIActions {
+		return orchestrator.HostInspection{}, fmt.Errorf("Linux targets do not support UI actions")
+	}
+	for _, kind := range requirements.Captures {
+		if kind != capture.Viewport {
+			return orchestrator.HostInspection{}, fmt.Errorf("Linux targets do not support %s capture", kind)
+		}
+	}
 	result, err := Check(ctx, adapter.ssh, selected)
 	if err != nil {
-		return err
+		return orchestrator.HostInspection{}, err
 	}
 	if result.Status != "pass" {
 		var failures []string
@@ -35,9 +44,13 @@ func (adapter *Adapter) Inspect(ctx context.Context, selected target.Target) err
 				failures = append(failures, check.ID+": "+check.Message)
 			}
 		}
-		return fmt.Errorf("Linux host check failed: %s", strings.Join(failures, "; "))
+		return orchestrator.HostInspection{}, fmt.Errorf("Linux host check failed: %s", strings.Join(failures, "; "))
 	}
-	return nil
+	inspection := orchestrator.HostInspection{SchemaVersion: 1, Status: result.Status}
+	for _, definition := range capture.Definitions() {
+		inspection.Captures = append(inspection.Captures, orchestrator.CaptureSupport{Kind: definition.Kind, Capability: definition.Capability, Supported: result.Status == "pass" && definition.Kind == capture.Viewport})
+	}
+	return inspection, nil
 }
 
 func (adapter *Adapter) Acquire(ctx context.Context, selected target.Target, claim orchestrator.LockClaim) error {
@@ -74,7 +87,7 @@ func (adapter *Adapter) Start(ctx context.Context, selected target.Target, reque
 		return orchestrator.RunReceipt{}, err
 	}
 	if err := receipt.ValidateForClaim(request.Claim); err != nil {
-		return orchestrator.RunReceipt{}, fmt.Errorf("start receipt: %w", err)
+		return receipt, fmt.Errorf("start receipt: %w", err)
 	}
 	for receipt.SessionID == "" {
 		if terminalState(receipt.State) {
@@ -92,7 +105,7 @@ func (adapter *Adapter) Start(ctx context.Context, selected target.Target, reque
 			return orchestrator.RunReceipt{}, err
 		}
 		if err := replayed.ValidateForClaim(request.Claim); err != nil {
-			return orchestrator.RunReceipt{}, fmt.Errorf("start receipt: %w", err)
+			return replayed, fmt.Errorf("start receipt: %w", err)
 		}
 		receipt = replayed
 	}

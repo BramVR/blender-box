@@ -217,8 +217,11 @@ class LinuxProofTests(unittest.TestCase):
                 self.assertEqual(report["status"], "fail")
                 self.assertEqual(report["run"]["run_id"], shared.RUN)
                 self.assertEqual([call[1] for call in self.commands.calls[-3:]], ["status", "stop", "status"])
-                if fault in ("run-failed", "pre-session", "discovered-session"):
+                if fault in ("run-failed", "pre-session", "discovered-session", "removed-evidence"):
                     self.assertEqual(report["cleanup"], {key: True for key in proof.CLEANUP})
+                    if fault == "removed-evidence":
+                        self.assertEqual(report["outcomes"]["recovery"]["status"], "pass")
+                        self.assertEqual(report["outcomes"]["evidence"]["status"], "fail")
                 else:
                     self.assertIsNone(report["cleanup"])
 
@@ -285,7 +288,7 @@ class LinuxContractTests(unittest.TestCase):
         self.assertNotIn("--version", linux.INSPECT)
         compile(linux.INSPECT, "linux-proof-inspection", "exec")
 
-    def test_readiness_requires_all_linux_checks(self):
+    def test_linux_readiness_checks(self):
         record = {"schema_version": 1, "status": "pass", "blender_version": "5.2.0", "checks": [
             {"id": name, "passed": True, "required": True} for name in sorted(linux.CHECKS)]}
         linux.LinuxProofHost().verify_readiness(record)

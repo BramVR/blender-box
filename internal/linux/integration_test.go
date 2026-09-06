@@ -255,7 +255,7 @@ func TestLinuxCheckFailurePreservesActionableRuntimeReason(t *testing.T) {
 		result.Checks = append(result.Checks, linuxruntime.CheckEvidence{ID: id, Passed: id != "daemon.runtime", Required: true, Message: "provision reviewed corrected runtime externally"})
 	}
 	output, _ := json.Marshal(result)
-	err := NewAdapter(&recordingSSH{output: output}).Inspect(context.Background(), linuxTarget(t))
+	_, err := NewAdapter(&recordingSSH{output: output}).Inspect(context.Background(), linuxTarget(t), orchestrator.HostRequirements{})
 	if err == nil || !strings.Contains(err.Error(), "daemon.runtime: provision reviewed corrected runtime externally") {
 		t.Fatalf("readiness error %v", err)
 	}

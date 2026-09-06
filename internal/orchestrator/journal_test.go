@@ -468,3 +468,130 @@ func TestOversizedOriginalClaimFailsBeforeHostContact(t *testing.T) {
 		t.Fatal("unreadable future authority contacted host")
 	}
 }
+
+type lostPinBoundaryHost struct {
+	fakeHost
+	pinFile string
+	loseAt  string
+}
+
+func (host *lostPinBoundaryHost) Fetch(ctx context.Context, selected target.Target, receipt RunReceipt, file EvidenceFile) ([]byte, error) {
+	data, err := host.fakeHost.Fetch(ctx, selected, receipt, file)
+	if err == nil && host.loseAt == "fetch" {
+		err = os.Remove(host.pinFile)
+	}
+	return data, err
+}
+func (host *lostPinBoundaryHost) Observe(ctx context.Context, selected target.Target, runID RunID) (RunReceipt, error) {
+	receipt, err := host.fakeHost.Observe(ctx, selected, runID)
+	if err == nil && host.loseAt == "observe" {
+		err = os.Remove(host.pinFile)
+	}
+	return receipt, err
+}
+func (host *lostPinBoundaryHost) Settle(ctx context.Context, selected target.Target, receipt RunReceipt) (CleanupState, error) {
+	cleanup, err := host.fakeHost.Settle(ctx, selected, receipt)
+	if err == nil && host.loseAt == "settle" {
+		err = os.Remove(host.pinFile)
+	}
+	return cleanup, err
+}
+
+func TestKnownSessionBoundariesDoNotRecreateLostPin(t *testing.T) {
+	for _, boundary := range []string{"observe", "fetch", "settle"} {
+		t.Run(boundary, func(t *testing.T) {
+			intent := testIntent(t)
+			root := filepath.Join(t.TempDir(), "private")
+			host := &lostPinBoundaryHost{fakeHost: fakeHost{evidence: testEvidence()}, pinFile: filepath.Join(root, pinPath(intent.RunID)), loseAt: boundary}
+			_, err := New(host, root).Run(context.Background(), intent)
+			if !IsAuthorityError(err) {
+				t.Fatalf("lost pin boundary=%s err=%v operations=%v", boundary, err, host.operations)
+			}
+			if _, err := os.Stat(host.pinFile); !os.IsNotExist(err) {
+				t.Fatalf("pin recreated: %v", err)
+			}
+			if boundary != "settle" {
+				for _, operation := range host.operations {
+					if operation == "settle" || boundary == "observe" && strings.HasPrefix(operation, "fetch:") {
+						t.Fatalf("effect after pin loss: %v", host.operations)
+					}
+				}
+				entries, err := os.ReadDir(intent.EvidenceDir)
+				if err != nil || len(entries) != 0 {
+					t.Fatalf("evidence published after pin loss: %v %v", entries, err)
+				}
+			} else if _, err := os.Stat(filepath.Join(intent.EvidenceDir, "evidence.json")); !os.IsNotExist(err) {
+				t.Fatalf("metadata published after pin loss: %v", err)
+			}
+		})
+	}
+}
+
+func TestStatusDoesNotRepinAfterKnownSessionObservation(t *testing.T) {
+	claim := originalClaim(t)
+	host := &lostPinBoundaryHost{fakeHost: fakeHost{evidence: testEvidence(), receipt: RunReceipt{SchemaVersion: 1, Claim: claim, State: StateRunning, SessionID: "bss_original-pinned-session-123456"}}, loseAt: "observe"}
+	runner := recoveryRunner(t, host, claim)
+	host.pinFile = filepath.Join(runner.journal.root, pinPath(claim.RunID))
+	if err := runner.journal.accept(testTarget(t), host.receipt); err != nil {
+		t.Fatal(err)
+	}
+	_, err := runner.Status(context.Background(), testTarget(t), claim.RunID)
+	if !IsAuthorityError(err) {
+		t.Fatalf("known pin lost during Status: %v", err)
+	}
+	if _, err := os.Stat(host.pinFile); !os.IsNotExist(err) {
+		t.Fatalf("Status recreated pin: %v", err)
+	}
+}
+
+type malformedPinnedStartHost struct {
+	fakeHost
+	journal journal
+}
+
+func (host *malformedPinnedStartHost) Start(ctx context.Context, selected target.Target, request RunRequest) (RunReceipt, error) {
+	receipt, err := host.fakeHost.Start(ctx, selected, request)
+	if err != nil {
+		return receipt, err
+	}
+	pinned := receipt
+	pinned.SessionID = "bss_concurrent-pinned-session-123456"
+	if err := host.journal.accept(selected, pinned); err != nil {
+		return receipt, err
+	}
+	receipt.SchemaVersion = 99
+	return receipt, nil
+}
+func TestConcurrentStartPinMismatchPrecedesReceiptShapeValidation(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "private")
+	host := &malformedPinnedStartHost{fakeHost: fakeHost{evidence: testEvidence()}, journal: journal{root: root}}
+	_, err := New(host, root).Run(context.Background(), testIntent(t))
+	if !IsAuthorityError(err) {
+		t.Fatalf("concurrent start pin mismatch lost classification: %v", err)
+	}
+	for _, operation := range host.operations {
+		if operation == "settle" || operation == "observe" {
+			t.Fatalf("effect after concurrent pin mismatch: %v", host.operations)
+		}
+	}
+}
+
+func TestStopDoesNotObserveAfterLosingKnownPinDuringSettlement(t *testing.T) {
+	claim := originalClaim(t)
+	host := &lostPinBoundaryHost{fakeHost: fakeHost{evidence: testEvidence(), receipt: RunReceipt{SchemaVersion: 1, Claim: claim, State: StateRunning, SessionID: "bss_original-pinned-session-123456"}}, loseAt: "settle"}
+	runner := recoveryRunner(t, host, claim)
+	host.pinFile = filepath.Join(runner.journal.root, pinPath(claim.RunID))
+	if err := runner.journal.accept(testTarget(t), host.receipt); err != nil {
+		t.Fatal(err)
+	}
+	_, err := runner.Stop(context.Background(), testTarget(t), claim.RunID)
+	if !IsAuthorityError(err) {
+		t.Fatalf("known pin lost during Stop: %v", err)
+	}
+	if _, err := os.Stat(host.pinFile); !os.IsNotExist(err) {
+		t.Fatalf("Stop recreated pin: %v", err)
+	}
+	if !reflect.DeepEqual(host.operations, []string{"observe", "settle"}) {
+		t.Fatalf("effects after known pin loss: %v", host.operations)
+	}
+}

@@ -261,6 +261,14 @@ def apply(document):
                 actual_installed[key] = actual
         for path in (root + "/bin", root + "/runs", root + "/receipts"):
             safe_path(path, uid, missing=True)
+        if previous is not None and os.path.lexists(initial_temporary):
+            safe_path(initial_temporary, uid, private=True)
+            completed = read_file(initial_temporary, uid, 16384)
+            final_receipt = dict(identity, installed=previous.get("pending"))
+            if completed == json.dumps(final_receipt, sort_keys=True).encode():
+                require(set(actual_installed) == {"host_sha256", "unit_sha256"}
+                        and actual_installed == previous.get("pending"), "completed ownership temporary does not match installed artifacts")
+                atomic_write(receipt_path, completed, 0o600, uid)
         pending = {"host_sha256": plan["host_sha256"], "unit_sha256": plan["unit_sha256"]}
         receipt = dict(identity, installed=actual_installed, pending=pending)
         atomic_write(receipt_path, json.dumps(receipt, sort_keys=True).encode(), 0o600, uid)

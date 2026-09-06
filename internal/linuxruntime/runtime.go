@@ -27,7 +27,7 @@ var provenance []byte
 func CleanEnvironment(extra map[string]string) []string {
 	values := map[string]string{"PATH": "/usr/bin:/bin", "LANG": "C.UTF-8", "PYTHONNOUSERSITE": "1", "PYTHONSAFEPATH": "1", "PYTHONDONTWRITEBYTECODE": "1"}
 	for key, value := range extra {
-		if strings.HasPrefix(key, "BLENDER_") || key == "BLENDERSESSIOND_STATE_DIR" || key == "HOME" || key == "DISPLAY" || key == "XAUTHORITY" || key == "XDG_RUNTIME_DIR" || key == "DBUS_SESSION_BUS_ADDRESS" {
+		if strings.HasPrefix(key, "BLENDER_") || key == "BLENDERSESSIOND_STATE_DIR" || key == "TMPDIR" || key == "HOME" || key == "DISPLAY" || key == "XAUTHORITY" || key == "XDG_RUNTIME_DIR" || key == "DBUS_SESSION_BUS_ADDRESS" {
 			values[key] = value
 		}
 	}

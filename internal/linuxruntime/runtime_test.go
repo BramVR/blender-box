@@ -1,6 +1,7 @@
 package linuxruntime
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -15,6 +16,58 @@ import (
 
 	"github.com/BramVR/blender-box/internal/linuxtarget"
 )
+
+func TestCleanEnvironmentKeepsRunTemporaryFilesInDescendants(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Linux/POSIX environment contract")
+	}
+	python, err := exec.LookPath("python3")
+	if err != nil {
+		t.Skip("Python is unavailable")
+	}
+	temporary := t.TempDir()
+	foreign := t.TempDir()
+	for _, key := range []string{"TMPDIR", "TMP", "TEMP", "PYTHONPATH"} {
+		t.Setenv(key, foreign)
+	}
+	code := `import json,os,subprocess,sys,tempfile
+items=json.loads(subprocess.check_output([sys.executable,"-I","-B","-c",sys.argv[2],"child"])) if sys.argv[1]=="parent" else []
+with tempfile.NamedTemporaryFile() as handle, tempfile.TemporaryDirectory() as directory:
+    items.append({"file":handle.name,"directory":directory,"env":{key:os.environ.get(key) for key in ("TMPDIR","TMP","TEMP","PYTHONPATH")}})
+print(json.dumps(items))
+`
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	command := exec.CommandContext(ctx, python, "-I", "-B", "-c", code, "parent", code)
+	command.Env = CleanEnvironment(map[string]string{"TMPDIR": temporary, "TMP": foreign, "TEMP": foreign, "PYTHONPATH": foreign})
+	var output bytes.Buffer
+	command.Stdout, command.Stderr = &output, &output
+	started := time.Now().UTC()
+	if err := command.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("owned temp probe pid=%d parent=%d spawn=%s command=%q", command.Process.Pid, os.Getpid(), started.Format(time.RFC3339Nano), command.Args)
+	if err := command.Wait(); err != nil {
+		t.Fatalf("temporary file probe: %v %s", err, output.String())
+	}
+	var results []struct {
+		File, Directory string
+		Env             map[string]*string
+	}
+	if err := json.Unmarshal(output.Bytes(), &results); err != nil || len(results) != 2 {
+		t.Fatalf("temporary file results: %s %v", output.String(), err)
+	}
+	for _, result := range results {
+		if filepath.Dir(result.File) != temporary || filepath.Dir(result.Directory) != temporary || result.Env["TMPDIR"] == nil || *result.Env["TMPDIR"] != temporary {
+			t.Fatalf("temporary files escaped Run directory: %+v", result)
+		}
+		for _, key := range []string{"TMP", "TEMP", "PYTHONPATH"} {
+			if result.Env[key] != nil {
+				t.Fatalf("unexpected environment variable %s", key)
+			}
+		}
+	}
+}
 
 func TestCleanEnvironmentProtectsRecursivePythonImports(t *testing.T) {
 	if runtime.GOOS == "windows" {

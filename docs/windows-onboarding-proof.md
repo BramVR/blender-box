@@ -13,7 +13,7 @@ Use this guide to prove a candidate through the existing Windows Run path. The b
 
 Select an owned Windows desktop with a logged-in interactive user, a compatible daemon, and an existing target profile. The SSH user and interactive task must resolve to the same SID. Preserve the host's existing shared Host Lock root; creating another root is not a way to bypass activity on the desktop.
 
-Record the expected hostname, Windows build, Blender version, interactive identity SID, daemon executable hash, and exact target in a private operator document outside the repository. Retain the daemon source revision, any patch digest, wheel hash, installed-source verification, and Python version beside it. A package version alone does not prove the required `blender-box-v1` and `typed-call-error-reason` capabilities.
+Record the expected hostname, Windows build, Blender version, interactive identity SID, daemon executable hash, and exact target in a private operator document outside the repository. Retain the daemon source revision, any patch digest, wheel hash, installed-source verification, and Python version beside it. A package version alone does not prove the required `blender-box-v1`, `typed-call-error-reason`, and `windows-setup-owner-v1` capabilities.
 
 Use schema version 1 with these fields:
 
@@ -32,7 +32,7 @@ Keep secrets, resolved host details, and raw check output private. Do not copy a
 
 ## Run the candidate locally
 
-Use a macOS or Linux controller with Python 3.12, the repository's Go version, and a clean candidate checkout. Windows controllers are unsupported by this proof runner; Windows is the remote Blender host. Set the private configuration's permissions to `0600`. Supply the full commit SHA, private configuration, and a fresh proof-output directory outside the checkout or under its ignored `.blender-box/` directory. The output's parent must exist.
+Use Python 3.13 or newer on macOS, or Python 3.12 or newer on Linux, with the repository's Go version and a clean candidate checkout. Python added macOS support for [os.waitid](https://docs.python.org/3/library/os.html#os.waitid) in 3.13; the runner uses it to retain exact process-group ownership during cleanup. Windows controllers are unsupported by this proof runner; Windows is the remote Blender host. Set the private configuration's permissions to `0600`. Supply the full commit SHA, private configuration, and a fresh proof-output directory outside the checkout or under its ignored `.blender-box/` directory. The output's parent must exist.
 
 ```sh
 python3 scripts/onboarding_proof.py baseline \
@@ -43,7 +43,7 @@ python3 scripts/onboarding_proof.py baseline \
 	--execution local
 ```
 
-The runner builds both candidate executables. It verifies the expected host before mutation, rejects unrelated Blender activity or a Host Lock, and requires the installed host binary to match the candidate. A mismatch needs the exact setup authorization above. It then runs the public check, Scenario, status, stop, and final status commands.
+The runner builds both candidate executables. It verifies the expected host before mutation, rejects unrelated Blender activity or a Host Lock, and requires the installed host binary to match the candidate. A mismatch needs the exact setup authorization above. Setup has a 420-second outer timeout. Cancellation allows 65 seconds for the setup owner to stop and transfer cleanup to finish before local process escalation. The runner then runs the public check, Scenario, status, stop, and final status commands.
 
 Read `public/outcome.json` and the private receipts directly. Require a passing overall result and every required baseline outcome. Check the Run ID, request identity/hash/deadline, exact Session identity, binary hashes, matching remote/local artifact hashes, capture provenance, and all four cleanup facts. The retained product bundle lives under `artifacts/blender-box/<run-id>/` in the candidate checkout.
 
@@ -90,7 +90,11 @@ Dispatch only an explicitly authorized full candidate SHA through the trusted ma
 
 Upload only the runner's public projection and explicitly permitted validated viewport. Never upload private output, raw diagnostics, target documents, credential files, or an arbitrary Evidence Bundle glob. A viewport capture proves the scene, not Blender window chrome or the Windows desktop.
 
-The baseline accepts noninterlaced 8-bit RGB or RGBA PNG captures with valid pixel data and bounded numeric color or resolution metadata. Free-form metadata and unsupported encodings fail validation.
+The baseline accepts noninterlaced 8-bit RGB or RGBA PNG captures with valid pixel data and bounded numeric color or resolution metadata. This includes Blender's resolution-only EXIF layout and zero image origin. Other EXIF layouts, free-form metadata and unsupported encodings fail validation. Original capture bytes and hashes are preserved.
+
+Evidence validation and cleanup are separate outcomes. A rejected or missing retained image fails the proof while preserving cleanup facts established by matching public status and stop receipts.
+
+Local receipt or process setup failures still trigger graceful command cancellation and exact process-group cleanup. If cleanup cannot be verified, the runner reports it as unknown and stops further recovery commands.
 
 Inspect the actual hosted job conclusion and returned receipts. A missing, skipped, cancelled, fake-only, or merely local gate leaves the required proof incomplete. Local success does not establish environment policy or hosted reachability.
 

@@ -7,9 +7,11 @@ read_when:
 
 # Linux host boundary
 
+This decision was numbered 0004 on the Linux branch. It is now 0006 to preserve the existing Windows setup-owner and UI-action decision numbers.
+
 ## Decision
 
-Linux uses the existing seven-method `HostAdapter` and host Run state machine. The client selects a concrete adapter after target resolution. `orchestrator.New` and the local original-target authority records remain unchanged.
+Linux uses the existing seven-method `HostAdapter` and host Run state machine. The client selects a concrete adapter after target resolution. PlanResult, HostRequirements, and HostInspection remain shared typed contracts. Linux inspection reports viewport support after all required Linux readiness checks pass. `orchestrator.New` and the local original-target authority records remain unchanged.
 
 The intended platform is Ubuntu 24.04 LTS with GNOME on Xorg, systemd 255, unified cgroup v2, CPython 3.12, and Blender 5.2.0. This is a support contract, not evidence that any operator host meets it. Local fake-boundary tests pass. Native Linux, Blender, and hosted proof remain separate acceptance requirements.
 
@@ -21,7 +23,7 @@ Target version 2 contains exactly one Windows or Linux body. Linux configuration
 
 Windows `RequestBody` and `SettleRequest` retain schema 1 and their exact JSON encoding. Linux uses schema 2. The request hash includes `LinuxLaunch`, with the desktop, UID, and `DaemonRuntime`. Its broker executable must equal the runtime's Python executable. Settlement derives its runtime from the authority-matched original target, never from writable Run state.
 
-Host Start, ExecutePending, and Settle reject opposite-platform input before mutation or daemon invocation. Every daemon Start, Ready, Recover, Call, and Stop receives one `DaemonBinding`. Receipt, Host Lock claim, Session pin, and evidence contracts stay unchanged.
+Host Start, ExecutePending, and Settle reject opposite-platform input before mutation or daemon invocation. Every daemon Start, Ready, Recover, Call, and Stop receives one `DaemonBinding`. Host Lock claims and Session pins keep their existing authority semantics. Payload schema 2 viewport evidence uses the shared typed provenance contract. Linux refuses Blender-window capture, desktop capture, and UI action batches before a Host Lock is acquired. Direct host Start and ExecutePending validate the same restriction before mutation or daemon launch.
 
 ## Desktop service lifetime
 

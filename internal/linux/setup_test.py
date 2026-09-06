@@ -232,6 +232,136 @@ class SetupPublicationTests(unittest.TestCase):
         self.apply()
         self.assertEqual(bootstrap.digest(self.host.read_bytes()), self.plan["host_sha256"])
 
+    def interrupt_final_receipt(self):
+        original = bootstrap.os.replace
+        receipt = self.root / ".linux-setup.json"
+
+        def interrupted(source, destination):
+            if destination == str(receipt) and "pending" not in json.loads(pathlib.Path(source).read_bytes()):
+                raise RuntimeError("final receipt publication interrupted")
+            return original(source, destination)
+
+        with mock.patch.object(bootstrap.os, "replace", side_effect=interrupted):
+            with self.assertRaisesRegex(RuntimeError, "final receipt publication"):
+                self.apply()
+        temporary = self.root / ".linux-setup.json.linux-setup.tmp"
+        prior = json.loads(receipt.read_bytes())
+        final = json.loads(temporary.read_bytes())
+        self.assertNotIn("pending", final)
+        self.assertEqual(final["installed"], prior["pending"])
+        self.assertEqual(final["installed"], {"host_sha256": bootstrap.digest(self.host.read_bytes()),
+                                             "unit_sha256": bootstrap.digest(self.unit.read_bytes())})
+        return receipt, temporary
+
+    def change_candidate(self, binary):
+        self.document["binary"] = bootstrap.base64.b64encode(binary).decode()
+        self.plan["host_size"] = len(binary)
+        self.plan["host_sha256"] = bootstrap.digest(binary)
+
+    def check_complete_final_receipt_retry(self, next_candidate):
+        receipt, temporary = self.interrupt_final_receipt()
+        if next_candidate:
+            self.change_candidate(b"next reviewed host candidate")
+        self.apply()
+        self.assertFalse(temporary.exists())
+        final = json.loads(receipt.read_bytes())
+        self.assertNotIn("pending", final)
+        self.assertEqual(final["installed"]["host_sha256"], self.plan["host_sha256"])
+        self.assertEqual(bootstrap.digest(self.host.read_bytes()), self.plan["host_sha256"])
+
+    def test_complete_final_receipt_temporary_recovers_same_candidate(self):
+        self.check_complete_final_receipt_retry(False)
+
+    def test_complete_final_receipt_temporary_recovers_next_candidate(self):
+        self.check_complete_final_receipt_retry(True)
+
+    def test_final_receipt_temporary_refuses_tampering_without_mutation(self):
+        receipt, temporary = self.interrupt_final_receipt()
+        original_temporary = temporary.read_bytes()
+        original_receipt = receipt.read_bytes()
+        binary, unit = self.host.read_bytes(), self.unit.read_bytes()
+        final = json.loads(original_temporary)
+        changed_identity = dict(final, uid=1001)
+        changed_hash = dict(final, installed=dict(final["installed"], host_sha256="0" * 64))
+        for altered in (b"{", json.dumps(changed_identity).encode(), json.dumps(changed_hash).encode(),
+                        json.dumps(dict(final, extra=True)).encode()):
+            with self.subTest(altered=altered):
+                temporary.write_bytes(altered)
+                with self.assertRaises(RuntimeError):
+                    self.apply()
+                self.assertEqual(temporary.read_bytes(), altered)
+                self.assertEqual(receipt.read_bytes(), original_receipt)
+                self.assertEqual(self.host.read_bytes(), binary)
+                self.assertEqual(self.unit.read_bytes(), unit)
+        temporary.write_bytes(original_temporary)
+        self.apply()
+
+    def test_final_receipt_recovery_requires_both_artifacts_and_inactive_host(self):
+        receipt, temporary = self.interrupt_final_receipt()
+        original_temporary, original_receipt = temporary.read_bytes(), receipt.read_bytes()
+        binary, unit = self.host.read_bytes(), self.unit.read_bytes()
+        for fault in ("drift", "missing-unit", "active-unit", "host-lock", "temporary-mode"):
+            with self.subTest(fault=fault):
+                if fault == "drift":
+                    self.host.write_bytes(b"foreign host modification")
+                elif fault == "missing-unit":
+                    self.unit.unlink()
+                elif fault == "active-unit":
+                    self.active = True
+                elif fault == "host-lock":
+                    (self.root / "host-lock.json").write_text("{}")
+                else:
+                    temporary.chmod(0o640)
+                with self.assertRaises(RuntimeError):
+                    self.apply()
+                self.assertEqual(temporary.read_bytes(), original_temporary)
+                self.assertEqual(receipt.read_bytes(), original_receipt)
+                self.assertEqual(self.host.read_bytes(), b"foreign host modification" if fault == "drift" else binary)
+                if fault == "missing-unit":
+                    self.assertFalse(self.unit.exists())
+                    self.unit.write_bytes(unit)
+                    self.unit.chmod(0o600)
+                else:
+                    self.assertEqual(self.unit.read_bytes(), unit)
+                self.host.write_bytes(binary)
+                self.active = False
+                if fault == "host-lock":
+                    (self.root / "host-lock.json").unlink()
+                temporary.chmod(0o600)
+        self.apply()
+
+    def test_completed_pending_temporary_requires_matching_candidate_retry(self):
+        self.apply()
+        receipt = self.root / ".linux-setup.json"
+        previous = receipt.read_bytes()
+        self.change_candidate(b"interrupted next host candidate")
+        interrupted_document = self.document["binary"], dict(self.plan)
+        original = bootstrap.os.replace
+
+        def interrupted(source, destination):
+            if destination == str(receipt):
+                raise RuntimeError("pending receipt publication interrupted")
+            return original(source, destination)
+
+        with mock.patch.object(bootstrap.os, "replace", side_effect=interrupted):
+            with self.assertRaisesRegex(RuntimeError, "pending receipt publication"):
+                self.apply()
+        temporary = self.root / ".linux-setup.json.linux-setup.tmp"
+        interrupted_bytes = temporary.read_bytes()
+        binary, unit = self.host.read_bytes(), self.unit.read_bytes()
+        self.change_candidate(b"different next host candidate")
+        with self.assertRaisesRegex(RuntimeError, "needs inspection"):
+            self.apply()
+        self.assertEqual(temporary.read_bytes(), interrupted_bytes)
+        self.assertEqual(receipt.read_bytes(), previous)
+        self.assertEqual(self.host.read_bytes(), binary)
+        self.assertEqual(self.unit.read_bytes(), unit)
+        self.document["binary"], self.plan = interrupted_document
+        self.document["plan"] = self.plan
+        self.apply()
+        self.assertFalse(temporary.exists())
+        self.assertEqual(bootstrap.digest(self.host.read_bytes()), self.plan["host_sha256"])
+
     def test_unrecognized_existing_unit_is_preserved(self):
         self.unit.parent.mkdir(parents=True, mode=0o700)
         self.unit.write_bytes(b"operator service")

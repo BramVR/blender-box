@@ -5,11 +5,14 @@ import (
 	"regexp"
 	"strings"
 	"unicode/utf16"
+
+	"github.com/BramVR/blender-box/internal/safepath"
 )
 
 const (
 	maxWindowsPathTail         = 238
-	maxSetupWorkRootTail       = maxWindowsPathTail - len(`\.setup-`) - 32 - len(`.ps1`)
+	setupOwnerIDLength         = len("bbsa_") + 43
+	maxSetupWorkRootTail       = maxWindowsPathTail - len(`\setup-owner\setup-attempts\`) - setupOwnerIDLength - len(`\`) - setupOwnerIDLength - len(`.ps1`)
 	maxSetupHostExecutableTail = maxWindowsPathTail - len(`.setup-backup-`) - 32
 )
 
@@ -66,23 +69,25 @@ func (value Config) Validate() error {
 		"session_broker_executable": value.SessionBrokerExecutable,
 		"host_executable":           value.HostExecutable,
 	} {
-		rootKey := strings.ToUpper(value.WorkRoot)
-		if !strings.HasPrefix(strings.ToUpper(path), rootKey+`\`) {
+		rootKey := safepath.WindowsKey(value.WorkRoot)
+		if !strings.HasPrefix(safepath.WindowsKey(path), rootKey+`\`) {
 			return fmt.Errorf("target %s must be inside work_root", label)
 		}
 		parent := path[:strings.LastIndex(path, `\`)]
-		if strings.ToUpper(parent) == rootKey {
+		if safepath.WindowsKey(parent) == rootKey {
 			return fmt.Errorf("target %s must be inside a dedicated executable directory", label)
 		}
-		pathKey := strings.ToUpper(path)
-		if strings.HasPrefix(pathKey, strings.ToUpper(value.WorkRoot+`\runs\`)) || strings.HasPrefix(pathKey, strings.ToUpper(value.WorkRoot+`\receipts\`)) {
-			return fmt.Errorf("target %s must not use a reserved state directory", label)
+		pathKey := safepath.WindowsKey(path)
+		for _, directory := range []string{"runs", "receipts", "setup-owner"} {
+			if strings.HasPrefix(pathKey, safepath.WindowsKey(value.WorkRoot+`\`+directory+`\`)) {
+				return fmt.Errorf("target %s must not use a reserved state directory", label)
+			}
 		}
 	}
 	executables := []string{value.BlenderExecutable, value.SessionBrokerExecutable, value.HostExecutable}
 	seenExecutables := make(map[string]struct{}, len(executables))
 	for _, path := range executables {
-		key := strings.ToUpper(path)
+		key := safepath.WindowsKey(path)
 		if _, exists := seenExecutables[key]; exists {
 			return fmt.Errorf("target executable paths must be distinct")
 		}

@@ -69,6 +69,16 @@ func (service *Service) Run(ctx context.Context, args []string, stdin io.Reader,
 			return write(Acknowledgement{SchemaVersion: 1, Status: "unit-verified"})
 		}
 		return write(linuxruntime.Check(ctx, config))
+	case "capabilities":
+		var request CapabilitiesRequest
+		if err := decodeJSONReader(stdin, &request, maxScenarioJSON); err != nil {
+			return fail(err)
+		}
+		result, err := service.Capabilities(ctx, request)
+		if err != nil {
+			return fail(err)
+		}
+		return write(result)
 	case "acquire":
 		var request AcquireRequest
 		if err := decodeJSONReader(stdin, &request, maxScenarioJSON); err != nil {

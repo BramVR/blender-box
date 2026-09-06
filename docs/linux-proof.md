@@ -38,7 +38,7 @@ Review the exact setup plan before granting that authorization. Setup can publis
 
 ## Run the candidate locally
 
-Use a macOS or Linux controller with Python 3.12 and the repository's Go version. Keep the candidate checkout clean and provide its full 40-character commit SHA. Choose a fresh output directory with an existing parent, outside the checkout or under its ignored `.blender-box/` directory.
+Use Python 3.13 or newer on macOS, or Python 3.12 or newer on Linux, with the repository's Go version. The shared proof runner requires `os.waitid` to retain exact process-group ownership during cleanup. Keep the candidate checkout clean and provide its full 40-character commit SHA. Choose a fresh output directory with an existing parent, outside the checkout or under its ignored `.blender-box/` directory.
 
 ```sh
 python3 scripts/linux_blender_proof.py baseline \

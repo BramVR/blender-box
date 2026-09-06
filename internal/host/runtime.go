@@ -3,6 +3,8 @@ package host
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
+	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -11,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf16"
 
 	"github.com/BramVR/blender-box/internal/linuxruntime"
 	"github.com/BramVR/blender-box/internal/orchestrator"
@@ -21,6 +24,31 @@ const (
 	defaultReadyPoll        = 250 * time.Millisecond
 	defaultReadinessTimeout = 2 * time.Minute
 )
+
+const desktopCaptureNativeType = `using System;
+using System.Runtime.InteropServices;
+
+public static class BlenderBoxDesktopCaptureNative
+{
+    [DllImport("user32.dll")]
+    public static extern IntPtr GetDC(IntPtr window);
+
+    [DllImport("user32.dll")]
+    public static extern int ReleaseDC(IntPtr window, IntPtr deviceContext);
+
+    [DllImport("gdi32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool BitBlt(
+        IntPtr destination,
+        int destinationX,
+        int destinationY,
+        int width,
+        int height,
+        IntPtr source,
+        int sourceX,
+        int sourceY,
+        uint rasterOperation);
+}`
 
 type ProcessRunner interface {
 	Run(context.Context, string, []string, map[string]string) ([]byte, error)
@@ -33,6 +61,59 @@ type Runtime struct {
 
 func NewRuntime(processes ProcessRunner) *Runtime {
 	return &Runtime{processes: processes, readyPollInterval: defaultReadyPoll}
+}
+
+func (runtime *Runtime) Check(ctx context.Context) error {
+	script := `$ErrorActionPreference='Stop'; Add-Type -AssemblyName System.Drawing; Add-Type -AssemblyName System.Windows.Forms; if ($null -eq [System.Drawing.Bitmap] -or $null -eq [System.Windows.Forms.SystemInformation]) { throw 'Windows desktop capture APIs are unavailable' }`
+	_, err := runtime.processes.Run(ctx, "powershell.exe", powershellArguments(script), nil)
+	return err
+}
+
+func (runtime *Runtime) Capture(ctx context.Context, path string) error {
+	encodedPath := base64.StdEncoding.EncodeToString([]byte(path))
+	script := fmt.Sprintf(
+		`$ErrorActionPreference='Stop'; Add-Type -AssemblyName System.Drawing; Add-Type -AssemblyName System.Windows.Forms
+$native=@'
+%s
+'@
+Add-Type -TypeDefinition $native
+$path=[System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String('%s'))
+$bounds=[System.Windows.Forms.SystemInformation]::VirtualScreen
+if ($bounds.Width -le 0 -or $bounds.Height -le 0) { throw 'Windows virtual desktop is unavailable' }
+$bitmap=New-Object System.Drawing.Bitmap($bounds.Width,$bounds.Height)
+$graphics=[System.Drawing.Graphics]::FromImage($bitmap)
+$source=[BlenderBoxDesktopCaptureNative]::GetDC([IntPtr]::Zero)
+if ($source -eq [IntPtr]::Zero) { throw 'Windows desktop device context is unavailable' }
+$destination=[IntPtr]::Zero
+try {
+    $destination=$graphics.GetHdc()
+    if (-not [BlenderBoxDesktopCaptureNative]::BitBlt($destination,0,0,$bounds.Width,$bounds.Height,$source,$bounds.X,$bounds.Y,[uint32]0x40CC0020)) {
+        $code=[Runtime.InteropServices.Marshal]::GetLastWin32Error()
+        throw "Windows desktop capture failed with Win32 error $code"
+    }
+    $graphics.ReleaseHdc($destination)
+    $destination=[IntPtr]::Zero
+    $bitmap.Save($path,[System.Drawing.Imaging.ImageFormat]::Png)
+} finally {
+    if ($destination -ne [IntPtr]::Zero) { $graphics.ReleaseHdc($destination) }
+    [BlenderBoxDesktopCaptureNative]::ReleaseDC([IntPtr]::Zero,$source) | Out-Null
+    $graphics.Dispose()
+    $bitmap.Dispose()
+}`,
+		desktopCaptureNativeType,
+		encodedPath,
+	)
+	_, err := runtime.processes.Run(ctx, "powershell.exe", powershellArguments(script), nil)
+	return err
+}
+
+func powershellArguments(script string) []string {
+	units := utf16.Encode([]rune(script))
+	encoded := make([]byte, len(units)*2)
+	for index, unit := range units {
+		binary.LittleEndian.PutUint16(encoded[index*2:], unit)
+	}
+	return []string{"-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand", base64.StdEncoding.EncodeToString(encoded)}
 }
 
 func (runtime *Runtime) Prepare(ctx context.Context, launch LaunchRequest) error {
@@ -63,17 +144,22 @@ func (runtime *Runtime) Start(ctx context.Context, request DaemonStart) (orchest
 		}
 	}
 
-	output, runErr := runtime.runDaemon(ctx, request.Runtime, []string{
+	arguments := []string{
 		"start",
 		"--name", request.Name,
 		"--blender", request.BlenderExecutable,
 		"--json",
-	}, request.Environment)
+	}
+	if request.EnableUIEvents {
+		arguments = append(arguments, "--enable-ui-events")
+	}
+	output, runErr := runtime.runDaemon(ctx, request.Runtime, arguments, request.Environment)
 	var result struct {
 		SchemaVersion int    `json:"schema_version"`
 		Status        string `json:"status"`
 		Session       struct {
-			SessionID orchestrator.SessionID `json:"session_id"`
+			SessionID      orchestrator.SessionID `json:"session_id"`
+			EnableUIEvents bool                   `json:"enable_ui_events"`
 		} `json:"session"`
 	}
 	if err := decodeExtensibleJSON(output, &result, maxProcessOutput); err != nil || result.SchemaVersion != 1 || result.Status != "started" {
@@ -84,6 +170,9 @@ func (runtime *Runtime) Start(ctx context.Context, request DaemonStart) (orchest
 	}
 	if err := result.Session.SessionID.Validate(); err != nil {
 		return "", err
+	}
+	if request.EnableUIEvents && !result.Session.EnableUIEvents {
+		return result.Session.SessionID, fmt.Errorf("Session did not confirm UI event launch capability")
 	}
 	return result.Session.SessionID, runErr
 }
@@ -164,15 +253,8 @@ func (runtime *Runtime) WaitReady(ctx context.Context, request DaemonReady) erro
 		if !result.Session.Health.Process.Alive {
 			return fmt.Errorf("blendersessiond Session stopped before readiness")
 		}
-		if runtime.readyPollInterval <= 0 {
-			continue
-		}
-		timer := time.NewTimer(runtime.readyPollInterval)
-		select {
-		case <-readyCtx.Done():
-			timer.Stop()
-			return fmt.Errorf("blendersessiond readiness: %w", readyCtx.Err())
-		case <-timer.C:
+		if err := waitRuntimePoll(readyCtx, runtime.readyPollInterval); err != nil {
+			return fmt.Errorf("blendersessiond readiness: %w", err)
 		}
 	}
 }
@@ -345,4 +427,18 @@ func (runtime *Runtime) runDaemon(ctx context.Context, binding DaemonBinding, ar
 		return linuxruntime.Run(ctx, *binding.Linux, arguments, environment)
 	}
 	return runtime.processes.Run(ctx, binding.Executable, arguments, environment)
+}
+
+func waitRuntimePoll(ctx context.Context, interval time.Duration) error {
+	if interval <= 0 {
+		return ctx.Err()
+	}
+	timer := time.NewTimer(interval)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
 }

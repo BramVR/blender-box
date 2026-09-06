@@ -17,7 +17,7 @@ Use Ubuntu 24.04 LTS, GNOME on Xorg, systemd 255 with unified cgroup v2, CPython
 
 Provide a safe SSH alias through your existing SSH configuration. Keep Blender's MCP port on host loopback. No port forwarding or desktop service installation is part of setup.
 
-Have the runtime provider supply a dedicated copied CPython venv that matches the [reviewed runtime layout](architecture/0004-linux-host.md#reviewed-runtime-layout). A stock venv is insufficient. The verified package contains the reviewed POSIX launch correction, and the whole import tree must satisfy the allowlist. No product command upgrades or repairs this runtime.
+Have the runtime provider supply a dedicated copied CPython venv that matches the [reviewed runtime layout](architecture/0006-linux-host.md#reviewed-runtime-layout). A stock venv is insufficient. The verified package contains the reviewed POSIX launch correction, and the whole import tree must satisfy the allowlist. No product command upgrades or repairs this runtime.
 
 ## Create the private target
 
@@ -83,7 +83,7 @@ blender-box linux setup --target-name linux-studio --host-binary /tmp/blender-bo
 
 Apply refuses a Host Lock, an active or transitioning unit, foreign unit configuration, unsafe paths, and unrecognized existing artifacts. It publishes the host binary before reloading the user manager, verifies the effective static unit, and returns matching publication hashes. It neither enables the unit nor requires linger.
 
-A scoped `.linux-setup.json` receipt recognizes later replacement and interrupted publication. Retry can reconcile complete owned temporary files and recorded pending hashes. Partial or mismatched temporary files remain for operator inspection. Setup does not delete uncertain artifacts. Changing the managed root or unit destination is a separate operator migration.
+A scoped `.linux-setup.json` receipt recognizes later replacement and interrupted publication. Retry can reconcile complete owned temporary files and recorded pending hashes. A completed final ownership temporary is published only when its identity and installed hashes exactly match the prior pending receipt and both installed artifacts. This reconciliation precedes applying the same or a different candidate. A pending ownership temporary for a different candidate still requires inspection or a retry with its matching candidate. Partial or mismatched temporary files remain for operator inspection. Setup does not delete uncertain artifacts. Changing the managed root or unit destination is a separate operator migration.
 
 ## Check readiness and run
 
@@ -98,12 +98,18 @@ A passing check reports Blender `5.2.0` and six required checks. Failures identi
 Prepare a [Run Payload](../README.md#create-a-run-payload), then use the shared commands:
 
 ```sh
+blender-box plan --target-name linux-studio --payload payload.json --json
+blender-box doctor --target-name linux-studio --payload payload.json --json
 blender-box run --target-name linux-studio --payload payload.json --json
 blender-box status --target-name linux-studio --run bbx_... --json
 blender-box stop --target-name linux-studio --run bbx_... --json
 ```
 
+Linux supports viewport capture with payload schema 1 or 2. Blender-window capture, desktop capture, and UI action batches are unsupported. `plan`, `doctor`, and `run` refuse those requests before acquiring a Host Lock. Direct host requests refuse them before publication or daemon launch.
+
 The static user service owns the host entry point's lifetime. The daemon owns Blender and its exact Session identity. The returned viewport capture includes its method, dimensions, and verified hashes. An `offscreen` image does not prove Blender window chrome or desktop dialogs.
+
+Each Linux Run stages a private `tmp` directory and passes it as `TMPDIR` to the daemon and Blender descendants. Launch refuses a missing or unsafe temporary directory. Exact settlement removes its temporary files with the owned Run root; recovery and stop remain available if the directory is missing. Operator temporary-directory variables are not inherited.
 
 ## Recover after interruption
 
