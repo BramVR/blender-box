@@ -1,5 +1,6 @@
 import json
 import os
+import sys
 from dataclasses import replace
 import unittest
 from unittest import mock
@@ -7,26 +8,24 @@ from unittest import mock
 import test_onboarding_proof as shared
 import test_proof_controller as controller_tests
 import linux_blender_proof as linux
-from proof_controller_worker import NativeAdmission
 
 proof = shared.proof
 
 
 class PlatformInstallIntegrationTests(unittest.TestCase):
-    def test_hosted_install_cannot_consume_baseline_native_admission(self):
+    def test_hosted_install_refuses_before_native_admission_import(self):
         fixture = shared.ProofFixture()
         fixture.setUp()
         self.addCleanup(fixture.doCleanups)
         request = replace(fixture.request, proof="host-install", execution="hosted", driver_sha="b" * 40)
-        authority = NativeAdmission.__new__(NativeAdmission)
+        authority = object()
         with mock.patch.dict(os.environ, GITHUB_RUN_ATTEMPT="1"), \
-                mock.patch.object(NativeAdmission, "require_proof") as admit, \
+                mock.patch.dict(sys.modules, {"proof_controller_worker": None}), \
                 mock.patch.object(proof.InstallOperator, "load") as load, \
                 mock.patch.object(proof.Commands, "run") as command:
             result = proof.baseline(request, native_authority=authority)
         self.assertEqual(result["outcomes"]["preparation"]["code"], "hosted-recovery-retention-unavailable")
         self.assertIsNone(result["run"])
-        admit.assert_not_called()
         load.assert_not_called()
         command.assert_not_called()
 

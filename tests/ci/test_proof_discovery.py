@@ -16,10 +16,13 @@ loader = unittest.TestLoader()
 suite = unittest.TestSuite([
     loader.discover('tests/ci', pattern='test_proof_controller*.py'),
     loader.discover('tests/ci', pattern='test_proof_adoption.py'),
+    loader.discover('tests/ci', pattern='test_platform_install_integration.py'),
 ])
 assert not loader.errors, '\\n'.join(loader.errors)
 assert 'proof_controller_worker' not in sys.modules
 required = {
+    'test_platform_install_integration.PlatformInstallIntegrationTests.test_hosted_install_refuses_before_native_admission_import',
+    'test_platform_install_integration.PlatformInstallIntegrationTests.test_install_rejects_linux_and_custom_windows_adapter_before_operator_load',
     'test_proof_controller.WireAndCLITests.test_request_exact_keys_bounds_and_duplicates',
     'test_proof_controller.WireAndCLITests.test_dispatch_never_reflects_input_or_starts_anything',
     'test_proof_controller_native.NativeParsingTests.test_unit_parser_rejects_partial_duplicate_and_inconsistent_identity',
@@ -40,6 +43,7 @@ result = unittest.TextTestRunner(verbosity=2).run(suite)
 skipped = {case.id() for case, reason in result.skipped}
 assert required.isdisjoint(skipped), required & skipped
 assert result.wasSuccessful()
+assert 'proof_controller_worker' not in sys.modules
 """
         result = subprocess.run([sys.executable, "-c", script],
                                 cwd=Path(__file__).resolve().parents[2],
