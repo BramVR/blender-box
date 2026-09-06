@@ -67,6 +67,8 @@ Verification rejects symlinks, unexpected packages, `.pth` files, customization 
 
 Each daemon operation repeats provenance verification. Top-level invocation uses the selected Python with `-I -B -m blendersessiond`. Its environment replaces inherited process variables and explicitly carries `PYTHONNOUSERSITE=1`, `PYTHONSAFEPATH=1`, and `PYTHONDONTWRITEBYTECODE=1`. The two recursive `sys.executable -m blendersessiond.posix_launcher` calls inherit those controls. Top-level `-I` alone would not protect them.
 
+Stage creates private `tmp` and `home` directories inside the owned Run root. Every daemon lifecycle operation receives their derived paths as `TMPDIR` and `HOME`; Blender and Scenario descendants inherit them. Launch validates both directories before daemon Start. Exact settlement removes their contents with the Run root, while Stop and Recover tolerate missing directories. Run HOME is separate from the configured operator passwd home used for desktop checks, unit placement, and user-service commands. Display, Xauthority, the session bus, and `XDG_RUNTIME_DIR` keep their original desktop values.
+
 The current wheel fails the package hashes. Capability checks still require the existing `blender-box-v1` contract and typed call errors. No new public daemon capability is invented. Runtime drift during settlement reports unresolved cleanup rather than selecting another interpreter.
 
 ## Setup and filesystem authority

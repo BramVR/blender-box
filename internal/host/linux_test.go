@@ -1,10 +1,12 @@
 package host
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -12,6 +14,7 @@ import (
 	"time"
 
 	"github.com/BramVR/blender-box/internal/capture"
+	"github.com/BramVR/blender-box/internal/linuxruntime"
 	"github.com/BramVR/blender-box/internal/orchestrator"
 	"github.com/BramVR/blender-box/internal/payload"
 )
@@ -69,12 +72,15 @@ func TestLinuxServiceRunsCollectsAndSettlesWithExactRuntime(t *testing.T) {
 	service := NewService(Dependencies{Platform: "linux", Tasks: unit, Daemon: daemon})
 	request := stageHostTestRun(t, service, root, time.Now().UTC(), true)
 	temporary := filepath.Join(runPath(root, request.Claim.RunID), "tmp")
-	info, err := os.Lstat(temporary)
-	if err != nil || !info.IsDir() {
-		t.Fatalf("staged Run temporary directory: %v %v", info, err)
-	}
-	if runtime.GOOS != "windows" && info.Mode().Perm() != 0o700 {
-		t.Fatalf("Run temporary directory is not private: %v", info.Mode())
+	home := filepath.Join(runPath(root, request.Claim.RunID), "home")
+	for _, path := range []string{temporary, home} {
+		info, err := os.Lstat(path)
+		if err != nil || !info.IsDir() {
+			t.Fatalf("staged Run directory %s: %v %v", path, info, err)
+		}
+		if runtime.GOOS != "windows" && info.Mode().Perm() != 0o700 {
+			t.Fatalf("Run directory %s is not private: %v", path, info.Mode())
+		}
 	}
 	if _, err := service.Start(context.Background(), root, request); err != nil {
 		t.Fatal(err)
@@ -100,12 +106,21 @@ func TestLinuxServiceRunsCollectsAndSettlesWithExactRuntime(t *testing.T) {
 	if err := os.WriteFile(leftover, []byte("temporary asset"), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	cache := filepath.Join(home, ".cache", "addon-download.glb")
+	if err := os.Mkdir(filepath.Dir(cache), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(cache, []byte("cached asset"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	cleanup, err := service.Settle(context.Background(), root, settle)
 	if err != nil || !cleanup.Known() {
 		t.Fatalf("settlement %+v %v", cleanup, err)
 	}
-	if _, err := os.Lstat(leftover); !os.IsNotExist(err) {
-		t.Fatalf("settlement left Run temporary asset: %v", err)
+	for _, path := range []string{leftover, cache, runPath(root, request.Claim.RunID)} {
+		if _, err := os.Lstat(path); !os.IsNotExist(err) {
+			t.Fatalf("settlement left Run path %s: %v", path, err)
+		}
 	}
 	again, err := service.Settle(context.Background(), root, settle)
 	if err != nil || again != cleanup {
@@ -124,6 +139,9 @@ func TestLinuxServiceRunsCollectsAndSettlesWithExactRuntime(t *testing.T) {
 		if environment["TMPDIR"] != temporary {
 			t.Fatalf("daemon operation lost Run temporary directory: %v", environment)
 		}
+		if environment["HOME"] != home {
+			t.Fatalf("daemon operation lost Run HOME: %v", environment)
+		}
 	}
 	if daemon.starts[0].Desktop == nil || *daemon.starts[0].Desktop != request.Body.Linux.Desktop || daemon.starts[0].UID != 1000 {
 		t.Fatal("desktop contract lost before daemon Start")
@@ -136,6 +154,122 @@ func TestLinuxServiceRunsCollectsAndSettlesWithExactRuntime(t *testing.T) {
 type recoveringEnvironmentDaemon struct {
 	fakeDaemon
 	recovers []DaemonRecover
+}
+
+func TestLinuxRunHomeCaches(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Linux/POSIX environment contract")
+	}
+	python, err := exec.LookPath("python3")
+	if err != nil {
+		t.Skip("Python is unavailable")
+	}
+	root := privateTempDir(t)
+	foreign := privateTempDir(t)
+	sentinel := filepath.Join(foreign, "operator.txt")
+	if err := os.WriteFile(sentinel, []byte("operator home untouched"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", foreign)
+	daemon := &fakeDaemon{}
+	service := NewService(Dependencies{Platform: "linux", Tasks: &unitLifecycleFake{}, Daemon: daemon})
+	request := stageHostTestRun(t, service, root, time.Now().UTC(), false)
+	if _, err := service.Start(context.Background(), root, request); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.ExecutePending(context.Background(), root); err != nil {
+		t.Fatal(err)
+	}
+	runRoot := runPath(root, request.Claim.RunID)
+	home := filepath.Join(runRoot, "home")
+	code := `import datetime,json,os,pathlib,subprocess,sys
+home=pathlib.Path(os.environ["HOME"])
+assert home==pathlib.Path(sys.argv[3]) and pathlib.Path.home()==home
+cache=home/".cache"
+cache.mkdir(mode=0o700,exist_ok=True)
+file=cache/(sys.argv[1]+".txt")
+file.write_text(sys.argv[1]+" cache")
+items=[]
+receipt=None
+if sys.argv[1]=="parent":
+    argv=[sys.executable,"-I","-B","-c",sys.argv[2],"child",sys.argv[2],sys.argv[3]]
+    spawned=datetime.datetime.now(datetime.timezone.utc).isoformat()
+    child=subprocess.Popen(argv,stdout=subprocess.PIPE)
+    receipt={"pid":child.pid,"parent":os.getpid(),"spawn":spawned,"argv":argv,"signals":0}
+    print(json.dumps(receipt),file=sys.stderr,flush=True)
+    try:
+        output,_=child.communicate(timeout=10)
+    except subprocess.TimeoutExpired:
+        child.kill()
+        child.communicate()
+        receipt.update(signals=1,returncode=child.returncode,reaped=True)
+        print(json.dumps(receipt),file=sys.stderr,flush=True)
+        raise
+    receipt.update(returncode=child.returncode,reaped=True)
+    assert child.returncode==0,receipt
+    items=json.loads(output)
+items.append({"home":str(home),"resolved":str(pathlib.Path.home()),"file":str(file),"name":sys.argv[1],"child":receipt})
+print(json.dumps(items))
+`
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	command := exec.CommandContext(ctx, python, "-I", "-B", "-c", code, "parent", code, home)
+	command.Env = linuxruntime.CleanEnvironment(daemon.starts[0].Environment)
+	var output, stderr bytes.Buffer
+	command.Stdout, command.Stderr = &output, &stderr
+	started := time.Now().UTC()
+	if err := command.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("owned HOME probe pid=%d parent=%d spawn=%s command=%q", command.Process.Pid, os.Getpid(), started.Format(time.RFC3339Nano), command.Args)
+	if err := command.Wait(); err != nil {
+		t.Fatalf("HOME cache probe: %v %s %s", err, output.String(), stderr.String())
+	}
+	t.Logf("owned HOME child spawn receipt: %s", stderr.String())
+	var results []struct {
+		Home, Resolved, File, Name string
+		Child                      *struct {
+			PID, Parent, Returncode, Signals int
+			Spawn                            string
+			Argv                             []string
+			Reaped                           bool
+		}
+	}
+	if err := json.Unmarshal(output.Bytes(), &results); err != nil || len(results) != 2 {
+		t.Fatalf("HOME cache results: %s %v", output.String(), err)
+	}
+	for index, name := range []string{"child", "parent"} {
+		result := results[index]
+		if result.Name != name || result.Home != home || result.Resolved != home || result.File != filepath.Join(home, ".cache", name+".txt") {
+			t.Fatalf("cache escaped Run HOME: %+v", result)
+		}
+		if contents := mustRead(t, result.File); string(contents) != name+" cache" {
+			t.Fatalf("unexpected %s cache contents: %q", name, contents)
+		}
+	}
+	child := results[1].Child
+	if results[0].Child != nil || child == nil || child.PID <= 0 || child.Parent != command.Process.Pid || child.Spawn == "" || len(child.Argv) == 0 || child.Returncode != 0 || child.Signals != 0 || !child.Reaped {
+		t.Fatalf("HOME child lifecycle was not clean: %+v", child)
+	}
+	t.Logf("owned HOME child completion: %+v", child)
+	receipt, err := service.Status(root, StatusRequest{SchemaVersion: 1, RunID: request.Claim.RunID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cleanup, err := service.Settle(context.Background(), root, linuxSettlement(receipt, request)); err != nil || !cleanup.Known() {
+		t.Fatalf("HOME cache settlement: %+v %v", cleanup, err)
+	}
+	for _, path := range []string{results[0].File, results[1].File, runRoot} {
+		if _, err := os.Lstat(path); !os.IsNotExist(err) {
+			t.Fatalf("settlement left %s: %v", path, err)
+		}
+	}
+	if contents := mustRead(t, sentinel); string(contents) != "operator home untouched" {
+		t.Fatalf("Run changed operator home: %q", contents)
+	}
+	if entries, err := os.ReadDir(foreign); err != nil || len(entries) != 1 || entries[0].Name() != "operator.txt" {
+		t.Fatalf("Run wrote into operator home: %v %v", entries, err)
+	}
 }
 
 func (daemon *recoveringEnvironmentDaemon) Recover(ctx context.Context, request DaemonRecover) (orchestrator.SessionID, bool, error) {
@@ -162,8 +296,11 @@ func TestLinuxStartupCrashRecoveryUsesOriginalSettlementRuntime(t *testing.T) {
 		t.Fatal(err)
 	}
 	temporary := filepath.Join(runPath(root, request.Claim.RunID), "tmp")
-	if err := os.Remove(temporary); err != nil {
-		t.Fatal(err)
+	home := filepath.Join(runPath(root, request.Claim.RunID), "home")
+	for _, path := range []string{temporary, home} {
+		if err := os.Remove(path); err != nil {
+			t.Fatal(err)
+		}
 	}
 	cleanup, err := service.Settle(context.Background(), root, linuxSettlement(receipt, request))
 	if err != nil || !cleanup.Known() {
@@ -175,51 +312,68 @@ func TestLinuxStartupCrashRecoveryUsesOriginalSettlementRuntime(t *testing.T) {
 	if len(daemon.recovers) != 1 || daemon.recovers[0].Environment["TMPDIR"] != temporary || daemon.stops[0].Environment["TMPDIR"] != temporary {
 		t.Fatal("recovery or stop lost Run temporary directory after its removal")
 	}
-}
-
-func TestLinuxRefusesUnavailableTemporaryDirectoryBeforeDaemonLaunch(t *testing.T) {
-	for _, kind := range []string{"missing", "symlink", "file"} {
-		t.Run(kind, func(t *testing.T) {
-			root := privateTempDir(t)
-			daemon := &fakeDaemon{}
-			service := NewService(Dependencies{Platform: "linux", Tasks: &unitLifecycleFake{}, Daemon: daemon})
-			request := stageHostTestRun(t, service, root, time.Now().UTC(), false)
-			if _, err := service.Start(context.Background(), root, request); err != nil {
-				t.Fatal(err)
-			}
-			temporary := filepath.Join(runPath(root, request.Claim.RunID), "tmp")
-			if err := os.Remove(temporary); err != nil {
-				t.Fatal(err)
-			}
-			if kind == "symlink" {
-				if err := os.Symlink(privateTempDir(t), temporary); err != nil {
-					if runtime.GOOS == "windows" {
-						t.Skip(err)
-					}
-					t.Fatal(err)
-				}
-			} else if kind == "file" {
-				if err := os.WriteFile(temporary, nil, 0o600); err != nil {
-					t.Fatal(err)
-				}
-			}
-			if err := service.ExecutePending(context.Background(), root); err == nil || !strings.Contains(err.Error(), "Run temporary directory") {
-				t.Fatalf("unavailable temporary directory accepted: %v", err)
-			}
-			if len(daemon.starts) != 0 {
-				t.Fatal("daemon launched with unavailable temporary directory")
-			}
-		})
+	if daemon.recovers[0].Environment["HOME"] != home || daemon.stops[0].Environment["HOME"] != home {
+		t.Fatal("recovery or stop lost Run HOME after its removal")
 	}
 }
 
-func TestWindowsRunDoesNotOverrideTemporaryEnvironment(t *testing.T) {
+func TestLinuxRefusesUnavailableRunDirectoriesBeforeDaemonLaunch(t *testing.T) {
+	for _, directory := range []struct{ name, message string }{{"tmp", "Run temporary directory"}, {"home", "Run HOME directory"}} {
+		for _, kind := range []string{"missing", "symlink", "file", "non-private"} {
+			t.Run(directory.name+"/"+kind, func(t *testing.T) {
+				if kind == "non-private" && runtime.GOOS != "linux" {
+					t.Skip("native Linux private-path validation")
+				}
+				root := privateTempDir(t)
+				daemon := &fakeDaemon{}
+				service := NewService(Dependencies{Platform: "linux", Tasks: &unitLifecycleFake{}, Daemon: daemon})
+				request := stageHostTestRun(t, service, root, time.Now().UTC(), false)
+				if _, err := service.Start(context.Background(), root, request); err != nil {
+					t.Fatal(err)
+				}
+				temporary := filepath.Join(runPath(root, request.Claim.RunID), directory.name)
+				if err := os.Remove(temporary); err != nil {
+					t.Fatal(err)
+				}
+				if kind == "symlink" {
+					if err := os.Symlink(privateTempDir(t), temporary); err != nil {
+						if runtime.GOOS == "windows" {
+							t.Skip(err)
+						}
+						t.Fatal(err)
+					}
+				} else if kind == "file" {
+					if err := os.WriteFile(temporary, nil, 0o600); err != nil {
+						t.Fatal(err)
+					}
+				} else if kind == "non-private" {
+					if err := os.Mkdir(temporary, 0o700); err != nil {
+						t.Fatal(err)
+					}
+					if err := os.Chmod(temporary, 0o750); err != nil {
+						t.Fatal(err)
+					}
+				}
+				if err := service.ExecutePending(context.Background(), root); err == nil || !strings.Contains(err.Error(), directory.message) {
+					t.Fatalf("unavailable %s directory accepted: %v", directory.name, err)
+				}
+				if len(daemon.starts) != 0 {
+					t.Fatalf("daemon launched with unavailable %s directory", directory.name)
+				}
+			})
+		}
+	}
+}
+
+func TestWindowsRunDoesNotOverrideLinuxEnvironment(t *testing.T) {
 	root := privateTempDir(t)
 	daemon := &fakeDaemon{}
 	service := NewService(Dependencies{Platform: "windows", Tasks: &fakeTaskLauncher{}, Daemon: daemon})
 	request := stageHostTestRun(t, service, root, time.Now().UTC(), false)
-	if _, err := os.Lstat(filepath.Join(runPath(root, request.Claim.RunID), "tmp")); !os.IsNotExist(err) {
-		t.Fatalf("Windows staging gained a temporary directory: %v", err)
+	for _, name := range []string{"tmp", "home"} {
+		if _, err := os.Lstat(filepath.Join(runPath(root, request.Claim.RunID), name)); !os.IsNotExist(err) {
+			t.Fatalf("Windows staging gained a %s directory: %v", name, err)
+		}
 	}
 	if _, err := service.Start(context.Background(), root, request); err != nil {
 		t.Fatal(err)
@@ -235,7 +389,7 @@ func TestWindowsRunDoesNotOverrideTemporaryEnvironment(t *testing.T) {
 		t.Fatalf("Windows settlement: %+v %v", cleanup, err)
 	}
 	for _, environment := range []map[string]string{daemon.starts[0].Environment, daemon.readies[0].Environment, daemon.calls[0].Environment, daemon.stops[0].Environment} {
-		for _, key := range []string{"TMPDIR", "TMP", "TEMP"} {
+		for _, key := range []string{"TMPDIR", "TMP", "TEMP", "HOME"} {
 			if _, exists := environment[key]; exists {
 				t.Fatalf("Windows Run overrides %s", key)
 			}

@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Keep Linux daemon, Blender, and Scenario HOME-based caches under each private Run root, with prelaunch validation and exact settlement cleanup while preserving missing-home recovery.
 - Keep Linux daemon and Blender temporary files under each private Run root, with prelaunch validation and exact settlement cleanup.
 - Recover interrupted Linux setup final receipts only when prior pending hashes match both installed artifacts, and reject relative or noncanonical host paths before traversal.
 
