@@ -171,6 +171,9 @@ func (adapter *Adapter) Settle(ctx context.Context, selected target.Target, rece
 }
 
 func (adapter *Adapter) invokeJSON(ctx context.Context, selected target.Target, operation string, input any, output any) error {
+	if selected.Platform() != "windows" {
+		return fmt.Errorf("Windows command requires windows platform")
+	}
 	if err := selected.Validate(); err != nil {
 		return err
 	}

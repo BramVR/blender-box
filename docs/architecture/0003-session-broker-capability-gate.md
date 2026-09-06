@@ -35,5 +35,5 @@ The read-only readiness probe has a ten-second process deadline and gives stdout
 ## Consequences
 
 - An old daemon is rejected before Blender launch.
-- [Owned setup](0006-windows-installation-ownership.md) provisions a pinned private daemon runtime and runs this capability contract. It does not infer compatibility from the wheel version or upgrade an existing unowned daemon.
+- [Owned setup](0007-windows-installation-ownership.md) provisions a pinned private daemon runtime and runs this capability contract. It does not infer compatibility from the wheel version or upgrade an existing unowned daemon.
 - Changing the required daemon contract needs a new named capability version and coordinated producer/consumer updates.

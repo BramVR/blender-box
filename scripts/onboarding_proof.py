@@ -303,7 +303,7 @@ def verify_expected_host(expected, observed):
             "invalid-host-hash")
 
 
-def verify_readiness(record):
+def verify_readiness(record, required_checks=CHECKS):
     require(type(record.get("schema_version")) is int and record["schema_version"] == 1
             and record.get("status") == "pass", "readiness-failed")
     checks = record.get("checks")
@@ -314,11 +314,11 @@ def verify_readiness(record):
                 and check["id"] not in seen and type(check.get("required")) is bool
                 and type(check.get("passed")) is bool, "readiness-failed")
         seen.add(check["id"])
-        if check["id"] in CHECKS:
+        if check["id"] in required_checks:
             require(check["required"] and check["passed"], "readiness-failed")
         if check["required"]:
             require(check["passed"], "readiness-failed")
-    require(CHECKS <= seen, "readiness-failed")
+    require(required_checks <= seen, "readiness-failed")
 
 
 def windows_target(target):
@@ -348,6 +348,15 @@ def target_document(view):
             "windows": {k: v for k, v in view.items() if k not in ("schema_version", "ssh_alias")}}
 
 
+def windows_expected_host(expected):
+    require(set(expected) == {"hostname", "windows_build", "blender_version", "identity_sid", "daemon_sha256"}
+            and matches(r"[A-Za-z0-9_.-]{1,128}", expected.get("hostname"))
+            and matches(r"\d{4,6}", expected.get("windows_build"))
+            and matches(r"\d+\.\d+(?:\.\d+)?", expected.get("blender_version"))
+            and matches(r"S-1-\d+(?:-\d+)+", expected.get("identity_sid"))
+            and matches(HASH, expected.get("daemon_sha256")), "operator-config-invalid")
+
+
 @dataclasses.dataclass(frozen=True)
 class Operator:
     target: dict
@@ -356,6 +365,9 @@ class Operator:
     authorization: dict
     ssh_config: Path | None
     publish_viewport: bool = False
+
+    validate_target = staticmethod(windows_target)
+    validate_expected = staticmethod(windows_expected_host)
 
     @property
     def windows(self):
@@ -371,13 +383,8 @@ class Operator:
         target, expected = data.get("target"), data.get("expected_host")
         fixture, auth = data.get("fixture"), data.get("authorization")
         require(all(isinstance(v, dict) for v in (target, expected, fixture, auth)), "operator-config-invalid")
-        windows_target(target)
-        require(set(expected) == {"hostname", "windows_build", "blender_version", "identity_sid", "daemon_sha256"}
-                and matches(r"[A-Za-z0-9_.-]{1,128}", expected.get("hostname"))
-                and matches(r"\d{4,6}", expected.get("windows_build"))
-                and matches(r"\d+\.\d+(?:\.\d+)?", expected.get("blender_version"))
-                and matches(r"S-1-\d+(?:-\d+)+", expected.get("identity_sid"))
-                and matches(HASH, expected.get("daemon_sha256")), "operator-config-invalid")
+        cls.validate_target(target)
+        cls.validate_expected(expected)
         require(set(fixture) == {"id", "kind", "state"} and matches(r"[a-z0-9-]{1,64}", fixture.get("id"))
                 and fixture.get("kind") in ("shared-existing", "dedicated") and fixture.get("state") == "prepared",
                 "fixture-not-prepared")
@@ -575,6 +582,7 @@ class Commands:
         self.marker_seen = False
         self.group_cleanup_known = True
         self.on_run_id = None
+        self.task = "windows-onboarding-baseline"
 
     def marker(self, line):
         if line.startswith(b"RUN_ID="):
@@ -604,7 +612,7 @@ class Commands:
         if stdin is not None:
             Path(str(prefix) + ".stdin").write_bytes(stdin)
         identity = {"parent_pid": os.getpid(), "started_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
-                    "command": [str(a) for a in args], "task": "windows-onboarding-baseline"}
+                    "command": [str(a) for a in args], "task": self.task}
         errors, outputs, started_threads = [], {}, []
         readers_done = threading.Event()
         tick = threading.Event()
@@ -1195,7 +1203,34 @@ def write_outcome(public, report):
     temporary.replace(public / "outcome.json")
 
 
-def baseline(request, commands_factory=Commands):
+class WindowsProofHost:
+    platform = "windows"
+    name = "windows-onboarding"
+    host_filename = "blender-box.exe"
+    proofs = ("baseline", "named-target", "host-install")
+    not_exercised = ("pairing", "fixture-reset", "kept-session-stop")
+
+    load_operator = staticmethod(Operator.load)
+    verify_setup_authorization = staticmethod(verify_setup_authorization)
+    verify_readiness = staticmethod(verify_readiness)
+
+    def inspect(self, commands, operator):
+        observed = inspect_host(commands, operator.windows)
+        verify_expected_host(operator.expected, observed)
+        return observed
+
+    def verify_setup(self, record, operator, host_hash, host_size, applied, planned=None):
+        require(record.get("status") == ("applied" if applied else "plan")
+                and record.get("applied") is applied and record.get("host_sha256") == host_hash
+                and type(record.get("host_size")) is int and record["host_size"] == host_size,
+                "setup-apply-mismatch" if applied else "setup-plan-mismatch")
+
+    def public_runtime(self, operator):
+        return {"daemon_capabilities": list(CAPABILITIES), "blender_version": operator.expected["blender_version"]}
+
+
+def baseline(request, commands_factory=Commands, host=None, *, native_authority=None):
+    host = host or WindowsProofHost()
     request.output.mkdir(mode=0o700, parents=False, exist_ok=False)
     private, public = request.output / "private", request.output / "public"
     private.mkdir(mode=0o700)
@@ -1203,15 +1238,16 @@ def baseline(request, commands_factory=Commands):
     named = request.proof == "named-target"
     installing = request.proof == "host-install"
     required = REQUIRED + (INSTALL_REQUIRED if installing else NAMED_REQUIRED if named else ())
-    report = {"schema_version": 1, "proof": "windows-onboarding-" + request.proof,
+    report = {"schema_version": 1, "proof": host.name + "-" + request.proof,
               "candidate_sha": request.candidate_sha if matches(SHA, request.candidate_sha) else None,
               "driver_sha": request.driver_sha if matches(SHA, request.driver_sha) else None,
               "execution": request.execution, "status": "fail", "run": None, "cleanup": None,
               "outcomes": {name: {"status": "not-run", "code": "not-run"} for name in required},
-              "not_exercised": ["pairing", "fixture-reset", "kept-session-stop"], "artifacts": []}
+              "not_exercised": list(host.not_exercised), "artifacts": []}
     if installing:
         report["not_exercised"] += ["installer-interruption", "active-run-removal-refusal", "active-session-removal-refusal"]
     commands = commands_factory(private, request.candidate_checkout)
+    commands.task = host.name + "-baseline"
     commands.env["BLENDER_BOX_CONFIG_DIR"] = str((private / "config").absolute())
     def publish_run_id(run_id):
         report["run"] = {"run_id": run_id}
@@ -1228,11 +1264,16 @@ def baseline(request, commands_factory=Commands):
             old_signals[sig] = signal.signal(sig, lambda *_: commands.cancelled.set())
     try:
         require(matches(SHA, request.candidate_sha) and request.execution in ("local", "hosted")
-                and request.proof in ("baseline", "named-target", "host-install"), "candidate-invalid")
+                and request.proof in host.proofs, "candidate-invalid")
+        require(not installing or type(host) is WindowsProofHost, "candidate-invalid")
         if request.execution == "hosted":
             require(matches(SHA, request.driver_sha) and os.environ.get("GITHUB_RUN_ATTEMPT") == "1", "hosted-authorization-invalid")
-            raise ProofError("hosted-recovery-retention-unavailable")
-        operator = (InstallOperator if installing else Operator).load(request.operator_config, request.candidate_sha)
+            require(not installing and native_authority is not None, "hosted-recovery-retention-unavailable")
+            from proof_controller_worker import NativeAdmission
+            require(type(host) is WindowsProofHost and type(native_authority) is NativeAdmission,
+                    "hosted-authorization-invalid")
+            NativeAdmission.require_proof(native_authority, request)
+        operator = (InstallOperator.load if installing else host.load_operator)(request.operator_config, request.candidate_sha)
         require(commands.run(["git", "rev-parse", "HEAD"], timeout=30).decode().strip() == request.candidate_sha,
                 "candidate-mismatch")
         require(not commands.run(["git", "status", "--porcelain", "--untracked-files=normal"], timeout=30).strip(),
@@ -1240,8 +1281,7 @@ def baseline(request, commands_factory=Commands):
         if not installing:
             target_path.write_bytes(canonical(operator.target))
         configure_ssh(commands, operator.ssh_config)
-        observed = inspect_host(commands, operator.windows)
-        verify_expected_host(operator.expected, observed)
+        observed = host.inspect(commands, operator)
         commands.run(["go", "build", "-trimpath", "-o", client, "./cmd/blender-box"], timeout=300)
         if named:
             current = "target-catalog"
@@ -1302,30 +1342,28 @@ def baseline(request, commands_factory=Commands):
                                   "client_sha256": digest(read_regular(private, client.name, 128 << 20))}
             current = "preparation"
         else:
-            host = private / "blender-box.exe"
-            host_env = dict(commands.env, GOOS="windows", GOARCH="amd64", CGO_ENABLED="0")
-            commands.run(["go", "build", "-trimpath", "-o", host, "./cmd/blender-box"], timeout=300, env=host_env)
-            host_bytes = read_regular(private, host.name, 128 << 20)
+            host_binary = private / host.host_filename
+            host_env = dict(commands.env, GOOS=host.platform, GOARCH="amd64", CGO_ENABLED="0")
+            commands.run(["go", "build", "-trimpath", "-o", host_binary, "./cmd/blender-box"], timeout=300, env=host_env)
+            host_bytes = read_regular(private, host_binary.name, 128 << 20)
             host_hash, host_size = digest(host_bytes), len(host_bytes)
-            setup_args = [client, "windows", "setup", *selector, "--host-binary", host, "--json"]
+            setup_args = [client, host.platform, "setup", *selector, "--host-binary", host_binary, "--json"]
             plan = commands.json(setup_args)
-            require(plan.get("status") == "plan" and plan.get("applied") is False
-                    and plan.get("host_sha256") == host_hash and type(plan.get("host_size")) is int
-                    and plan["host_size"] == host_size, "setup-plan-mismatch")
+            host.verify_setup(plan, operator, host_hash, host_size, False)
             if observed["host_sha256"] != host_hash:
-                verify_setup_authorization(operator, request.candidate_sha, observed["host_sha256"])
-                raise ProofError("legacy-setup-unowned")
-            installed = inspect_host(commands, operator.windows)
-            verify_expected_host(operator.expected, installed)
+                host.verify_setup_authorization(operator, request.candidate_sha, observed["host_sha256"])
+                require(host.platform != "windows", "legacy-setup-unowned")
+                applied = commands.json(setup_args + ["--apply"], timeout=300)
+                host.verify_setup(applied, operator, host_hash, host_size, True, plan)
+            installed = host.inspect(commands, operator)
             require(installed["host_sha256"] == host_hash, "installed-host-mismatch")
             report["binaries"] = {"host_sha256": host_hash, "host_size": host_size,
                                   "client_sha256": digest(read_regular(private, client.name, 128 << 20))}
-        report["blender_version"] = operator.expected["blender_version"]
         report["outcomes"][current] = {"status": "pass", "code": "prepared-fixture-verified"}
         current = "readiness"
-        verify_readiness(commands.json([client, "windows", "check", *selector, "--json"]))
-        report["daemon_capabilities"] = list(CAPABILITIES)
-        report["outcomes"][current] = {"status": "pass", "code": "windows-check-passed"}
+        host.verify_readiness(commands.json([client, host.platform, "check", *selector, "--json"]))
+        report.update(host.public_runtime(operator))
+        report["outcomes"][current] = {"status": "pass", "code": host.platform + "-check-passed"}
         current = "scenario"
         scenario_attempted = True
         run = commands.json([client, "run", *selector, "--payload", FIXTURE / "payload.json",

@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/BramVR/blender-box/internal/capture"
+	"github.com/BramVR/blender-box/internal/linuxtarget"
 	"github.com/BramVR/blender-box/internal/orchestrator"
 	"github.com/BramVR/blender-box/internal/safepath"
 	"github.com/BramVR/blender-box/internal/uiaction"
@@ -39,8 +40,18 @@ const (
 
 var hashPattern = regexp.MustCompile(`^[0-9a-f]{64}$`)
 
+type LaunchRequest struct {
+	StateRoot string
+	Request   orchestrator.RunRequest
+}
+type DaemonBinding struct {
+	Executable string
+	Linux      *linuxtarget.DaemonRuntime
+}
+
 type TaskLauncher interface {
-	Launch(context.Context, string) error
+	Prepare(context.Context, LaunchRequest) error
+	Launch(context.Context, LaunchRequest) error
 }
 
 type Daemon interface {
@@ -57,15 +68,18 @@ type DesktopCapturer interface {
 }
 
 type DaemonStart struct {
+	UnitName          string
+	Desktop           *linuxtarget.Desktop
+	UID               uint32
+	Runtime           DaemonBinding
 	EnableUIEvents    bool
-	Executable        string
 	Name              string
 	BlenderExecutable string
 	Environment       map[string]string
 }
 
 type DaemonCall struct {
-	Executable         string
+	Runtime            DaemonBinding
 	Name               string
 	SessionID          orchestrator.SessionID
 	Command            string
@@ -75,34 +89,36 @@ type DaemonCall struct {
 }
 
 type DaemonReady struct {
-	Executable  string
+	Runtime     DaemonBinding
 	Name        string
 	SessionID   orchestrator.SessionID
 	Environment map[string]string
 }
 
 type DaemonRecover struct {
-	Executable  string
+	Runtime     DaemonBinding
 	Name        string
 	Environment map[string]string
 }
 
 type DaemonStop struct {
-	Executable  string
+	Runtime     DaemonBinding
 	Name        string
 	SessionID   orchestrator.SessionID
 	Environment map[string]string
 }
 
 type Dependencies struct {
-	UIActor UIActor
-	Tasks   TaskLauncher
-	Daemon  Daemon
-	Desktop DesktopCapturer
-	Now     func() time.Time
+	Platform string
+	UIActor  UIActor
+	Tasks    TaskLauncher
+	Daemon   Daemon
+	Desktop  DesktopCapturer
+	Now      func() time.Time
 }
 
 type Service struct {
+	platform  string
 	uiActor   UIActor
 	tasks     TaskLauncher
 	daemon    Daemon
@@ -127,7 +143,11 @@ func NewService(dependencies Dependencies) *Service {
 	if now == nil {
 		now = time.Now
 	}
-	return &Service{uiActor: dependencies.UIActor, tasks: dependencies.Tasks, daemon: dependencies.Daemon, desktop: dependencies.Desktop, now: now, writeLock: writeLockAtomic}
+	platform := dependencies.Platform
+	if platform == "" {
+		platform = runtime.GOOS
+	}
+	return &Service{platform: platform, uiActor: dependencies.UIActor, tasks: dependencies.Tasks, daemon: dependencies.Daemon, desktop: dependencies.Desktop, now: now, writeLock: writeLockAtomic}
 }
 
 func (service *Service) Capabilities(ctx context.Context, request CapabilitiesRequest) (CapabilitiesResponse, error) {
@@ -136,14 +156,17 @@ func (service *Service) Capabilities(ctx context.Context, request CapabilitiesRe
 	}
 	result := CapabilitiesResponse{SchemaVersion: 1, Status: "pass"}
 	if request.UIActions {
+		if service.platform != "windows" {
+			return CapabilitiesResponse{}, fmt.Errorf("UI actions require a Windows host")
+		}
 		if !windowstarget.ValidateWindowsPath(request.BlenderExecutable) || !windowstarget.ValidateWindowsPath(request.SessionBrokerExecutable) {
 			return CapabilitiesResponse{}, fmt.Errorf("invalid UI capability executable paths")
 		}
 		result.UIActions = &orchestrator.UIActionSupport{Capability: uiaction.Capability, Supported: service.uiActor != nil && service.uiActor.CheckUI(ctx, request.SessionBrokerExecutable, request.BlenderExecutable) == nil}
 	}
 	for _, definition := range capture.Definitions() {
-		supported := true
-		if definition.Kind == capture.Desktop {
+		supported := service.platform == "windows" || service.platform == "linux" && definition.Kind == capture.Viewport
+		if service.platform == "windows" && definition.Kind == capture.Desktop {
 			supported = service.desktop != nil && service.desktop.Check(ctx) == nil
 		}
 		result.Captures = append(result.Captures, orchestrator.CaptureSupport{
@@ -300,7 +323,11 @@ func (service *Service) Stage(ctx context.Context, root string, request StageReq
 	if err := writeJSONAtomic(filepath.Join(temporary, "staged.json"), manifest); err != nil {
 		return err
 	}
-	for _, name := range []string{"daemon", "blender-resources", "blender-config", "blender-scripts", "blender-data", "blender-extensions", "evidence"} {
+	directories := []string{"daemon", "blender-resources", "blender-config", "blender-scripts", "blender-data", "blender-extensions", "evidence"}
+	if service.platform == "linux" {
+		directories = append(directories, "tmp", "home")
+	}
+	for _, name := range directories {
 		if err := os.Mkdir(filepath.Join(temporary, name), 0o700); err != nil {
 			return err
 		}
@@ -314,6 +341,9 @@ func (service *Service) Stage(ctx context.Context, root string, request StageReq
 }
 
 func (service *Service) Start(ctx context.Context, root string, request orchestrator.RunRequest) (orchestrator.RunReceipt, error) {
+	if err := service.validatePlatform(request.Body.SchemaVersion); err != nil {
+		return orchestrator.RunReceipt{}, err
+	}
 	if err := request.Validate(); err != nil {
 		return orchestrator.RunReceipt{}, err
 	}
@@ -353,9 +383,9 @@ func (service *Service) Start(ctx context.Context, root string, request orchestr
 			}
 			if existing.State == orchestrator.StateStarting && lock.SessionID == "" {
 				if service.tasks == nil {
-					return orchestrator.RunReceipt{}, fmt.Errorf("Scheduled Task launcher is unavailable")
+					return orchestrator.RunReceipt{}, fmt.Errorf("desktop launcher is unavailable")
 				}
-				if err := service.tasks.Launch(ctx, request.Claim.TaskName); err != nil {
+				if err := service.tasks.Launch(ctx, LaunchRequest{StateRoot: root, Request: request}); err != nil {
 					return orchestrator.RunReceipt{}, err
 				}
 			}
@@ -382,6 +412,12 @@ func (service *Service) Start(ctx context.Context, root string, request orchestr
 	if err := service.validateStagedRequest(root, request); err != nil {
 		return orchestrator.RunReceipt{}, err
 	}
+	if service.tasks == nil {
+		return orchestrator.RunReceipt{}, fmt.Errorf("desktop launcher is unavailable")
+	}
+	if err := service.tasks.Prepare(ctx, LaunchRequest{StateRoot: root, Request: request}); err != nil {
+		return orchestrator.RunReceipt{}, err
+	}
 	if err := writeJSONAtomic(filepath.Join(runPath(root, request.Claim.RunID), "request.json"), request); err != nil {
 		return orchestrator.RunReceipt{}, err
 	}
@@ -393,9 +429,9 @@ func (service *Service) Start(ctx context.Context, root string, request orchestr
 		return orchestrator.RunReceipt{}, err
 	}
 	if service.tasks == nil {
-		return orchestrator.RunReceipt{}, fmt.Errorf("Scheduled Task launcher is unavailable")
+		return orchestrator.RunReceipt{}, fmt.Errorf("desktop launcher is unavailable")
 	}
-	if err := service.tasks.Launch(ctx, request.Claim.TaskName); err != nil {
+	if err := service.tasks.Launch(ctx, LaunchRequest{StateRoot: root, Request: request}); err != nil {
 		return orchestrator.RunReceipt{}, err
 	}
 	return receipt, nil
@@ -446,6 +482,16 @@ func (service *Service) Status(root string, request StatusRequest) (orchestrator
 }
 
 func (service *Service) ExecutePending(ctx context.Context, root string) error {
+	var request orchestrator.RunRequest
+	if err := readJSON(filepath.Join(root, "pending-request.json"), &request, maxScenarioJSON); err != nil {
+		return err
+	}
+	if err := request.Validate(); err != nil {
+		return err
+	}
+	if err := service.validatePlatform(request.Body.SchemaVersion); err != nil {
+		return err
+	}
 	release, err := acquireOperation(ctx, root)
 	if err != nil {
 		return err
@@ -457,13 +503,6 @@ func (service *Service) ExecutePending(ctx context.Context, root string) error {
 		}
 	}()
 	if err := RejectPendingSetup(root); err != nil {
-		return err
-	}
-	var request orchestrator.RunRequest
-	if err := readJSON(filepath.Join(root, "pending-request.json"), &request, maxScenarioJSON); err != nil {
-		return err
-	}
-	if err := request.Validate(); err != nil {
 		return err
 	}
 	lock, err := service.authorizeClaim(root, request.Claim)
@@ -491,7 +530,19 @@ func (service *Service) ExecutePending(ctx context.Context, root string) error {
 	}
 	runCtx, cancel := context.WithDeadline(ctx, request.Claim.Deadline)
 	defer cancel()
-	environment := runEnvironment(root, request.Claim.RunID)
+	environment := service.runEnvironment(root, request.Claim.RunID)
+	if data := request.Body.Linux; data != nil {
+		if err := validateRoot(environment["TMPDIR"]); err != nil {
+			return service.failExecutionWithCause(root, request, "Run temporary directory is unavailable", err)
+		}
+		if err := validateRoot(environment["HOME"]); err != nil {
+			return service.failExecutionWithCause(root, request, "Run HOME directory is unavailable", err)
+		}
+		for key, value := range linuxtarget.DesktopEnvironment(data.UID, data.Desktop) {
+			environment[key] = value
+		}
+
+	}
 	launchRelease, err := acquireLaunch(runCtx, root)
 	if err != nil {
 		if runCtx.Err() != nil {
@@ -506,13 +557,20 @@ func (service *Service) ExecutePending(ctx context.Context, root string) error {
 	}()
 	locked = false
 	release()
-	sessionID, startErr := service.daemon.Start(runCtx, DaemonStart{
+	startRequest := DaemonStart{
 		EnableUIEvents:    request.Body.Payload.Scenario.UIActions != nil,
-		Executable:        request.Body.SessionBrokerExecutable,
+		UnitName:          request.Claim.TaskName,
+		Runtime:           requestBinding(request.Body),
 		Name:              request.Body.SessionName,
 		BlenderExecutable: request.Body.BlenderExecutable,
 		Environment:       environment,
-	})
+	}
+	if data := request.Body.Linux; data != nil {
+		desktop := data.Desktop
+		startRequest.Desktop = &desktop
+		startRequest.UID = data.UID
+	}
+	sessionID, startErr := service.daemon.Start(runCtx, startRequest)
 	reconcileCtx, cancelReconcile := context.WithTimeout(context.WithoutCancel(ctx), reconciliationTimeout)
 	defer cancelReconcile()
 	release, err = acquireOperation(reconcileCtx, root)
@@ -529,7 +587,7 @@ func (service *Service) ExecutePending(ctx context.Context, root string) error {
 	}
 	identityErr := sessionID.Validate()
 	if startErr != nil && identityErr != nil {
-		recovered, found, recoverErr := service.recoverUnpublishedSession(reconcileCtx, root, request.Claim, request.Body.SessionBrokerExecutable, request.Body.SessionName)
+		recovered, found, recoverErr := service.recoverUnpublishedSession(reconcileCtx, root, request.Claim, requestBinding(request.Body), request.Body.SessionName)
 		if recoverErr != nil {
 			return service.failReceiptWithCause(root, receipt, "Session start recovery failed", recoverErr)
 		}
@@ -549,7 +607,7 @@ func (service *Service) ExecutePending(ctx context.Context, root string) error {
 	}
 	lock.SessionID = sessionID
 	if err := service.writeLock(lockPath(root), lock); err != nil {
-		stopErr := service.daemon.Stop(reconcileCtx, DaemonStop{Executable: request.Body.SessionBrokerExecutable, Name: request.Body.SessionName, SessionID: sessionID, Environment: environment})
+		stopErr := service.daemon.Stop(reconcileCtx, DaemonStop{Runtime: requestBinding(request.Body), Name: request.Body.SessionName, SessionID: sessionID, Environment: environment})
 		if stopErr != nil {
 			receipt := orchestrator.RunReceipt{SchemaVersion: 1, Claim: request.Claim, State: orchestrator.StateCleanupFailed, SessionID: sessionID, Error: identityPublicationRollbackFailure}
 			_ = service.writeReceipt(root, receipt)
@@ -591,7 +649,7 @@ func (service *Service) ExecutePending(ctx context.Context, root string) error {
 	locked = false
 	release()
 	if err := service.daemon.WaitReady(runCtx, DaemonReady{
-		Executable:  request.Body.SessionBrokerExecutable,
+		Runtime:     requestBinding(request.Body),
 		Name:        request.Body.SessionName,
 		SessionID:   sessionID,
 		Environment: environment,
@@ -812,7 +870,10 @@ func (service *Service) Fetch(root string, request FetchRequest) ([]byte, error)
 }
 
 func (service *Service) Settle(ctx context.Context, root string, request SettleRequest) (orchestrator.CleanupState, error) {
-	if request.SchemaVersion != 1 || request.Receipt.Claim.Validate() != nil || !windowstarget.ValidateWindowsPath(request.SessionBrokerExecutable) || request.SessionName != orchestrator.SessionNameForRun(request.Receipt.Claim.RunID) {
+	if err := service.validateSettlement(request); err != nil {
+		return orchestrator.CleanupState{}, err
+	}
+	if request.Receipt.Claim.Validate() != nil || request.SessionName != orchestrator.SessionNameForRun(request.Receipt.Claim.RunID) {
 		return orchestrator.CleanupState{}, fmt.Errorf("invalid settle contract")
 	}
 	release, err := acquireOperation(ctx, root)
@@ -857,7 +918,7 @@ func (service *Service) Settle(ctx context.Context, root string, request SettleR
 		stored.SessionID = lock.SessionID
 	}
 	if stored.SessionID != "" && lock.SessionID == "" {
-		recovered, found, recoverErr := service.recoverUnpublishedSession(ctx, root, stored.Claim, request.SessionBrokerExecutable, request.SessionName)
+		recovered, found, recoverErr := service.recoverUnpublishedSession(ctx, root, stored.Claim, DaemonBinding{Executable: request.SessionBrokerExecutable, Linux: request.Linux}, request.SessionName)
 		if recoverErr != nil {
 			return orchestrator.CleanupState{}, recoverErr
 		}
@@ -890,7 +951,7 @@ func (service *Service) Settle(ctx context.Context, root string, request SettleR
 		return orchestrator.CleanupState{}, fmt.Errorf("settle authority does not match Host Lock")
 	}
 	if stored.SessionID == "" {
-		recovered, found, recoverErr := service.recoverUnpublishedSession(ctx, root, stored.Claim, request.SessionBrokerExecutable, request.SessionName)
+		recovered, found, recoverErr := service.recoverUnpublishedSession(ctx, root, stored.Claim, DaemonBinding{Executable: request.SessionBrokerExecutable, Linux: request.Linux}, request.SessionName)
 		if recoverErr != nil {
 			return orchestrator.CleanupState{}, recoverErr
 		}
@@ -921,10 +982,10 @@ func (service *Service) Settle(ctx context.Context, root string, request SettleR
 			return orchestrator.CleanupState{}, fmt.Errorf("Session daemon is unavailable")
 		}
 		if err := service.daemon.Stop(ctx, DaemonStop{
-			Executable:  request.SessionBrokerExecutable,
+			Runtime:     DaemonBinding{Executable: request.SessionBrokerExecutable, Linux: request.Linux},
 			Name:        request.SessionName,
 			SessionID:   stored.SessionID,
-			Environment: runEnvironment(root, stored.Claim.RunID),
+			Environment: service.runEnvironment(root, stored.Claim.RunID),
 		}); err != nil {
 			return orchestrator.CleanupState{}, err
 		}
@@ -991,7 +1052,7 @@ func (service *Service) Settle(ctx context.Context, root string, request SettleR
 	return stored.Cleanup, nil
 }
 
-func (service *Service) recoverUnpublishedSession(ctx context.Context, root string, claim orchestrator.LockClaim, executable, name string) (orchestrator.SessionID, bool, error) {
+func (service *Service) recoverUnpublishedSession(ctx context.Context, root string, claim orchestrator.LockClaim, binding DaemonBinding, name string) (orchestrator.SessionID, bool, error) {
 	requestPath := filepath.Join(runPath(root, claim.RunID), "request.json")
 	info, err := os.Lstat(requestPath)
 	if os.IsNotExist(err) {
@@ -1003,11 +1064,11 @@ func (service *Service) recoverUnpublishedSession(ctx context.Context, root stri
 	if service.daemon == nil {
 		return "", false, fmt.Errorf("Session daemon is unavailable")
 	}
-	// blendersessiond records the opaque identity before opening its Windows launch gate.
+	// blendersessiond records the opaque identity before opening its process launch gate.
 	return service.daemon.Recover(ctx, DaemonRecover{
-		Executable:  executable,
+		Runtime:     binding,
 		Name:        name,
-		Environment: runEnvironment(root, claim.RunID),
+		Environment: service.runEnvironment(root, claim.RunID),
 	})
 }
 
@@ -1113,7 +1174,10 @@ func removeRunRootPreservingOwnership(runRoot string, removeAll func(string) err
 	if err := os.Remove(ownershipPath); err != nil && !os.IsNotExist(err) {
 		return err
 	}
-	return os.Remove(runRoot)
+	if err := os.Remove(runRoot); err != nil {
+		return err
+	}
+	return syncDirectoryHierarchy(filepath.Dir(runRoot))
 }
 
 func removeInterruptedStaging(ctx context.Context, path string, claim orchestrator.LockClaim) error {
@@ -1139,6 +1203,9 @@ func removeInterruptedStaging(ctx context.Context, path string, claim orchestrat
 }
 
 func removeTreeNoReparse(path string, remove func(string) error) error {
+	if err := validateNativePath(path, false); err != nil {
+		return err
+	}
 	info, err := os.Lstat(path)
 	if err != nil {
 		return err
@@ -1185,7 +1252,7 @@ func (service *Service) callScenario(ctx context.Context, root string, request o
 func (service *Service) executeCode(ctx context.Context, request orchestrator.RunRequest, sessionID orchestrator.SessionID, environment map[string]string, code string, timeout int) ([]byte, error) {
 	parameters, _ := json.Marshal(map[string]string{"code": code})
 	raw, err := service.daemon.Call(ctx, DaemonCall{
-		Executable:         request.Body.SessionBrokerExecutable,
+		Runtime:            requestBinding(request.Body),
 		Name:               request.Body.SessionName,
 		SessionID:          sessionID,
 		Command:            "execute_code",
@@ -1234,7 +1301,7 @@ func (service *Service) captureViewport(ctx context.Context, root string, reques
 	path := captureTemporaryPath(root, request, definition)
 	parameters, _ := json.Marshal(map[string]any{"filepath": path, "format": "png", "max_size": 1600})
 	raw, err := service.daemon.Call(ctx, DaemonCall{
-		Executable:         request.Body.SessionBrokerExecutable,
+		Runtime:            requestBinding(request.Body),
 		Name:               request.Body.SessionName,
 		SessionID:          sessionID,
 		Command:            "get_viewport_screenshot",
@@ -1302,7 +1369,7 @@ func (service *Service) captureDesktop(ctx context.Context, root string, request
 	if service.desktop == nil {
 		return pendingCapture{}, fmt.Errorf("desktop capture is unavailable")
 	}
-	ready := DaemonReady{Executable: request.Body.SessionBrokerExecutable, Name: request.Body.SessionName, SessionID: sessionID, Environment: environment}
+	ready := DaemonReady{Runtime: requestBinding(request.Body), Name: request.Body.SessionName, SessionID: sessionID, Environment: environment}
 	if err := service.daemon.WaitReady(ctx, ready); err != nil {
 		return pendingCapture{}, err
 	}
@@ -1474,9 +1541,9 @@ func (service *Service) failReceiptWithCause(root string, receipt orchestrator.R
 	return fmt.Errorf("%s", message)
 }
 
-func runEnvironment(root string, runID orchestrator.RunID) map[string]string {
+func (service *Service) runEnvironment(root string, runID orchestrator.RunID) map[string]string {
 	runRoot := runPath(root, runID)
-	return map[string]string{
+	environment := map[string]string{
 		"BLENDERSESSIOND_STATE_DIR": filepath.Join(runRoot, "daemon"),
 		"BLENDER_USER_RESOURCES":    filepath.Join(runRoot, "blender-resources"),
 		"BLENDER_USER_CONFIG":       filepath.Join(runRoot, "blender-config"),
@@ -1484,6 +1551,11 @@ func runEnvironment(root string, runID orchestrator.RunID) map[string]string {
 		"BLENDER_USER_DATAFILES":    filepath.Join(runRoot, "blender-data"),
 		"BLENDER_USER_EXTENSIONS":   filepath.Join(runRoot, "blender-extensions"),
 	}
+	if service.platform == "linux" {
+		environment["TMPDIR"] = filepath.Join(runRoot, "tmp")
+		environment["HOME"] = filepath.Join(runRoot, "home")
+	}
+	return environment
 }
 
 func evidenceFromFile(runRoot, relative string, kind orchestrator.EvidenceType, schemaVersion int, sessionID orchestrator.SessionID) (orchestrator.EvidenceFile, error) {
@@ -1507,15 +1579,22 @@ func evidenceFromFile(runRoot, relative string, kind orchestrator.EvidenceType, 
 }
 
 func readRegularFile(path string, limit int64) ([]byte, error) {
+	if err := validateNativePath(path, false); err != nil {
+		return nil, err
+	}
 	info, err := os.Lstat(path)
 	if err != nil || !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 {
 		return nil, fmt.Errorf("evidence is not a regular file")
 	}
-	file, err := os.Open(path)
+	file, err := openRegularRead(path)
 	if err != nil {
 		return nil, err
 	}
 	defer file.Close()
+	opened, statErr := file.Stat()
+	if statErr != nil || !opened.Mode().IsRegular() || !os.SameFile(info, opened) {
+		return nil, fmt.Errorf("regular file identity changed while opening")
+	}
 	contents, err := io.ReadAll(io.LimitReader(file, limit+1))
 	if err != nil || int64(len(contents)) > limit {
 		return nil, fmt.Errorf("evidence exceeds file limit")
@@ -1524,6 +1603,9 @@ func readRegularFile(path string, limit int64) ([]byte, error) {
 }
 
 func validateRoot(root string) error {
+	if err := validateNativePath(root, true); err != nil {
+		return err
+	}
 	if !filepath.IsAbs(root) {
 		return fmt.Errorf("state root must be absolute")
 	}
@@ -1601,7 +1683,7 @@ func writeFileExclusive(path string, contents []byte) (bool, error) {
 		removeErr := os.Remove(path)
 		return true, errors.Join(err, removeErr)
 	}
-	return true, nil
+	return true, syncDirectoryHierarchy(filepath.Dir(path))
 }
 
 func readJSON(path string, value any, limit int64) error {
@@ -1639,6 +1721,49 @@ func decodeExtensibleJSON(contents []byte, value any, limit int64) error {
 	var extra any
 	if err := decoder.Decode(&extra); err != io.EOF {
 		return fmt.Errorf("JSON has trailing value")
+	}
+	return nil
+}
+
+func requestBinding(body orchestrator.RequestBody) DaemonBinding {
+	binding := DaemonBinding{Executable: body.SessionBrokerExecutable}
+	if body.Linux != nil {
+		runtime := body.Linux.Runtime
+		binding.Linux = &runtime
+	}
+	return binding
+}
+func (service *Service) validatePlatform(schema int) error {
+	expected := "windows"
+	if schema == 2 {
+		expected = "linux"
+	}
+	if service.platform != expected {
+		return fmt.Errorf("%s request cannot execute on %s host", expected, service.platform)
+	}
+	return nil
+}
+func (service *Service) validateSettlement(request SettleRequest) error {
+	if request.SchemaVersion != 1 && request.SchemaVersion != 2 {
+		return fmt.Errorf("unsupported settlement schema")
+	}
+	if err := service.validatePlatform(request.SchemaVersion); err != nil {
+		return err
+	}
+	if request.SchemaVersion == 1 {
+		if request.Linux != nil || !windowstarget.ValidateWindowsPath(request.SessionBrokerExecutable) {
+			return fmt.Errorf("invalid Windows settlement runtime")
+		}
+		return nil
+	}
+	if request.Linux == nil {
+		return fmt.Errorf("Linux settlement requires runtime")
+	}
+	if err := request.Linux.Validate(); err != nil {
+		return err
+	}
+	if request.Linux.PythonExecutable != request.SessionBrokerExecutable {
+		return fmt.Errorf("Linux settlement runtime mismatch")
 	}
 	return nil
 }

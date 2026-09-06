@@ -1149,9 +1149,9 @@ class FakeInstallCommands(FakeCommands):
         self.unrelated_task.write_bytes(b"<task/>")
         self.receipt = self.remote / "installation" / "receipt.json"
         self.owned_runtime = self.remote / "installation" / "runtime.bin"
-        self.task = self.remote / "owned-task.xml"
+        self.owned_task = self.remote / "owned-task.xml"
         if fault == "before-state":
-            self.task.write_bytes(b"unknown existing task")
+            self.owned_task.write_bytes(b"unknown existing task")
         if fault == "cancel-before":
             self.cancelled.set()
 
@@ -1190,7 +1190,7 @@ class FakeInstallCommands(FakeCommands):
             tasks = [dict(item, xml_sha256=proof.digest(self.unrelated_task.read_bytes()))
                      for item in inputs["before"]["unrelated_tasks"]]
             result = {"schema_version": 1, "installation_absent": not self.receipt.exists(),
-                      "task_absent": not self.task.exists(),
+                      "task_absent": not self.owned_task.exists(),
                       "target_absent": not self.remote_file(self.operator.installation["target_out"]).exists(),
                       "unrelated_files": files, "unrelated_tasks": tasks}
             if self.fault == "observation-extra":
@@ -1241,14 +1241,14 @@ class FakeInstallCommands(FakeCommands):
             self.receipt.parent.mkdir(exist_ok=True)
             self.receipt.write_bytes(b"owned receipt")
             self.owned_runtime.write_bytes(b"owned runtime")
-            self.task.write_bytes(b"owned task")
+            self.owned_task.write_bytes(b"owned task")
             self.installation_state = "installed"
         if operation == "remove" and apply:
             self.removal_calls += 1
             if self.fault == "remove-failed":
                 return proof.canonical({"schema_version": 1, "exit_code": 1,
                                         "output": '{"schema_version":1,"installation_id":"' + INSTALL_ID + '","state":"partial"}'})
-            self.task.unlink(missing_ok=True)
+            self.owned_task.unlink(missing_ok=True)
             self.owned_runtime.unlink(missing_ok=True)
             self.receipt.write_bytes(b"removed tombstone")
             self.installation_state = "removed"

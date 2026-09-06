@@ -8,7 +8,7 @@ read_when:
 
 ## Status
 
-Historical. Superseded for installation by [ADR 0006](0006-windows-installation-ownership.md). The legacy `windows setup --apply` path now refuses with `legacy-setup-unowned` before SSH; the design below describes the retired path. Its process ownership guarantees remain requirements for the replacement installer, not proof that the new path already supplies them.
+Historical. Superseded for installation by [ADR 0007](0007-windows-installation-ownership.md). The legacy `windows setup --apply` path now refuses with `legacy-setup-unowned` before SSH; the design below describes the retired path. Its process ownership guarantees remain requirements for the replacement installer, not proof that the new path already supplies them.
 
 ## Problem
 

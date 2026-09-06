@@ -23,7 +23,7 @@ func acquireOperationFile(ctx context.Context, path string) (func(), error) {
 	if err := ctx.Err(); err != nil {
 		return nil, fmt.Errorf("wait for host operation: %w", err)
 	}
-	lock, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE, 0o600)
+	lock, err := openOperationLock(path)
 	if err != nil {
 		return nil, err
 	}
@@ -53,7 +53,7 @@ func acquireOperationFile(ctx context.Context, path string) (func(), error) {
 }
 
 func tryAcquireLaunch(root string) (func(), bool, error) {
-	lock, err := os.OpenFile(filepath.Join(root, ".launch.lock"), os.O_RDWR|os.O_CREATE, 0o600)
+	lock, err := openOperationLock(filepath.Join(root, ".launch.lock"))
 	if err != nil {
 		return nil, false, err
 	}
@@ -69,4 +69,25 @@ func tryAcquireLaunch(root string) (func(), bool, error) {
 		_ = lock.Close()
 		return nil, false, err
 	}
+}
+
+func openOperationLock(path string) (*os.File, error) {
+	if err := validateRoot(filepath.Dir(path)); err != nil {
+		return nil, err
+	}
+	lock, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0o600)
+	if err != nil {
+		return nil, err
+	}
+	info, err := lock.Stat()
+	if err != nil {
+		lock.Close()
+		return nil, err
+	}
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	if !ok || !info.Mode().IsRegular() || stat.Uid != uint32(os.Geteuid()) || info.Mode().Perm()&0077 != 0 {
+		lock.Close()
+		return nil, fmt.Errorf("host operation lock must be a private owned regular file")
+	}
+	return lock, nil
 }

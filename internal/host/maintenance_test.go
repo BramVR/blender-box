@@ -117,3 +117,30 @@ func TestPendingSetupFencesRunAdmissionAndUnrelatedMaintenance(t *testing.T) {
 		t.Fatal("malformed setup fence appeared ready")
 	}
 }
+
+func TestPendingSetupFencesValidatedPendingRunsOnBothPlatforms(t *testing.T) {
+	for _, platform := range []string{"windows", "linux"} {
+		t.Run(platform, func(t *testing.T) {
+			root := privateTempDir(t)
+			daemon := &fakeDaemon{}
+			service := NewService(Dependencies{Platform: platform, Tasks: &fakeTaskLauncher{}, Daemon: daemon})
+			request := stageHostTestRun(t, service, root, time.Now().UTC(), false)
+			if _, err := service.Start(context.Background(), root, request); err != nil {
+				t.Fatal(err)
+			}
+			before := mustRead(t, receiptPath(root, request.Claim.RunID))
+			if err := os.WriteFile(filepath.Join(root, "pending-setup.json"), []byte(`{}`), 0600); err != nil {
+				t.Fatal(err)
+			}
+			if err := service.ExecutePending(context.Background(), root); err == nil || !strings.Contains(err.Error(), "active or unresolved setup execution") {
+				t.Fatalf("pending setup fence: %v", err)
+			}
+			if len(daemon.starts) != 0 {
+				t.Fatal("pending setup allowed daemon launch")
+			}
+			if string(before) != string(mustRead(t, receiptPath(root, request.Claim.RunID))) {
+				t.Fatal("pending setup refusal changed Run receipt")
+			}
+		})
+	}
+}

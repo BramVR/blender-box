@@ -1,6 +1,6 @@
 # Owned Windows setup
 
-Use the public host-local `setup inspect`, `setup install`, `setup status`, `setup stop`, and `setup remove` commands. Read `docs/windows-installation.md` and `docs/architecture/0006-windows-installation-ownership.md` before proof.
+Use the public host-local `setup inspect`, `setup install`, `setup status`, `setup stop`, and `setup remove` commands. Read `docs/windows-installation.md` and `docs/architecture/0007-windows-installation-ownership.md` before proof.
 
 ## Preconditions
 

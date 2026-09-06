@@ -75,6 +75,11 @@ func (runner *Runner) Plan(intent PlanIntent) (PlanResult, error) {
 	if err := intent.Payload.Validate(); err != nil {
 		return PlanResult{}, fmt.Errorf("invalid payload: %w", err)
 	}
+	if intent.Target.Platform() == "linux" {
+		if err := validateLinuxScenario(intent.Payload.Scenario); err != nil {
+			return PlanResult{}, err
+		}
+	}
 	plan := PlanResult{
 		SchemaVersion:        1,
 		Status:               "pass",
@@ -159,4 +164,16 @@ func inspectionSupports(inspection HostInspection, planned []PlannedCapture) boo
 
 func uiInspectionSupports(inspection HostInspection, required bool) bool {
 	return !required || inspection.UIActions != nil && inspection.UIActions.Capability == uiaction.Capability && inspection.UIActions.Supported
+}
+
+func validateLinuxScenario(scenario payload.Scenario) error {
+	if scenario.UIActions != nil {
+		return fmt.Errorf("Linux targets do not support UI actions")
+	}
+	for _, kind := range scenario.Captures() {
+		if kind != capture.Viewport {
+			return fmt.Errorf("Linux targets do not support %s capture", kind)
+		}
+	}
+	return nil
 }

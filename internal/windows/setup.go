@@ -21,6 +21,9 @@ type SetupResult struct {
 }
 
 func Setup(_ context.Context, _ SetupSSH, selected target.Target, source string, apply bool) (SetupResult, error) {
+	if selected.Platform() != "windows" {
+		return SetupResult{}, fmt.Errorf("Windows command requires windows platform")
+	}
 	if err := selected.Validate(); err != nil {
 		return SetupResult{}, err
 	}
