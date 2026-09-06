@@ -14,7 +14,7 @@ The first end-to-end slice supports read-only host checks, explicit setup, remot
 
 The default test suite replaces SSH, the Scheduled Task, `blendersessiond`, the filesystem, and Blender with fakes. Proof against a real Windows Blender host is opt-in.
 
-The repository also supplies a reusable [Windows onboarding baseline](docs/windows-onboarding-proof.md) and a separate `Windows onboarding proof` workflow. Its `baseline` job requires an authorized exact candidate and private host configuration. A local pass does not replace the required hosted job.
+The repository supplies [Windows onboarding proof](docs/windows-onboarding-proof.md) for baseline Runs, named targets, and host installation. Each live variant needs separate, exact authorization. Hosted execution remains blocked until private Run recovery authority can survive loss of its controller. A local pass does not replace a required hosted job.
 
 ## Requirements
 
@@ -23,14 +23,15 @@ You need:
 - Go 1.23 or later on the developer machine.
 - An owned Windows host with OpenSSH and an interactive user who is logged in.
 - A safe alias for that host in your SSH config.
-- An existing work root, Blender installation, and compatible `blendersessiond` installation on Windows.
+- An existing Blender installation and a supported standard 64-bit CPython 3.11 through 3.14 installation on Windows.
+- A verified Windows bootstrap executable and a pinned runtime bundle for [host installation](docs/windows-installation.md), or an already prepared compatible host.
 - One Windows identity for both SSH control and the interactive Scheduled Task. The account names may differ, but they must resolve to the same SID.
 
-Blender Box does not install Blender or `blendersessiond`. It also does not change SSH, Tailscale, or firewall settings.
+Setup provisions its own isolated `blendersessiond` runtime from declared, hashed files. It does not install Blender or Python, or change SSH, Tailscale, or firewall settings.
 
 ## Create a target profile
 
-Keep your operator configuration outside the consuming repository. Create a target file with the non-secret settings for your host:
+Keep operator configuration outside the consuming repository. The [installer](docs/windows-installation.md) can export a complete target file. For an existing prepared host, its shape is:
 
 ```json
 {
@@ -51,7 +52,7 @@ Keep your operator configuration outside the consuming repository. Create a targ
 
 Keep credentials, hostnames, IP addresses, and private network details out of this file. `ssh_alias` selects an entry from your SSH config.
 
-Both `session_broker_executable` and `host_executable` must be inside `work_root` and below a dedicated executable directory. Blender may be installed elsewhere. The work root must be an ASCII drive path without spaces because setup supports legacy SCP.
+Both `session_broker_executable` and `host_executable` must be inside `work_root` and below a dedicated executable directory. Blender may be installed elsewhere. The work root must be an ASCII drive path without spaces for the Run transport's legacy SCP support.
 
 Windows is the only supported host platform. Existing flat schema version 1 Windows files remain valid input. Unknown platforms and malformed documents fail before a connection or setup change.
 
@@ -77,32 +78,15 @@ Saved profiles and Run recovery records use the operating system's user configur
 
 ## Set up the Windows host
 
-Build the Windows host binary:
+Use the [Windows installation guide](docs/windows-installation.md) to build a pinned runtime bundle, inspect the host, review a plan, and explicitly install. Setup runs on Windows through a verified bootstrap executable and exports the target for your developer machine.
 
-```sh
-GOOS=windows GOARCH=amd64 go build -o /tmp/blender-box.exe ./cmd/blender-box
+```powershell
+.\blender-box.exe setup inspect --platform windows --state-root C:\BlenderBox --json
 ```
 
-Inspect the setup plan. Plan mode validates the target profile and makes no SSH connection.
+Installation and removal require `--apply`. Repeats use the recorded installation identity. Removal preserves shared Run authority, installation receipts, modified files, and unknown descendants. It refuses active or ambiguous Run state and never stops Blender implicitly.
 
-```sh
-go run ./cmd/blender-box windows setup \
-	--target-name studio \
-	--host-binary /tmp/blender-box.exe \
-	--json
-```
-
-Apply the plan only to the owned host that you verified:
-
-```sh
-go run ./cmd/blender-box windows setup \
-	--target-name studio \
-	--host-binary /tmp/blender-box.exe \
-	--apply \
-	--json
-```
-
-Setup publishes the hashed host binary, applies the required ACLs, checks the `blendersessiond` contract, and registers the Scheduled Task. It refuses an active Host Lock and rejects reparse points or untrusted write authority in managed paths.
+The legacy `windows setup --target-name studio --host-binary EXE --json` command still produces an offline binary preview. Its `--apply` form fails with `legacy-setup-unowned` before SSH. Legacy files and tasks have no installation receipt and cannot be adopted or replaced by name.
 
 ## Check the installed host
 
@@ -225,6 +209,8 @@ The gate runs on Linux, macOS, and Windows without contacting a Blender host. Se
 
 - [Run boundary](docs/architecture/0001-slice-0-run-boundary.md) defines orchestration, recovery, evidence, and cleanup.
 - [Target contract](docs/architecture/target-contract.md) defines named profiles, platform versions, and original-target recovery.
+- [Windows installation](docs/windows-installation.md) covers runtime bundles, preview, installation, retries, and owned removal.
+- [Installation ownership](docs/architecture/0004-windows-installation-ownership.md) defines runtime receipts and maintenance fencing.
 - [Windows identity boundary](docs/architecture/0002-slice-0-windows-identity.md) explains why the current slice uses one Windows SID.
 - [`blendersessiond` capability gate](docs/architecture/0003-session-broker-capability-gate.md) defines the daemon contract required before launch.
 - [Research brief](docs/research/blender-box-research.html) records the broader product research and proposed contracts.

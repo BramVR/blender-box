@@ -15,6 +15,7 @@ import (
 	"github.com/BramVR/blender-box/internal/payload"
 	"github.com/BramVR/blender-box/internal/target"
 	"github.com/BramVR/blender-box/internal/windows"
+	"github.com/BramVR/blender-box/internal/windowsinstall"
 )
 
 type RunService interface {
@@ -28,6 +29,7 @@ type HostService interface {
 }
 
 type Dependencies struct {
+	Setup         windowsinstall.Executor
 	SSH           windows.SetupSSH
 	Runner        RunService
 	Now           func() time.Time
@@ -41,6 +43,8 @@ func Run(ctx context.Context, args []string, stdin io.Reader, stdout io.Writer, 
 		return 2
 	}
 	switch args[0] {
+	case "setup":
+		return setupCommand(ctx, args[1:], stdout, stderr, dependencies)
 	case "targets":
 		return targetsCommand(args[1:], stdout, stderr)
 	case "run":
@@ -68,6 +72,8 @@ func Run(ctx context.Context, args []string, stdin io.Reader, stdout io.Writer, 
 
 func printUsage(output io.Writer) {
 	fmt.Fprintln(output, "usage:")
+	fmt.Fprintln(output, "  blender-box setup inspect|install|remove --platform windows --state-root PATH [--apply] [--json]")
+	fmt.Fprintln(output, "  blender-box setup manifest --host-binary PATH --broker-launcher PATH --daemon-wheel PATH --source-commit SHA --daemon-source-commit SHA --patch-sha256 SHA --recipe-sha256 SHA --out PATH")
 	fmt.Fprintln(output, "  blender-box targets import NAME --file PATH [--replace] [--json]\n  blender-box targets list [--json]\n  blender-box targets show NAME [--json]\n  blender-box targets forget NAME [--json]")
 	fmt.Fprintln(output, "  blender-box windows check (--target PATH | --target-name NAME) [--json]")
 	fmt.Fprintln(output, "  blender-box windows setup (--target PATH | --target-name NAME) --host-binary PATH [--apply] [--json]")
@@ -81,7 +87,7 @@ func windowsSetupCommand(ctx context.Context, args []string, stdout io.Writer, s
 	flags.SetOutput(stderr)
 	selection := targetFlags(flags)
 	hostBinary := flags.String("host-binary", "", "path to the Windows blender-box executable")
-	apply := flags.Bool("apply", false, "install the bounded host binary and exact Scheduled Task")
+	apply := flags.Bool("apply", false, "legacy apply is refused; use setup install")
 	asJSON := flags.Bool("json", false, "print versioned JSON")
 	if err := flags.Parse(args); err != nil {
 		if err == flag.ErrHelp {
@@ -107,7 +113,7 @@ func windowsSetupCommand(ctx context.Context, args []string, stdout io.Writer, s
 	fmt.Fprintf(stdout, "Windows setup: %s\n", result.Status)
 	fmt.Fprintf(stdout, "Host binary: %d bytes, SHA-256 %s\n", result.HostSize, result.HostSHA256)
 	if !result.Applied {
-		fmt.Fprintln(stdout, "No remote changes made; pass --apply to install.")
+		fmt.Fprintln(stdout, "No remote changes made; use setup install with an owned runtime manifest.")
 	}
 	return 0
 }

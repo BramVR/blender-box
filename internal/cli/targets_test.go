@@ -262,7 +262,10 @@ func TestPublicNamedTargetsAcrossProcessesAndBothVersions(t *testing.T) {
 		if cli.calls() != before {
 			t.Fatal("setup preview contacted host")
 		}
-		cli.call(0, append([]string{"windows", "setup", "--host-binary", hostBinary, "--apply", "--json"}, selector...)...)
+		cli.call(1, append([]string{"windows", "setup", "--host-binary", hostBinary, "--apply", "--json"}, selector...)...)
+		if cli.calls() != before {
+			t.Fatal("legacy apply refusal contacted host")
+		}
 		cli.call(0, append([]string{"windows", "check", "--json"}, selector...)...)
 		var result orchestrator.RunResult
 		output := cli.call(0, append([]string{"run", "--payload", cliPayload(t), "--evidence-dir", filepath.Join(t.TempDir(), "evidence"), "--json"}, selector...)...)

@@ -131,7 +131,7 @@ function Test-TrustedTaskAuthorities([string]$Sddl, [string]$ControllerSid) {
         'S-1-5-32-544',
         'S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464'
     )
-    if ($null -eq $descriptor.Owner -or $trustedManagers -notcontains $descriptor.Owner.Value -or $null -eq $descriptor.DiscretionaryAcl) { return $false }
+    if ($null -eq $descriptor.Owner -or ($trustedManagers -notcontains $descriptor.Owner.Value -and $descriptor.Owner.Value -ne $ControllerSid) -or $null -eq $descriptor.DiscretionaryAcl) { return $false }
     [int64]$genericAll = 0x10000000
     [int64]$genericWrite = 0x40000000
     [int64]$genericExecute = 0x20000000

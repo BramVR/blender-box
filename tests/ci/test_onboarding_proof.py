@@ -447,6 +447,14 @@ class BaselineTests(ProofFixture):
             with self.subTest(key=key), self.assertRaises(proof.ProofError):
                 proof.verify_setup_authorization(operator, SHA, None)
 
+    def test_legacy_apply_grant_reports_refusal_without_bypassing_installer(self):
+        self.config["authorization"]["setup"] = {"candidate_sha": SHA,
+            "target_sha256": proof.digest(proof.canonical(self.config["target"])),
+            "prior_host_sha256": "1" * 64, "scope": "windows-setup-binary-task-acls"}
+        result = self.execute("setup-unapproved")
+        self.assertEqual(result["outcomes"]["preparation"]["code"], "legacy-setup-unowned")
+        self.assertFalse(any("--apply" in call for call in self.commands.calls))
+
 
 def dataclasses_replace(value, **changes):
     return proof.dataclasses.replace(value, **changes)
@@ -618,6 +626,23 @@ class SubprocessTests(unittest.TestCase):
         raw = self.commands.run([sys.executable, "-c", 'import sys; print(\'{"schema_version":1}\'); print("PRIVATE_SENTINEL",file=sys.stderr)'])
         self.assertEqual(proof.document(raw), {"schema_version": 1})
         self.assertIn("PRIVATE_SENTINEL", (self.root / "command-001.stderr").read_text())
+
+    def test_streamed_input_round_trip_and_nonreading_child_timeout(self):
+        content = ("C:\\Blender boîte\\\u2603\n" * 1000).encode("utf-8")
+        result = self.commands.json([sys.executable, "-c",
+                                    'import hashlib,json,sys; data=sys.stdin.buffer.read(); print(json.dumps({"schema_version":1,"sha256":hashlib.sha256(data).hexdigest()}))'],
+                                    stdin=content)
+        self.assertEqual(result["sha256"], proof.digest(content))
+        self.assertEqual((self.root / "command-001.stdin").read_bytes(), content)
+        with self.assertRaisesRegex(proof.ProofError, "command-timeout"):
+            self.commands.run([sys.executable, "-c", "import threading; threading.Event().wait()"],
+                              stdin=b"x" * (128 << 10), timeout=.1)
+        self.assertTrue(self.commands.group_cleanup_known)
+        sequence = self.commands.sequence
+        with self.assertRaisesRegex(proof.ProofError, "command-input-limit"):
+            self.commands.run([sys.executable, "-c", "raise AssertionError('must not spawn')"],
+                              stdin=b"x" * ((128 << 10) + 1))
+        self.assertEqual(self.commands.sequence, sequence)
 
     def test_nonzero_plausible_json_and_bounded_output_and_timeout(self):
         cases = [('print(\'{"schema_version":1}\'); raise SystemExit(2)', {}, "command-failed"),
@@ -806,9 +831,25 @@ with socket.create_connection(("127.0.0.1", {port})) as connection:
 
 
 class WorkflowTests(unittest.TestCase):
+    def test_installer_job_is_separate_serialized_and_blocked_before_host_credentials(self):
+        workflow = (ROOT / ".github/workflows/windows-onboarding-proof.yml").read_text()
+        installer = workflow.split("  host-install:\n", 1)[1]
+        for value in ("name: host-install", "needs: [candidate, named-target]", "if: always() && needs.candidate.result == 'success'",
+                      "environment: windows-onboarding-installer", "DRIVER_SHA: ${{ github.workflow_sha }}",
+                      "ref: ${{ github.workflow_sha }}", "ONBOARDING_INSTALL_OPERATOR_CONFIG",
+                      'value.get("authorization", {}).get("candidate_sha") != os.environ["CANDIDATE_SHA"]',
+                      "python3 driver/scripts/onboarding_proof.py host-install", "--execution hosted --driver-sha",
+                      "onboarding-host-install-proof/public/outcome.json"):
+            self.assertIn(value, installer)
+        for value in ("ONBOARDING_SSH", "ONBOARDING_TS", "tailscale/github-action", "prepare_hosted_credentials",
+                      "protected-environment-approval", "candidate/scripts", "continue-on-error", "/private/", "*.json"):
+            self.assertNotIn(value, installer)
+        self.assertEqual(set(proof.re.findall(r"secrets\.([A-Z_]+)", installer)), {"ONBOARDING_INSTALL_OPERATOR_CONFIG"})
+        self.assertIn("group: windows-onboarding-prepared-v1", workflow)
+
     def test_named_job_requires_successful_baseline_and_reuses_trusted_boundaries(self):
         workflow = (ROOT / ".github/workflows/windows-onboarding-proof.yml").read_text()
-        named = workflow.split("  named-target:\n", 1)[1]
+        named = workflow.split("  named-target:\n", 1)[1].split("  host-install:\n", 1)[0]
         for value in ("needs: [candidate, authorize, baseline]", "environment: windows-onboarding-host",
                       "DRIVER_SHA: ${{ github.workflow_sha }}", "ref: ${{ github.workflow_sha }}",
                       "ref: ${{ needs.candidate.outputs.sha }}", "prepare_hosted_credentials(os.environ)",
@@ -840,6 +881,407 @@ class WorkflowTests(unittest.TestCase):
         self.assertIn("/public/outcome.json", upload)
         self.assertIn("/public/viewport.png", upload)
         self.assertNotIn("*", upload)
+
+
+INSTALL_ID = "bbxi_" + "1" * 32
+
+
+def installer_config(root):
+    config = operator_config()
+    installation = {"id": INSTALL_ID, "state_root": r"C:\TestFixture", "task_name": "DisposableInstallProof",
+                    "blender": r"C:\Blender\blender.exe", "python": r"C:\Python\python.exe",
+                    "target_out": r"C:\ProofExport\target.json"}
+    manifest = {"schema_version": 1, "platform": "windows", "architecture": "amd64", "python_requires": ">=3.11,<4",
+                "daemon_protocol": "blender-box-v1", "daemon_capabilities": ["typed-call-error-reason"], "artifacts": []}
+    for role, name, content in (("host-executable", "host.exe", b"host"), ("daemon-launcher", "broker.exe", b"broker"),
+                                ("daemon-wheel", "daemon.whl", b"wheel")):
+        manifest["artifacts"].append({"role": role, "name": "C:\\Pinned\\" + name, "size": len(content),
+                                      "sha256": proof.digest(content), "provenance": {"repository": "BramVR/blender-box",
+                                      "source_commit": SHA, "patch_sha256": "2" * 64, "build_recipe_sha256": "3" * 64}})
+    local = root / "manifest.json"
+    raw = proof.canonical(manifest)
+    local.write_bytes(raw)
+    return {"schema_version": 1, "platform": "windows", "connection": {"ssh_alias": "test-fixture", "windows_user": "test-user"},
+            "expected_host": dict(config["expected_host"], daemon_sha256=proof.digest(b"broker")),
+            "fixture": {"id": "installer-dedicated-fixture", "kind": "dedicated", "state": "absent"},
+            "installation": installation, "bootstrap": {"path": r"C:\Bootstrap\bootstrap.exe", "size": 9,
+                                                         "sha256": proof.digest(b"bootstrap")},
+            "runtime": {"local_manifest": str(local), "remote_manifest": {"path": r"C:\Pinned\manifest.json",
+                                                                      "size": len(raw), "sha256": proof.digest(raw)}},
+            "before_state": {"installation_absent": True, "task_absent": True, "target_absent": True,
+                             "unrelated_files": [{"path": r"C:\ExistingFixture\precious.blend", "size": 9,
+                                                  "sha256": proof.digest(b"precious!")}],
+                             "unrelated_tasks": [{"name": "ExistingFixture", "xml_sha256": proof.digest(b"<task/>")}]}}
+
+
+def authorize_installer(config):
+    config["authorization"] = {"candidate_sha": SHA, "fixture_id": config["fixture"]["id"],
+                               "installation_id": config["installation"]["id"],
+                               "manifest_sha256": config["runtime"]["remote_manifest"]["sha256"],
+                               "scope": "host-install-run-remove", "launch": True}
+    for key, source in (("destination", "installation"), ("before_state", "before_state"), ("bootstrap", "bootstrap"),
+                        ("connection", "connection"), ("expected_host", "expected_host")):
+        config["authorization"][key + "_sha256"] = proof.digest(proof.canonical(config[source]))
+
+
+class FakeInstallCommands(FakeCommands):
+    def __init__(self, private, cwd, config, fault=None):
+        super().__init__(private, cwd, config, fault)
+        self.operator = proof.InstallOperator.load(cwd / "operator.json", SHA)
+        self.remote = cwd / "remote"
+        self.remote.mkdir()
+        self.installer_actions = []
+        self.installation_state = "planned"
+        self.removal_calls = 0
+        for path, content in ((self.operator.bootstrap["path"], b"bootstrap"),
+                              (self.operator.manifest_pin["path"], (cwd / "manifest.json").read_bytes()),
+                              (r"C:\Pinned\host.exe", b"host"), (r"C:\Pinned\broker.exe", b"broker"),
+                              (r"C:\Pinned\daemon.whl", b"wheel"),
+                              (r"C:\ExistingFixture\precious.blend", b"precious!")):
+            local = self.remote_file(path)
+            local.parent.mkdir(parents=True, exist_ok=True)
+            local.write_bytes(content)
+        if fault == "bootstrap-pin":
+            self.remote_file(self.operator.bootstrap["path"]).write_bytes(b"different")
+        if fault == "artifact-pin":
+            self.remote_file(r"C:\Pinned\daemon.whl").write_bytes(b"changed")
+        self.unrelated_task = self.remote / "unrelated-task.xml"
+        self.unrelated_task.write_bytes(b"<task/>")
+        self.receipt = self.remote / "installation" / "receipt.json"
+        self.owned_runtime = self.remote / "installation" / "runtime.bin"
+        self.task = self.remote / "owned-task.xml"
+        if fault == "before-state":
+            self.task.write_bytes(b"unknown existing task")
+        if fault == "cancel-before":
+            self.cancelled.set()
+
+    def remote_file(self, path):
+        return self.remote.joinpath(*proof.PureWindowsPath(path).parts[1:])
+
+    def run(self, args, **kwargs):
+        proof.require(kwargs.get("recovery") or not self.cancelled.is_set(), "interrupted")
+        args = [str(a) for a in args]
+        if args[0] != "ssh":
+            if args[1:2] == ["run"] and self.fault == "no-run-marker":
+                self.calls.append(args)
+                self.call_options.append(kwargs)
+                raise proof.ProofError("command-failed")
+            result = super().run(args, **kwargs)
+            if args[1:2] == ["run"] and self.fault == "bad-evidence":
+                (self.cwd / "artifacts/blender-box" / RUN / "screenshots/viewport.png").write_bytes(b"broken")
+            return result
+        self.sequence += 1
+        self.calls.append(args)
+        self.call_options.append(kwargs)
+        proof.require(len(" ".join(args[args.index("--") + 2:])) < 8000, "windows-shell-command-limit")
+        script = kwargs["stdin"].decode("utf-8")
+        if "$inputData" not in script:
+            observed = observation(self.config)
+            if self.fault == "wrong-host":
+                observed["hostname"] = "WRONG-HOST"
+            return proof.canonical(observed)
+        encoded = proof.re.search(r"FromBase64String\('([^']+)'\)", script).group(1)
+        inputs = json.loads(proof.base64.b64decode(encoded))
+        if "before" in inputs:
+            files = []
+            for pin in inputs["before"]["unrelated_files"]:
+                content = self.remote_file(pin["path"]).read_bytes()
+                files.append(dict(pin, size=len(content), sha256=proof.digest(content)))
+            tasks = [dict(item, xml_sha256=proof.digest(self.unrelated_task.read_bytes()))
+                     for item in inputs["before"]["unrelated_tasks"]]
+            result = {"schema_version": 1, "installation_absent": not self.receipt.exists(),
+                      "task_absent": not self.task.exists(),
+                      "target_absent": not self.remote_file(self.operator.installation["target_out"]).exists(),
+                      "unrelated_files": files, "unrelated_tasks": tasks}
+            if self.fault == "observation-extra":
+                result["surprise"] = "PRIVATE"
+            return proof.canonical(result)
+        if "path" in inputs:
+            raw = self.remote_file(inputs["path"]).read_bytes()
+            if self.fault == "target-fetch":
+                raw = proof.canonical(dict(json.loads(raw), ssh_alias="unexpected-host"))
+            return proof.canonical({"schema_version": 1, "content": proof.base64.b64encode(raw).decode(),
+                                    "sha256": proof.digest(raw)})
+        for pin in inputs["pins"]:
+            content = self.remote_file(pin["path"]).read_bytes()
+            proof.require(len(content) == pin["size"] and proof.digest(content) == pin["sha256"], "command-failed")
+        cli = inputs["args"]
+        operation, apply = cli[1], "--apply" in cli
+        self.installer_actions.append((operation, apply, kwargs.get("recovery", False)))
+        if operation != "inspect":
+            operation_id = cli[cli.index("--operation") + 1]
+            journal = json.loads((self.private / "installer-operations.json").read_bytes())
+            proof.require(journal["installation_id"] == INSTALL_ID
+                          and journal["operations"][operation] == operation_id,
+                          "installer-operation-changed")
+        if operation == "install" and apply:
+            self.receipt.parent.mkdir(exist_ok=True)
+            self.receipt.write_bytes(b"owned receipt")
+            self.owned_runtime.write_bytes(b"owned runtime")
+            self.task.write_bytes(b"owned task")
+            self.installation_state = "installed"
+        if operation == "remove" and apply:
+            self.removal_calls += 1
+            if self.fault == "remove-failed":
+                return proof.canonical({"schema_version": 1, "exit_code": 1,
+                                        "output": '{"schema_version":1,"installation_id":"' + INSTALL_ID + '","state":"partial"}'})
+            self.task.unlink(missing_ok=True)
+            self.owned_runtime.unlink(missing_ok=True)
+            self.receipt.write_bytes(b"removed tombstone")
+            self.installation_state = "removed"
+            if self.fault == "unrelated-changed":
+                self.remote_file(r"C:\ExistingFixture\precious.blend").write_bytes(b"changed!!")
+        target = dict(self.operator.windows)
+        runtime = proof.windows_path(self.operator.installation["state_root"]) / "installations" / INSTALL_ID / "runtime"
+        target.update(host_executable=str(runtime / "blender-box.exe"), session_broker_executable=str(runtime / "blendersessiond.exe"))
+        if self.fault == "target-result":
+            target["ssh_alias"] = "unexpected-host"
+        target = proof.target_document(target)
+        if "--target-out" in cli:
+            path = self.remote_file(cli[cli.index("--target-out") + 1])
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(proof.canonical(target))
+        plan_hash = "4" * 64 if operation == "install" else "5" * 64
+        def candidate(path):
+            return {"path": path, "version": "3.12", "sha256": proof.digest(b"selected"), "identity": "test-volume:selected-id"}
+        python = {"candidate": candidate(self.operator.installation["python"]), "home": r"C:\Python",
+                  "template": candidate(r"C:\Python\Lib\venv\scripts\nt\python.exe"),
+                  "dll": candidate(r"C:\Python\python312.dll"), "venv_source": candidate(r"C:\Python\Lib\venv\__init__.py")}
+        files = [{"path": "runtime", "kind": "directory", "size": 0},
+                 {"path": "runtime/blender-box.exe", "kind": "file", "size": 4, "sha256": proof.digest(b"host")},
+                 {"path": "runtime/blendersessiond.exe", "kind": "file", "size": 6, "sha256": proof.digest(b"broker")}]
+        result = {"schema_version": 1, "installation_id": INSTALL_ID, "state": self.installation_state, "completion": "known",
+                  "inspection": {"owner_sid": self.operator.expected["identity_sid"], "root_identity": "test-volume:file-id",
+                                 "blender_candidates": [candidate(self.operator.installation["blender"])], "python": python},
+                  "plan": {"plan_sha256": plan_hash, "manifest_sha256": self.operator.manifest_sha256, "files": files},
+                  "files": [dict(item, identity="test-volume:" + item["path"]) for item in files] if self.receipt.exists() else [],
+                  "retained": [], "problems": [], "target_publication": {"status": "not-requested"}}
+        if "--target-out" in cli:
+            result["target_publication"] = {"status": "published", "path": self.operator.installation["target_out"]}
+        if "--installation" not in cli:
+            result.pop("installation_id")
+        if apply:
+            root = proof.windows_path(self.operator.installation["state_root"])
+            result["retained"] = [str(root), str(root / ".operation.lock"), str(root / ".launch.lock"), str(root / "runs"),
+                                  str(root / "receipts"), str(root / "installations" / INSTALL_ID / "receipt.json")]
+        if operation != "inspect":
+            result["operation_id"] = cli[cli.index("--operation") + 1]
+        if operation == "install":
+            result["target"] = target
+        if self.fault == "owner-changed":
+            result["inspection"]["owner_sid"] = "S-1-5-21-9999"
+        if self.fault == "identity-changed":
+            result["installation_id"] = "bbxi_" + "9" * 32
+        if self.fault == "unknown-state":
+            result["state"] = "maybe-installed"
+        if self.fault == "unknown-completion":
+            result["completion"] = "unknown"
+        if self.fault == "result-extra":
+            result["surprise"] = "PRIVATE"
+        if self.fault == "python-selection":
+            result["inspection"]["python"]["candidate"]["path"] = r"C:\OtherPython\python.exe"
+        if self.fault == "inventory-extra":
+            result["plan"]["files"][0]["surprise"] = "PRIVATE"
+        if self.fault == "inventory-missing":
+            result["plan"]["files"] = []
+        if self.fault == "plan-changed" and apply and operation == "install":
+            result["plan"]["plan_sha256"] = "9" * 64
+        if self.fault == "cancel-after-install" and apply and operation == "install":
+            self.cancelled.set()
+        if self.fault == "apply-partial" and apply and operation == "install":
+            result["state"] = "partial"
+            result["problems"] = [{"code": "interrupted", "message": "PRIVATE FAILURE"}]
+            return proof.canonical({"schema_version": 1, "exit_code": 1, "output": json.dumps(result)})
+        if self.fault == "publication-failed" and "--target-out" in cli:
+            result["target_publication"].update(status="failed", error="PRIVATE target export failure")
+            return proof.canonical({"schema_version": 1, "exit_code": 1, "output": json.dumps(result)})
+        return proof.canonical({"schema_version": 1, "exit_code": 0, "output": json.dumps(result)})
+
+
+class HostInstallTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+        self.config = installer_config(self.root)
+        authorize_installer(self.config)
+        self.path = self.root / "operator.json"
+        self.request = proof.ProofRequest(SHA, self.root, self.path, self.root / "output", proof="host-install")
+
+    def execute(self, fault=None):
+        self.path.write_bytes(proof.canonical(self.config))
+        self.path.chmod(0o600)
+        def factory(private, cwd):
+            self.commands = FakeInstallCommands(private, cwd, self.config, fault)
+            return self.commands
+        return proof.baseline(self.request, factory)
+
+    def test_complete_branch_installs_uses_generated_target_settles_then_removes(self):
+        result = self.execute()
+        self.assertEqual(result["status"], "pass", result)
+        self.assertEqual(set(result["outcomes"]), set(proof.REQUIRED + proof.INSTALL_REQUIRED))
+        self.assertEqual(self.commands.installer_actions, [("inspect", False, False), ("install", False, False),
+                         ("install", True, False), ("install", True, True), ("remove", False, True),
+                         ("inspect", False, True), ("remove", True, True), ("remove", True, True)])
+        self.assertEqual(result["installation"], {"installation_id": INSTALL_ID, "state": "removed"})
+        operations = json.loads((self.commands.private / "installer-operations.json").read_bytes())["operations"]
+        self.assertNotEqual(operations["install"], operations["remove"])
+        self.assertEqual(self.commands.receipt.read_bytes(), b"removed tombstone")
+        self.assertFalse(self.commands.owned_runtime.exists())
+        self.assertEqual(self.commands.remote_file(r"C:\ExistingFixture\precious.blend").read_bytes(), b"precious!")
+        calls = self.commands.calls
+        last_status = max(i for i, call in enumerate(calls) if call[1:2] == ["status"])
+        first_remove = min(i for i, call in enumerate(calls) if call[0] == "ssh"
+                           and '"remove"' in proof.base64.b64decode(proof.re.search(r"FromBase64String\('([^']+)'\)",
+                               self.commands.call_options[i]["stdin"].decode("utf-8")).group(1)).decode())
+        self.assertLess(last_status, first_remove)
+        selectors = [Path(call[call.index("--target") + 1]).read_bytes() for call in calls if "--target" in call]
+        self.assertTrue(selectors and all(x == selectors[0] for x in selectors))
+        self.assertEqual(json.loads(selectors[0])["windows"]["host_executable"],
+                         str(proof.windows_path(self.config["installation"]["state_root"]) / "installations" / INSTALL_ID / "runtime" / "blender-box.exe"))
+        self.assertFalse(any(call[0] == "scp" or call[1:3] == ["windows", "setup"] for call in calls))
+        public = (self.request.output / "public/outcome.json").read_text()
+        for private in ("TestFixture", "TEST-HOST", "test-user", "ExistingFixture", str(self.root)):
+            self.assertNotIn(private, public)
+        self.assertIn("installer-interruption", result["not_exercised"])
+
+    def test_manifest_hash_matches_actual_go_runtime_manifest_encoding(self):
+        self.path.write_bytes(proof.canonical(self.config))
+        self.path.chmod(0o600)
+        operator = proof.InstallOperator.load(self.path, SHA)
+        # Produced by json.Marshal(windowsinstall.RuntimeManifest), including escaped Python requirement operators.
+        self.assertEqual(operator.manifest_sha256, "9e420a595e051c7d473f22092d0ffbc834f7e51cfcad66c37555f3836c31c498")
+        self.assertNotEqual(operator.manifest_sha256, operator.manifest_pin["sha256"])
+
+    def test_hosted_guard_has_no_config_or_command_access(self):
+        self.request = dataclasses_replace(self.request, execution="hosted", driver_sha="b" * 40)
+        with mock.patch.dict(os.environ, GITHUB_RUN_ATTEMPT="1"), mock.patch.object(proof.Commands, "run") as command:
+            result = proof.baseline(self.request)
+        command.assert_not_called()
+        self.assertEqual(result["outcomes"]["preparation"]["code"], "hosted-recovery-retention-unavailable")
+
+    def test_separate_authorization_never_contacts_host(self):
+        for key in self.config["authorization"]:
+            with self.subTest(key=key):
+                config = copy.deepcopy(self.config)
+                config["authorization"][key] = "wrong"
+                self.path.write_bytes(proof.canonical(config))
+                self.path.chmod(0o600)
+                request = dataclasses_replace(self.request, output=self.root / key)
+                with mock.patch.object(proof.Commands, "run") as command:
+                    result = proof.baseline(request)
+                command.assert_not_called()
+                self.assertEqual(result["outcomes"]["preparation"]["code"], "installer-not-authorized")
+
+    def test_existing_baseline_grant_cannot_authorize_install(self):
+        self.path.write_bytes(proof.canonical(operator_config()))
+        self.path.chmod(0o600)
+        with mock.patch.object(proof.Commands, "run") as command:
+            result = proof.baseline(self.request)
+        command.assert_not_called()
+        self.assertEqual(result["status"], "fail")
+
+    def test_configuration_scope_and_manifest_rejected_offline(self):
+        for fault in ("shared-fixture", "existing-fixture-id", "platform", "bootstrap-inside", "preserved-inside",
+                      "unsafe-path", "manifest-hash", "manifest-role", "manifest-source", "extra-key"):
+            with self.subTest(fault=fault):
+                config = copy.deepcopy(self.config)
+                if fault == "shared-fixture":
+                    config["fixture"]["kind"] = "shared-existing"
+                elif fault == "existing-fixture-id":
+                    config["fixture"]["id"] = "windows-onboarding-prepared-v1"
+                elif fault == "platform":
+                    config["platform"] = "linux"
+                elif fault in ("bootstrap-inside", "preserved-inside"):
+                    path = str(proof.windows_path(config["installation"]["state_root"]) / "installations" / INSTALL_ID / "runtime" / "bad.exe")
+                    if fault == "bootstrap-inside":
+                        config["bootstrap"]["path"] = path
+                    else:
+                        config["before_state"]["unrelated_files"][0]["path"] = path
+                elif fault == "unsafe-path":
+                    config["installation"]["state_root"] = r"C:\safe\..\other"
+                elif fault == "manifest-hash":
+                    config["runtime"]["remote_manifest"]["sha256"] = "0" * 64
+                elif fault in ("manifest-role", "manifest-source"):
+                    manifest = json.loads(Path(config["runtime"]["local_manifest"]).read_bytes())
+                    if fault == "manifest-role":
+                        manifest["artifacts"][0]["role"] = "daemon-wheel"
+                    else:
+                        manifest["artifacts"][0]["provenance"]["source_commit"] = "9" * 40
+                    raw = proof.canonical(manifest)
+                    local = self.root / (fault + ".json")
+                    local.write_bytes(raw)
+                    config["runtime"]["local_manifest"] = str(local)
+                    config["runtime"]["remote_manifest"].update(size=len(raw), sha256=proof.digest(raw))
+                else:
+                    config["surprise"] = "PRIVATE"
+                authorize_installer(config)
+                self.path.write_bytes(proof.canonical(config))
+                self.path.chmod(0o600)
+                with mock.patch.object(proof.Commands, "run") as command:
+                    result = proof.baseline(dataclasses_replace(self.request, output=self.root / fault))
+                command.assert_not_called()
+                self.assertEqual(result["status"], "fail")
+
+    def test_unknown_preconditions_refuse_before_apply(self):
+        for fault in ("wrong-host", "before-state", "observation-extra", "bootstrap-pin", "artifact-pin", "owner-changed",
+                      "identity-changed", "unknown-state", "unknown-completion", "result-extra", "cancel-before",
+                      "python-selection", "inventory-extra", "inventory-missing"):
+            with self.subTest(fault=fault), tempfile.TemporaryDirectory() as temp:
+                self.root = Path(temp)
+                self.config = installer_config(self.root)
+                authorize_installer(self.config)
+                self.path = self.root / "operator.json"
+                self.request = dataclasses_replace(self.request, candidate_checkout=self.root, operator_config=self.path,
+                                                   output=self.root / "output")
+                result = self.execute(fault)
+                self.assertEqual(result["status"], "fail", result)
+                self.assertFalse(any(apply for _, apply, _ in self.commands.installer_actions))
+
+    def test_generated_target_failure_removes_only_owned_install(self):
+        for fault in ("target-result", "target-fetch", "cancel-after-install", "publication-failed"):
+            with self.subTest(fault=fault), tempfile.TemporaryDirectory() as temp:
+                self.root = Path(temp)
+                self.config = installer_config(self.root)
+                authorize_installer(self.config)
+                self.path = self.root / "operator.json"
+                self.request = dataclasses_replace(self.request, candidate_checkout=self.root, operator_config=self.path,
+                                                   output=self.root / "output")
+                result = self.execute(fault)
+                self.assertEqual(result["status"], "fail")
+                self.assertFalse(any(call[1:2] == ["run"] for call in self.commands.calls))
+                self.assertEqual(result["installation"]["state"], "removed", result)
+                self.assertEqual(self.commands.removal_calls, 2)
+
+    def test_unknown_run_or_install_preserves_receipt_and_runtime(self):
+        for fault in ("status-failed", "cleanup-failed", "local-cleanup-unknown", "no-run-marker", "bad-evidence", "apply-partial", "plan-changed"):
+            with self.subTest(fault=fault), tempfile.TemporaryDirectory() as temp:
+                self.root = Path(temp)
+                self.config = installer_config(self.root)
+                authorize_installer(self.config)
+                self.path = self.root / "operator.json"
+                self.request = dataclasses_replace(self.request, candidate_checkout=self.root, operator_config=self.path,
+                                                   output=self.root / "output")
+                result = self.execute(fault)
+                self.assertEqual(result["status"], "fail")
+                self.assertEqual(result["outcomes"]["remove-preview"]["code"], "installer-removal-not-settled")
+                self.assertTrue(self.commands.receipt.exists())
+                self.assertTrue(self.commands.owned_runtime.exists())
+                self.assertEqual(self.commands.removal_calls, 0)
+                self.assertTrue(list((self.request.output / "private").glob("installer-result-*.json")))
+
+    def test_removal_and_preservation_failures_never_pass(self):
+        for fault, stage in (("remove-failed", "remove-apply"), ("unrelated-changed", "fixture-preserved")):
+            with self.subTest(fault=fault), tempfile.TemporaryDirectory() as temp:
+                self.root = Path(temp)
+                self.config = installer_config(self.root)
+                authorize_installer(self.config)
+                self.path = self.root / "operator.json"
+                self.request = dataclasses_replace(self.request, candidate_checkout=self.root, operator_config=self.path,
+                                                   output=self.root / "output")
+                result = self.execute(fault)
+                self.assertEqual(result["status"], "fail")
+                self.assertEqual(result["outcomes"][stage]["status"], "fail")
 
 
 if __name__ == "__main__":

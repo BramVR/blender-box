@@ -14,7 +14,7 @@ This map covers the public slice 0 CLI against an explicitly authorized owned Wi
 
 - Run commands from the repository root.
 - Treat stderr `RUN_ID=` as the pre-work recovery handle and stdout as one versioned result document.
-- Use only public `windows check`, `windows setup`, `run`, `status`, and `stop` entry points.
+- Use public `setup`, `windows check`, legacy `windows setup` preview, `run`, `status`, and `stop` entry points.
 - A Session name routes; only the opaque `session_id` is authority.
 - Never remove remote state manually or stop a process by name, port, path, or guessed PID.
 
@@ -33,7 +33,7 @@ Each feature file uses the public CLI, names its observable result, and lists co
 ## Features
 
 - [Windows inspection](./windows-inspection.md) covers the bounded read-only target check.
-- [Explicit Windows setup](./windows-setup.md) covers dry-run planning and authorized apply.
+- [Owned Windows setup](./windows-setup.md) covers runtime installation, preview, retries, removal, and legacy apply refusal.
 - [Scenario run and evidence](./scenario-run.md) covers payload transfer, interactive launch, bounded drive, Evidence Bundle return, and known cleanup.
 - [Recovery status and exact stop](./recovery-stop.md) covers reconnect observation and idempotent exact cleanup.
 - [Named targets](./named-targets.md) covers local import, platform migration, named selection, and replacement-safe recovery.

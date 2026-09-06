@@ -257,3 +257,78 @@ jobs:
           for name in ("key", "known_hosts", "config", "operator.json"):
               (root / name).unlink(missing_ok=True)
           PY
+
+  host-install:
+    name: host-install
+    needs: [candidate, named-target]
+    if: always() && needs.candidate.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: windows-onboarding-installer
+    env:
+      CANDIDATE_SHA: ${{ needs.candidate.outputs.sha }}
+      DRIVER_SHA: ${{ github.workflow_sha }}
+    steps:
+      - name: Reject reruns before installer authorization
+        env:
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+          REQUEST_REF: ${{ github.ref }}
+        run: |
+          set -euo pipefail
+          [[ "$RUN_ATTEMPT" == 1 && "$REQUEST_REF" == refs/heads/main ]]
+          [[ "$CANDIDATE_SHA" =~ ^[0-9a-f]{40}$ && "$DRIVER_SHA" =~ ^[0-9a-f]{40}$ ]]
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.workflow_sha }}
+          path: driver
+          persist-credentials: false
+      - name: Verify trusted installer driver
+        run: |
+          set -euo pipefail
+          [[ "$(git -C driver rev-parse HEAD)" == "$DRIVER_SHA" ]]
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      - name: Bind separately protected installer configuration
+        env:
+          INSTALL_OPERATOR_CONFIG: ${{ secrets.ONBOARDING_INSTALL_OPERATOR_CONFIG }}
+        run: |
+          set -euo pipefail
+          umask 077
+          python3 - <<'PY'
+          import json, os, pathlib
+          value = json.loads(os.environ["INSTALL_OPERATOR_CONFIG"])
+          if value.get("authorization", {}).get("candidate_sha") != os.environ["CANDIDATE_SHA"]:
+              raise SystemExit("Installer authorization must bind the exact candidate.")
+          root = pathlib.Path(os.environ["RUNNER_TEMP"]) / "installer-authorization"
+          root.mkdir(mode=0o700)
+          (root / "operator.json").write_text(json.dumps(value))
+          PY
+      - name: Run host-install preflight before any host credentials or connection
+        run: |
+          set -euo pipefail
+          python3 driver/scripts/onboarding_proof.py host-install \
+            --candidate "$CANDIDATE_SHA" \
+            --candidate-checkout "$GITHUB_WORKSPACE/candidate" \
+            --operator-config "$RUNNER_TEMP/installer-authorization/operator.json" \
+            --output "$RUNNER_TEMP/onboarding-host-install-proof" \
+            --execution hosted --driver-sha "$DRIVER_SHA"
+      - name: Require a public result
+        if: always()
+        run: test -f "$RUNNER_TEMP/onboarding-host-install-proof/public/outcome.json"
+      - name: Upload allowlisted installer proof
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: windows-onboarding-host-install-${{ needs.candidate.outputs.sha }}
+          if-no-files-found: error
+          retention-days: 14
+          path: ${{ runner.temp }}/onboarding-host-install-proof/public/outcome.json
+      - name: Remove only this job's installer authorization snapshot
+        if: always()
+        run: |
+          python3 - <<'PY'
+          import os, pathlib
+          path = pathlib.Path(os.environ["RUNNER_TEMP"]) / "installer-authorization" / "operator.json"
+          path.unlink(missing_ok=True)
+          PY

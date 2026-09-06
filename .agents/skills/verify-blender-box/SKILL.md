@@ -119,6 +119,8 @@ For repeatable onboarding proof, use `scripts/onboarding_proof.py baseline` or `
 
 Hosted execution currently fails preflight until private original Run authority can survive an ephemeral controller's loss. Keep this blocker visible; public outcome uploads cannot restore the private journal.
 
+For owned runtime installation and removal, read `features/windows-setup.md`. Use `scripts/onboarding_proof.py host-install` only with its separately bound dedicated fixture authorization and verified external bootstrap/bundle. Require the actual `host-install` hosted job; its retention preflight remains blocked. Legacy `windows setup --apply` refuses unowned mutation before SSH.
+
 For focused manual proof, drive `blender-box` directly using the recipe above. Use the public `status`/`stop` commands for host recovery and cleanup. Do not infer fixture ownership from a path or task name.
 
 Read `features/README.md` and the matching feature file before exercising a user path.

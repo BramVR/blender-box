@@ -1,0 +1,84 @@
+package host
+
+import (
+	"context"
+	"encoding/json"
+	"github.com/BramVR/blender-box/internal/orchestrator"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+)
+
+func TestMaintenanceNeverWaitsForLaunchUnderOperation(t *testing.T) {
+	root := t.TempDir()
+	release, err := acquireLaunch(context.Background(), root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer release()
+	called := false
+	err = WithMaintenance(context.Background(), root, func() error { called = true; return nil })
+	if err == nil || !strings.Contains(err.Error(), "launch-in-progress") || called {
+		t.Fatalf("fence=%v called=%v", err, called)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	unlock, err := acquireOperation(ctx, root)
+	if err != nil {
+		t.Fatal("maintenance retained operation while launch held")
+	}
+	unlock()
+}
+func TestMaintenanceReadOnlyRefusesUnresolvedAuthority(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "absent")
+	if err := InspectMaintenance(root); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(root); !os.IsNotExist(err) {
+		t.Fatal("preview created root")
+	}
+	for _, name := range []string{"host-lock.json", "pending-request.json", "runs/unfinished", "receipts/corrupt.json"} {
+		t.Run(name, func(t *testing.T) {
+			root := t.TempDir()
+			path := filepath.Join(root, filepath.FromSlash(name))
+			if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(path, []byte(`{}`), 0600); err != nil {
+				t.Fatal(err)
+			}
+			if err := InspectMaintenance(root); err == nil {
+				t.Fatal("unresolved authority accepted")
+			}
+			if _, err := os.Stat(filepath.Join(root, ".operation.lock")); !os.IsNotExist(err) {
+				t.Fatal("inspection created lock")
+			}
+		})
+	}
+}
+func TestMaintenanceAcceptsOnlyFullySettledReceipt(t *testing.T) {
+	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, "receipts"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	claim := testHostClaim(time.Now(), "M")
+	receipt := orchestrator.RunReceipt{SchemaVersion: 1, Claim: claim, State: orchestrator.StateComplete, Cleanup: orchestrator.CleanupState{SessionStopped: true, PayloadRemoved: true, RunRootRemoved: true, LockReleased: true}, Evidence: orchestrator.EvidenceManifest{SchemaVersion: 1, Files: []orchestrator.EvidenceFile{}}}
+	data, _ := json.Marshal(receipt)
+	path := filepath.Join(root, "receipts", string(claim.RunID)+".json")
+	if err := os.WriteFile(path, data, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := InspectMaintenance(root); err != nil {
+		t.Fatal(err)
+	}
+	receipt.Cleanup.LockReleased = false
+	data, _ = json.Marshal(receipt)
+	if err := os.WriteFile(path, data, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := InspectMaintenance(root); err == nil {
+		t.Fatal("unsettled receipt accepted without Host Lock")
+	}
+}
