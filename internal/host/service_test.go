@@ -992,20 +992,32 @@ func TestRunRootCleanupRejectsDescendantSymlinkWithoutTouchingTarget(t *testing.
 	runRoot := privateTempDir(t)
 	outside := privateTempDir(t)
 	outsideFile := filepath.Join(outside, "preserve.txt")
-	if err := os.WriteFile(filepath.Join(runRoot, "ownership.json"), []byte("owned\n"), 0o600); err != nil {
+	ownership := filepath.Join(runRoot, "ownership.json")
+	if err := os.WriteFile(ownership, []byte("owned\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(outsideFile, []byte("preserve"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Symlink(outside, filepath.Join(runRoot, "evidence")); err != nil {
+	evidence := filepath.Join(runRoot, "evidence")
+	if err := os.Symlink(outside, evidence); err != nil {
 		t.Fatal(err)
 	}
-	if err := removeRunRootPreservingOwnership(runRoot, os.RemoveAll); err == nil || !strings.Contains(err.Error(), "reparse") {
-		t.Fatalf("cleanup error = %v", err)
+	removeAll := func(path string) error {
+		t.Fatalf("cleanup invoked remover for %q", path)
+		return nil
+	}
+	if err := removeRunRootPreservingOwnership(runRoot, removeAll); err == nil {
+		t.Fatal("cleanup unexpectedly succeeded")
+	}
+	if contents, err := os.ReadFile(ownership); err != nil || string(contents) != "owned\n" {
+		t.Fatalf("ownership changed: %q, error = %v", contents, err)
 	}
 	if contents, err := os.ReadFile(outsideFile); err != nil || string(contents) != "preserve" {
 		t.Fatalf("outside target changed: %q, error = %v", contents, err)
+	}
+	if target, err := os.Readlink(evidence); err != nil || target != outside {
+		t.Fatalf("evidence link changed: target = %q, error = %v", target, err)
 	}
 }
 
