@@ -7,7 +7,7 @@ import (
 	"os/exec"
 	"strings"
 
-	"github.com/BramVR/blender-box/internal/target"
+	"github.com/BramVR/blender-box/internal/windowstarget"
 )
 
 const (
@@ -72,7 +72,7 @@ func (Runner) Upload(ctx context.Context, host, source, destination string) erro
 }
 
 func uploadArguments(host, source, destination string) ([]string, error) {
-	if !target.ValidateLegacySCPWindowsPath(destination) {
+	if !windowstarget.ValidateLegacySCPWindowsPath(destination) {
 		return nil, fmt.Errorf("SCP destination uses unsafe remote-shell syntax")
 	}
 	return []string{"-q", "--", source, host + ":" + strings.ReplaceAll(destination, `\`, "/")}, nil

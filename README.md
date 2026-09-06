@@ -30,25 +30,50 @@ Blender Box does not install Blender or `blendersessiond`. It also does not chan
 
 ## Create a target profile
 
-Create `target.json` with the non-secret settings for your host:
+Keep your operator configuration outside the consuming repository. Create a target file with the non-secret settings for your host:
 
 ```json
 {
-  "schema_version": 1,
+  "schema_version": 2,
+  "platform": "windows",
   "ssh_alias": "owned-windows-host",
-  "ssh_user": "HOST\\operator",
-  "work_root": "C:\\BlenderBox",
-  "interactive_user": "HOST\\operator",
-  "task_name": "BlenderBoxHost",
-  "blender_executable": "C:\\Program Files\\Blender Foundation\\Blender\\blender.exe",
-  "session_broker_executable": "C:\\BlenderBox\\bin\\blendersessiond.exe",
-  "host_executable": "C:\\BlenderBox\\bin\\blender-box.exe"
+  "windows": {
+    "ssh_user": "HOST\\operator",
+    "work_root": "C:\\BlenderBox",
+    "interactive_user": "HOST\\operator",
+    "task_name": "BlenderBoxHost",
+    "blender_executable": "C:\\Program Files\\Blender Foundation\\Blender\\blender.exe",
+    "session_broker_executable": "C:\\BlenderBox\\bin\\blendersessiond.exe",
+    "host_executable": "C:\\BlenderBox\\bin\\blender-box.exe"
+  }
 }
 ```
 
 Keep credentials, hostnames, IP addresses, and private network details out of this file. `ssh_alias` selects an entry from your SSH config.
 
 Both `session_broker_executable` and `host_executable` must be inside `work_root` and below a dedicated executable directory. Blender may be installed elsewhere. The work root must be an ASCII drive path without spaces because setup supports legacy SCP.
+
+Windows is the only supported host platform. Existing flat schema version 1 Windows files remain valid input. Unknown platforms and malformed documents fail before a connection or setup change.
+
+## Save a named target
+
+Import the file once, using its path outside the repository:
+
+```sh
+go run ./cmd/blender-box targets import studio --file /path/to/target.json --json
+go run ./cmd/blender-box targets list --json
+go run ./cmd/blender-box targets show studio --json
+```
+
+Import stores a copy. Changing or deleting the source file does not change the saved target. `show` displays the local operator configuration as a schema version 2 target, including profiles imported from version 1.
+
+Names start with a lowercase ASCII letter and contain at most 63 lowercase letters, digits, underscores, or hyphens. Reserved Windows device names are rejected. A collision fails unless you pass `--replace`.
+
+Import, list, show, and forget work offline. Forget removes only the saved local profile. It does not revoke SSH access, stop a Session, or delete Run recovery records.
+
+All five target-taking commands accept either `--target-name NAME` or `--target PATH`. Supply exactly one. There is no default target or automatic fallback. The examples below use `studio`; explicit file selection remains available.
+
+Saved profiles and Run recovery records use the operating system's user configuration directory under `blender-box`. Set `BLENDER_BOX_CONFIG_DIR` to an absolute, operator-owned directory to isolate another configuration. Preserve that directory for later recovery, even when using a custom Evidence Bundle directory.
 
 ## Set up the Windows host
 
@@ -62,7 +87,7 @@ Inspect the setup plan. Plan mode validates the target profile and makes no SSH 
 
 ```sh
 go run ./cmd/blender-box windows setup \
-	--target target.json \
+	--target-name studio \
 	--host-binary /tmp/blender-box.exe \
 	--json
 ```
@@ -71,7 +96,7 @@ Apply the plan only to the owned host that you verified:
 
 ```sh
 go run ./cmd/blender-box windows setup \
-	--target target.json \
+	--target-name studio \
 	--host-binary /tmp/blender-box.exe \
 	--apply \
 	--json
@@ -84,7 +109,7 @@ Setup publishes the hashed host binary, applies the required ACLs, checks the `b
 Run the read-only host check after setup or when the host configuration changes:
 
 ```sh
-go run ./cmd/blender-box windows check --target target.json --json
+go run ./cmd/blender-box windows check --target-name studio --json
 ```
 
 The check verifies the Windows identities, managed paths, ACLs, executables, operation locks, Scheduled Task, and `blendersessiond` capabilities. A failed requirement returns `status: "fail"` without launching Blender.
@@ -120,7 +145,7 @@ Start the Run from the developer checkout:
 
 ```sh
 go run ./cmd/blender-box run \
-	--target target.json \
+	--target-name studio \
 	--payload payload.json \
 	--timeout 20m \
 	--json
@@ -136,7 +161,7 @@ If the client disconnects, use the Run ID to read the durable host receipt:
 
 ```sh
 go run ./cmd/blender-box status \
-	--target target.json \
+	--target-name studio \
 	--run bbx_... \
 	--json
 ```
@@ -145,12 +170,25 @@ Stop an active Run with the same Run ID:
 
 ```sh
 go run ./cmd/blender-box stop \
-	--target target.json \
+	--target-name studio \
 	--run bbx_... \
 	--json
 ```
 
-`stop` recovers the recorded request and Session identities from host state. It never stops Blender by process name, port, executable path, or a guessed PID.
+Before contacting the host, recovery compares the selected target with the original Run's local authority record. Replacing `studio` with different configuration cannot redirect `status`, `stop`, or cleanup. A missing profile or missing recovery record fails locally.
+
+To recover after renaming or forgetting a target, supply an original profile file with `--target`, or import identical configuration under a new name. Equivalent version 1 and version 2 profiles match. Changing an alias, identity, work root, task, or executable path does not match. Keep the original configuration while a Run may still need cleanup.
+
+The local record preserves the original complete request claim and the first accepted Session identity. `stop` compares host receipts with that authority and stops only the exact Session. It never stops Blender by process name, port, executable path, or a guessed PID. Runs created before local recovery records existed require the original client and original target; this client cannot reconstruct missing authority from a selected host's reply.
+
+This check pins declared target configuration. SSH still resolves and authenticates the alias using operator-managed SSH configuration. A target digest does not pin DNS or replace SSH host-key trust. See the [target contract](docs/architecture/target-contract.md) for the boundary and storage rules.
+
+After cleanup, replace or forget a saved profile when needed:
+
+```sh
+go run ./cmd/blender-box targets import studio --file /path/to/replacement.json --replace --json
+go run ./cmd/blender-box targets forget studio --json
+```
 
 ## Evidence Bundle
 
@@ -186,6 +224,7 @@ The gate runs on Linux, macOS, and Windows without contacting a Blender host. Se
 ## Design documents
 
 - [Run boundary](docs/architecture/0001-slice-0-run-boundary.md) defines orchestration, recovery, evidence, and cleanup.
+- [Target contract](docs/architecture/target-contract.md) defines named profiles, platform versions, and original-target recovery.
 - [Windows identity boundary](docs/architecture/0002-slice-0-windows-identity.md) explains why the current slice uses one Windows SID.
 - [`blendersessiond` capability gate](docs/architecture/0003-session-broker-capability-gate.md) defines the daemon contract required before launch.
 - [Research brief](docs/research/blender-box-research.html) records the broader product research and proposed contracts.

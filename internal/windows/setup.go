@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/BramVR/blender-box/internal/target"
+	"github.com/BramVR/blender-box/internal/windowstarget"
 )
 
 const (
@@ -59,8 +60,8 @@ func Setup(ctx context.Context, ssh SetupSSH, selected target.Target, source str
 		return SetupResult{}, fmt.Errorf("create setup transfer identity: %w", err)
 	}
 	transferID := hex.EncodeToString(nonce[:])
-	stagedBinary := fmt.Sprintf(`%s\.setup-%s.bin`, selected.WorkRoot, transferID)
-	stagedScript := fmt.Sprintf(`%s\.setup-%s.ps1`, selected.WorkRoot, transferID)
+	stagedBinary := fmt.Sprintf(`%s\.setup-%s.bin`, selected.Windows().WorkRoot, transferID)
+	stagedScript := fmt.Sprintf(`%s\.setup-%s.ps1`, selected.Windows().WorkRoot, transferID)
 	localBinary, err := writeHostBinarySnapshot(contents)
 	if err != nil {
 		return SetupResult{}, err
@@ -69,28 +70,28 @@ func Setup(ctx context.Context, ssh SetupSSH, selected target.Target, source str
 		_ = os.Remove(localBinary)
 		_ = os.Remove(filepath.Dir(localBinary))
 	}()
-	script := setupScript(selected, result, stagedBinary)
+	script := setupScript(selected.Windows(), result, stagedBinary)
 	localScript, err := writeSetupScript(script)
 	if err != nil {
 		return SetupResult{}, err
 	}
 	defer os.Remove(localScript)
-	prepare := prepareSetupScript(selected)
+	prepare := prepareSetupScript(selected.Windows())
 	if len(prepare) == 0 || len(prepare) > maxSetupScript {
 		return SetupResult{}, fmt.Errorf("setup guard script exceeds its limit")
 	}
-	if _, err := ssh.Run(ctx, selected.SSHAlias, powerShellInputArguments(), []byte(prepare)); err != nil {
+	if _, err := ssh.Run(ctx, selected.SSHAlias(), powerShellInputArguments(), []byte(prepare)); err != nil {
 		return SetupResult{}, fmt.Errorf("prepare Windows setup: %w", err)
 	}
-	if err := ssh.Upload(ctx, selected.SSHAlias, localBinary, stagedBinary); err != nil {
+	if err := ssh.Upload(ctx, selected.SSHAlias(), localBinary, stagedBinary); err != nil {
 		return SetupResult{}, cleanupSetupUploads(ctx, ssh, selected, []string{stagedBinary, stagedScript}, fmt.Errorf("upload Windows host binary: %w", err))
 	}
-	if err := ssh.Upload(ctx, selected.SSHAlias, localScript, stagedScript); err != nil {
+	if err := ssh.Upload(ctx, selected.SSHAlias(), localScript, stagedScript); err != nil {
 		return SetupResult{}, cleanupSetupUploads(ctx, ssh, selected, []string{stagedBinary, stagedScript}, fmt.Errorf("upload Windows setup script: %w", err))
 	}
 	scriptHash := sha256.Sum256([]byte(script))
 	bootstrap := setupScriptBootstrap(stagedScript, int64(len(script)), hex.EncodeToString(scriptHash[:]))
-	output, err := ssh.Run(ctx, selected.SSHAlias, powerShellArguments(bootstrap), nil)
+	output, err := ssh.Run(ctx, selected.SSHAlias(), powerShellArguments(bootstrap), nil)
 	if err != nil {
 		return SetupResult{}, cleanupSetupUploads(ctx, ssh, selected, []string{stagedBinary, stagedScript}, fmt.Errorf("apply Windows setup: %w", err))
 	}
@@ -205,7 +206,7 @@ func cleanupSetupUploads(ctx context.Context, ssh SetupSSH, selected target.Targ
 		literal := powerShellLiteral(path)
 		cleanupScript += fmt.Sprintf("if (Test-Path -LiteralPath %s -PathType Leaf) { Remove-Item -Force -LiteralPath %s }\n", literal, literal)
 	}
-	if _, err := ssh.Run(cleanupCtx, selected.SSHAlias, powerShellArguments(cleanupScript), nil); err != nil {
+	if _, err := ssh.Run(cleanupCtx, selected.SSHAlias(), powerShellArguments(cleanupScript), nil); err != nil {
 		return errors.Join(cause, fmt.Errorf("clean setup uploads: %w", err))
 	}
 	return cause
@@ -345,7 +346,7 @@ function Set-BlenderBoxDirectoryPath([string]$Root, [string]$Directory, [System.
 }
 `
 
-func prepareSetupScript(selected target.Target) string {
+func prepareSetupScript(selected windowstarget.Config) string {
 	header := fmt.Sprintf(`$ErrorActionPreference = 'Stop'
 $root = %s
 $daemonPath = %s
@@ -452,7 +453,7 @@ try {
 }`
 }
 
-func setupScript(selected target.Target, plan SetupResult, stagedBinary string) string {
+func setupScript(selected windowstarget.Config, plan SetupResult, stagedBinary string) string {
 	taskArguments := fmt.Sprintf(`host run-request --state-root "%s"`, selected.WorkRoot)
 	return fmt.Sprintf(`$ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'

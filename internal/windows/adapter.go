@@ -67,6 +67,9 @@ func (adapter *Adapter) Start(ctx context.Context, selected target.Target, reque
 	if err := adapter.invokeJSON(ctx, selected, "start", request, &receipt); err != nil {
 		return orchestrator.RunReceipt{}, err
 	}
+	if err := receipt.ValidateForClaim(request.Claim); err != nil {
+		return orchestrator.RunReceipt{}, fmt.Errorf("start receipt: %w", err)
+	}
 	for receipt.SessionID == "" {
 		if terminalState(receipt.State) {
 			return orchestrator.RunReceipt{}, fmt.Errorf("interactive task ended before returning a Session identity: %s", receipt.Error)
@@ -81,6 +84,9 @@ func (adapter *Adapter) Start(ctx context.Context, selected target.Target, reque
 		var replayed orchestrator.RunReceipt
 		if err := adapter.invokeJSON(ctx, selected, "start", request, &replayed); err != nil {
 			return orchestrator.RunReceipt{}, err
+		}
+		if err := replayed.ValidateForClaim(request.Claim); err != nil {
+			return orchestrator.RunReceipt{}, fmt.Errorf("start receipt: %w", err)
 		}
 		receipt = replayed
 	}
@@ -109,7 +115,7 @@ func (adapter *Adapter) Settle(ctx context.Context, selected target.Target, rece
 	if err := adapter.invokeJSON(ctx, selected, "settle", host.SettleRequest{
 		SchemaVersion:           1,
 		Receipt:                 receipt,
-		SessionBrokerExecutable: selected.SessionBrokerExecutable,
+		SessionBrokerExecutable: selected.Windows().SessionBrokerExecutable,
 		SessionName:             orchestrator.SessionNameForRun(receipt.Claim.RunID),
 	}, &response); err != nil {
 		return orchestrator.CleanupState{}, err
@@ -121,6 +127,9 @@ func (adapter *Adapter) Settle(ctx context.Context, selected target.Target, rece
 }
 
 func (adapter *Adapter) invokeJSON(ctx context.Context, selected target.Target, operation string, input any, output any) error {
+	if err := selected.Validate(); err != nil {
+		return err
+	}
 	if adapter.ssh == nil {
 		return fmt.Errorf("SSH transport is unavailable")
 	}
@@ -130,11 +139,11 @@ func (adapter *Adapter) invokeJSON(ctx context.Context, selected target.Target, 
 	}
 	script := fmt.Sprintf(
 		"$ErrorActionPreference = 'Stop'\n& %s %s %s %s %s\nexit $LASTEXITCODE",
-		powerShellLiteral(selected.HostExecutable),
+		powerShellLiteral(selected.Windows().HostExecutable),
 		powerShellLiteral("host"),
 		powerShellLiteral(operation),
 		powerShellLiteral("--state-root"),
-		powerShellLiteral(selected.WorkRoot),
+		powerShellLiteral(selected.Windows().WorkRoot),
 	)
 	arguments := []string{
 		"powershell.exe",
@@ -144,7 +153,7 @@ func (adapter *Adapter) invokeJSON(ctx context.Context, selected target.Target, 
 		"-EncodedCommand",
 		encodePowerShell(script),
 	}
-	response, err := adapter.ssh.Run(ctx, selected.SSHAlias, arguments, encoded)
+	response, err := adapter.ssh.Run(ctx, selected.SSHAlias(), arguments, encoded)
 	if err != nil {
 		return fmt.Errorf("host %s: %w", operation, err)
 	}

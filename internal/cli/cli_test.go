@@ -248,7 +248,7 @@ func TestRunEvidencePreflightFailureDoesNotAttemptStatusRecovery(t *testing.T) {
 		t.Fatal(err)
 	}
 	host := &noContactHost{}
-	service := orchestrator.New(host)
+	service := orchestrator.New(host, t.TempDir())
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
 	exitCode := Run(context.Background(), []string{
