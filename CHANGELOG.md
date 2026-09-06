@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Fix Windows named-target replacement while readers hold the previous profile open, preserving complete records and permission failures.
 - Add platform-aware named targets with legacy Windows profile support, atomic user-local storage, and recovery bound to original Run authority; prepare named-target proof and block hosted execution until private recovery authority can be retained.
 - Preserve owned command cleanup when onboarding proof receipt or process setup fails.
 - Accept Blender's numeric PNG resolution metadata in onboarding proof and preserve verified cleanup when retained evidence fails validation.
