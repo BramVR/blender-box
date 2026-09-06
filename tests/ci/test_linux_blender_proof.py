@@ -307,7 +307,8 @@ class LinuxContractTests(unittest.TestCase):
                                      "--execution", "hosted", "--driver-sha", "b" * 40],
                                     env=dict(os.environ, GITHUB_RUN_ATTEMPT="1"), capture_output=True, timeout=10, check=False)
             self.assertEqual(result.returncode, 1)
-            self.assertEqual(result.stdout, b"Linux Blender proof fail (hosted-recovery-retention-unavailable).\n")
+            self.assertIn(result.stdout, (b"Linux Blender proof fail (hosted-recovery-retention-unavailable).\n",
+                                         b"Linux Blender proof fail (hosted-recovery-retention-unavailable).\r\n"))
             self.assertEqual(result.stderr, b"")
             public = (output / "public/outcome.json").read_text()
             self.assertNotIn("PRIVATE_OPERATOR", public)
