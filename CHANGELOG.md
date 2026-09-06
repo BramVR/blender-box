@@ -3,6 +3,9 @@
 ## Unreleased
 
 - Fix Windows named-target replacement while readers hold the previous profile open, preserving complete records and permission failures.
+- Recover exact native proof-controller receipts after helper interruption and bind baseline or named-target Windows proof to one-use native worker authority; direct hosted execution remains guarded and native qualification remains required.
+- Add fixed Linux proof-controller helper, worker, private file access, and enrollment artifacts; runtime dispatch requires matching native qualification.
+- Add a local persistent proof-controller bootstrap preview and tested admission/recovery model; native dispatch remains unqualified.
 - Keep Linux daemon, Blender, and Scenario HOME-based caches under each private Run root, with prelaunch validation and exact settlement cleanup while preserving missing-home recovery.
 - Keep Linux daemon and Blender temporary files under each private Run root, with prelaunch validation and exact settlement cleanup.
 - Recover interrupted Linux setup final receipts only when prior pending hashes match both installed artifacts, and reject relative or noncanonical host paths before traversal.
