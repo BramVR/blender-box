@@ -3,6 +3,11 @@
 ## Unreleased
 
 - Fix Windows named-target replacement while readers hold the previous profile open, preserving complete records and permission failures.
+- Keep Linux daemon, Blender, and Scenario HOME-based caches under each private Run root, with prelaunch validation and exact settlement cleanup while preserving missing-home recovery.
+- Keep Linux daemon and Blender temporary files under each private Run root, with prelaunch validation and exact settlement cleanup.
+- Recover interrupted Linux setup final receipts only when prior pending hashes match both installed artifacts, and reject relative or noncanonical host paths before traversal.
+
+- Add Linux targets, read-only readiness, explicit static-user-unit setup, and fenced Scenario execution with reviewed daemon provenance; preserve Windows wire compatibility and keep native Linux and hosted proof as outstanding acceptance requirements.
 - Add platform-aware named targets with legacy Windows profile support, atomic user-local storage, and recovery bound to original Run authority; prepare named-target proof and block hosted execution until private recovery authority can be retained.
 - Preserve owned command cleanup when onboarding proof receipt or process setup fails.
 - Accept Blender's numeric PNG resolution metadata in onboarding proof and preserve verified cleanup when retained evidence fails validation.

@@ -95,7 +95,7 @@ func (r *Runtime) Perform(ctx context.Context, request AuthorizedAction) (uiacti
 	encoded, _ := json.Marshal(data)
 	code := fmt.Sprintf("import base64, json\n_bbx_ui_globals = {'bpy': bpy}\nexec(compile(base64.b64decode('%s'), '<blender-box-ui>', 'exec'), _bbx_ui_globals)\nprint(json.dumps(_bbx_ui_globals['ui_action'](json.loads(base64.b64decode('%s')))))", base64.StdEncoding.EncodeToString([]byte(uiEventsProgram)), base64.StdEncoding.EncodeToString(encoded))
 	params, _ := json.Marshal(map[string]string{"code": code})
-	raw, err := r.Call(ctx, DaemonCall{Executable: request.Executable, Name: request.SessionName, SessionID: request.SessionID, Command: "execute_code", Parameters: params, ReadTimeoutSeconds: uiaction.MaxActionSeconds, Environment: request.Environment})
+	raw, err := r.Call(ctx, DaemonCall{Runtime: DaemonBinding{Executable: request.Executable}, Name: request.SessionName, SessionID: request.SessionID, Command: "execute_code", Parameters: params, ReadTimeoutSeconds: uiaction.MaxActionSeconds, Environment: request.Environment})
 	if err != nil {
 		return receipt, uiFailure("UI action delivery acknowledgement unavailable", errors.Join(err, ctx.Err()))
 	}

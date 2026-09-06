@@ -125,4 +125,6 @@ Hosted execution currently fails preflight until private original Run authority 
 
 For focused manual proof, drive `blender-box` directly using the recipe above. Use the public `status`/`stop` commands for host recovery and cleanup. Do not infer fixture ownership from a path or task name.
 
+For explicitly authorized Linux proof, use `docs/linux-proof.md` and `docs/architecture/0006-linux-host.md`. Linux supports viewport capture and refuses Blender-window, desktop, and UI action requests before host contact. The Windows launch recipe above does not apply to Linux.
+
 Read `README.md` and the matching `docs/architecture/` contract before exercising a user path.

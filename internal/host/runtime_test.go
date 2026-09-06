@@ -104,7 +104,7 @@ func TestRuntimeTypesDaemonReadTimeoutAsDeadlineExceeded(t *testing.T) {
 	}
 
 	_, err := NewRuntime(fake).Call(context.Background(), DaemonCall{
-		Executable:         `C:\Bin\blendersessiond.exe`,
+		Runtime:            DaemonBinding{Executable: `C:\Bin\blendersessiond.exe`},
 		Name:               "blender-box-test",
 		SessionID:          "bss_exact-runtime-session-identity-123456",
 		Command:            "execute_code",
@@ -123,7 +123,7 @@ func TestRuntimeTreatsExactStoppedSessionAbsenceAsIdempotent(t *testing.T) {
 	}
 	runtime := NewRuntime(fake)
 	err := runtime.Stop(context.Background(), DaemonStop{
-		Executable:  `C:\Bin\blendersessiond.exe`,
+		Runtime:     DaemonBinding{Executable: `C:\Bin\blendersessiond.exe`},
 		Name:        "blender-box-test",
 		SessionID:   "bss_exact-runtime-session-identity-123456",
 		Environment: map[string]string{"BLENDERSESSIOND_STATE_DIR": `C:\Run\daemon`},
@@ -139,7 +139,7 @@ func TestRuntimePreservesStartedIdentityAlongsideProcessError(t *testing.T) {
 		outputs: [][]byte{[]byte(`{"schema_version":1,"status":"started","session":{"session_id":"bss_ambiguous-start-session-identity-123456"}}`)},
 		errors:  []error{errors.New("connection closed after response")},
 	}
-	sessionID, err := NewRuntime(fake).Start(context.Background(), DaemonStart{Executable: `C:\Bin\blendersessiond.exe`, Name: "blender-box-test"})
+	sessionID, err := NewRuntime(fake).Start(context.Background(), DaemonStart{Runtime: DaemonBinding{Executable: `C:\Bin\blendersessiond.exe`}, Name: "blender-box-test"})
 	if sessionID != "bss_ambiguous-start-session-identity-123456" || err == nil {
 		t.Fatalf("Start() Session ID = %q, error = %v", sessionID, err)
 	}
@@ -152,9 +152,9 @@ func TestRuntimeRejectsNotFoundWithAReplacementIdentity(t *testing.T) {
 	}
 	runtime := NewRuntime(fake)
 	err := runtime.Stop(context.Background(), DaemonStop{
-		Executable: `C:\Bin\blendersessiond.exe`,
-		Name:       "blender-box-test",
-		SessionID:  "bss_exact-runtime-session-identity-123456",
+		Runtime:   DaemonBinding{Executable: `C:\Bin\blendersessiond.exe`},
+		Name:      "blender-box-test",
+		SessionID: "bss_exact-runtime-session-identity-123456",
 	})
 	if err == nil {
 		t.Fatal("Stop() accepted not-found for a replacement Session identity")
@@ -167,9 +167,9 @@ func TestRuntimeRejectsReadinessFromReplacementSession(t *testing.T) {
 	}}
 	runtime := NewRuntime(fake)
 	err := runtime.WaitReady(context.Background(), DaemonReady{
-		Executable: `C:\Bin\blendersessiond.exe`,
-		Name:       "blender-box-test",
-		SessionID:  "bss_expected-runtime-session-identity-123456",
+		Runtime:   DaemonBinding{Executable: `C:\Bin\blendersessiond.exe`},
+		Name:      "blender-box-test",
+		SessionID: "bss_expected-runtime-session-identity-123456",
 	})
 	if err == nil || !strings.Contains(err.Error(), "different Session identity") {
 		t.Fatalf("WaitReady() error = %v", err)
@@ -183,7 +183,7 @@ func TestRuntimeRecoversExactIdentityFromDaemonStatus(t *testing.T) {
 		[]byte(`{"schema_version":1,"status":"not-found","session":{"name":"blender-box-test"}}`),
 	}}
 	runtime := NewRuntime(fake)
-	request := DaemonRecover{Executable: `C:\Bin\blendersessiond.exe`, Name: "blender-box-test", Environment: map[string]string{"BLENDERSESSIOND_STATE_DIR": `C:\Run\daemon`}}
+	request := DaemonRecover{Runtime: DaemonBinding{Executable: `C:\Bin\blendersessiond.exe`}, Name: "blender-box-test", Environment: map[string]string{"BLENDERSESSIOND_STATE_DIR": `C:\Run\daemon`}}
 	recovered, found, err := runtime.Recover(context.Background(), request)
 	if err != nil || !found || recovered != sessionID {
 		t.Fatalf("recovered = %q, found = %v, error = %v", recovered, found, err)
@@ -229,11 +229,11 @@ func TestRuntimeFencesEveryDaemonOperationAndLaunchesExactTask(t *testing.T) {
 	runtime.readyPollInterval = 0
 	environment := map[string]string{"BLENDERSESSIOND_STATE_DIR": `C:\Run\daemon`}
 
-	if err := runtime.Launch(context.Background(), "BlenderBoxTest"); err != nil {
+	if err := runtime.Launch(context.Background(), LaunchRequest{Request: orchestrator.RunRequest{Claim: orchestrator.LockClaim{TaskName: "BlenderBoxTest"}}}); err != nil {
 		t.Fatal(err)
 	}
 	started, err := runtime.Start(context.Background(), DaemonStart{
-		Executable:        `C:\Bin\blendersessiond.exe`,
+		Runtime:           DaemonBinding{Executable: `C:\Bin\blendersessiond.exe`},
 		Name:              "blender-box-test",
 		BlenderExecutable: `C:\Blender\blender.exe`,
 		Environment:       environment,
@@ -245,7 +245,7 @@ func TestRuntimeFencesEveryDaemonOperationAndLaunchesExactTask(t *testing.T) {
 		t.Fatalf("Session ID = %q", started)
 	}
 	if err := runtime.WaitReady(context.Background(), DaemonReady{
-		Executable:  `C:\Bin\blendersessiond.exe`,
+		Runtime:     DaemonBinding{Executable: `C:\Bin\blendersessiond.exe`},
 		Name:        "blender-box-test",
 		SessionID:   sessionID,
 		Environment: environment,
@@ -254,7 +254,7 @@ func TestRuntimeFencesEveryDaemonOperationAndLaunchesExactTask(t *testing.T) {
 	}
 	parameters := json.RawMessage(`{"code":"pass"}`)
 	if _, err := runtime.Call(context.Background(), DaemonCall{
-		Executable:         `C:\Bin\blendersessiond.exe`,
+		Runtime:            DaemonBinding{Executable: `C:\Bin\blendersessiond.exe`},
 		Name:               "blender-box-test",
 		SessionID:          sessionID,
 		Command:            "execute_code",
@@ -265,7 +265,7 @@ func TestRuntimeFencesEveryDaemonOperationAndLaunchesExactTask(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := runtime.Stop(context.Background(), DaemonStop{
-		Executable:  `C:\Bin\blendersessiond.exe`,
+		Runtime:     DaemonBinding{Executable: `C:\Bin\blendersessiond.exe`},
 		Name:        "blender-box-test",
 		SessionID:   sessionID,
 		Environment: environment,

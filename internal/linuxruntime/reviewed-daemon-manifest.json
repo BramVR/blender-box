@@ -1,0 +1,32 @@
+{
+  "schema_version": 1,
+  "base_commit": "6d40e40376897b09c18fc13c60296d37c5bef2ba",
+  "base_wheel_sha256": "fc14099f78abcee0b7f9793a3df278bdcea2fb1d65d64a537e9b73b06a4843f8",
+  "base_patch_sha256": "73b7b2433dae44e4032a50fa619e9e23addbd597b01043ecf74ffa6c92b87ebc",
+  "fix_patch_sha256": "9a54bfb9bd0b44690acaed32da52cca3f285781cdaa481c5c089576dc7013721",
+  "package_files": {
+    "__init__.py": "9e3b4458229814419848cac53ba573051621733b97e107dcaa62e5ad5488b3df",
+    "__main__.py": "fbd36baf6c3556b44a20a3459a398455537dac8bd42890b77e868f935e8a68f8",
+    "blender_bootstrap.py": "6862d7d2b63779b2c4b64bc63b3ad700b00d334c26ab395ad1046659f84dbf46",
+    "cli.py": "2f0a5ed0758e87b2ac91f24fda8df8772aa3d4e9f42ddbcfc45593f76d2f06b3",
+    "discovery.py": "68aa57cbcd6444584f2a470a97cc5471c09fccdb8204be4dc23da6f7eb454434",
+    "doctor.py": "0c9dce97624c9a10782eedcb159abbc4a7b136cc2edfacf9775a3841b0a57af6",
+    "locking.py": "9c3ffceda70de0abe86cfc1c6e6f18f5f5176652af3665f871b0b2daf16a8705",
+    "mcp_serve.py": "665f95aa2010ff9b3b43354f50b94f24d0ded5a0025826f8f1fccadf0ee37d7c",
+    "posix_launcher.py": "bf9db87b4720d6ec421cab27fb6ad7a838d9a425df169a0d0b1133f0ee882494",
+    "processes.py": "8de6bddf0377e521e06bd3e559e67b5a67469d244dfcc7ae52c141e111a96071",
+    "sessions.py": "8d37bdac796289019562537273f03298f380322e49e7b840d0f26f46d58865a6",
+    "setup_owner.py": "4ece3d9af23a88a8b4c96a1a997c3a29828200d8889cf78208c1bf62bd48644d",
+    "state.py": "aaf08d6d8057818df91002e140dddb1b8928fa9294e72409ae24fa5ecec908a0",
+    "vendor/__init__.py": "0255c880d6444274940b58467189bf0285fbbdcaba9c4ca77a12c68a7bebcf62",
+    "vendor/addon.patch": "a80301297b4a474e9e272136f12a64b213799910da871dfea4f9b110cd534e2f",
+    "vendor/addon.py": "f24268f932350ab346c0084dc54de0a4eb164054ea9b0d1da72e5f6ea727ac35",
+    "windows_job.py": "e15897e3e95a1fd443246d3c30f2bd2eab7bb11fe12f3f2f9de5dee210c9891b",
+    "windows_path_authority.py": "0ea264280b9d3b79fdd3a481743b11d819574ed7ea08d34f5c360ca9b7d2ad50",
+    "windows_setup_process.py": "fa49d43af202b39ba69e4d746e3bc05d47c92e6e11f55e638e45d3f12f9f981c",
+    "wire.py": "387e2b777ee36f5441d1e05dc5b1eba842359d764777456383a26681c2ecda51"
+  },
+  "proof_scope": "PASS_SHARED_POSIX_FAKE",
+  "native_linux_proof": false,
+  "upstream_integrated": false
+}
