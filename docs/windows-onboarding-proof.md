@@ -69,7 +69,9 @@ Dispatch only an explicitly authorized full candidate SHA through the trusted ma
 
 Upload only the runner's public projection and explicitly permitted validated viewport. Never upload private output, raw diagnostics, target documents, credential files, or an arbitrary Evidence Bundle glob. A viewport capture proves the scene, not Blender window chrome or the Windows desktop.
 
-The baseline accepts noninterlaced 8-bit RGB or RGBA PNG captures with valid pixel data and bounded numeric color or resolution metadata. Free-form metadata and unsupported encodings fail validation.
+The baseline accepts noninterlaced 8-bit RGB or RGBA PNG captures with valid pixel data and bounded numeric color or resolution metadata. This includes Blender's resolution-only EXIF layout and zero image origin. Other EXIF layouts, free-form metadata and unsupported encodings fail validation. Original capture bytes and hashes are preserved.
+
+Evidence validation and cleanup are separate outcomes. A rejected or missing retained image fails the proof while preserving cleanup facts established by matching public status and stop receipts.
 
 Inspect the actual hosted job conclusion and returned receipts. A missing, skipped, cancelled, fake-only, or merely local gate leaves the required proof incomplete. Local success does not establish environment policy or hosted reachability.
 

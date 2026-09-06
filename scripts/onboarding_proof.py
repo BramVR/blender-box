@@ -186,7 +186,7 @@ def verify_png(content, width, height):
         data = content[offset + 8: end - 4]
         require(zlib.crc32(kind + data) == struct.unpack(">I", content[end - 4:end])[0],
                 "invalid-png")
-        require(kind in (b"IHDR", b"IDAT", b"IEND", b"sRGB", b"gAMA", b"cHRM", b"pHYs"),
+        require(kind in (b"IHDR", b"IDAT", b"IEND", b"sRGB", b"gAMA", b"cHRM", b"pHYs", b"eXIf", b"oFFs"),
                 "png-metadata-not-allowed")
         if not kinds:
             require(kind == b"IHDR" and size == 13, "invalid-png")
@@ -214,6 +214,15 @@ def verify_png(content, width, height):
             elif kind == b"pHYs":
                 require(size == 9 and data[8] in (0, 1), "invalid-png")
                 require(all(0 < value <= 1_000_000 for value in struct.unpack(">II", data[:8])), "invalid-png")
+            elif kind == b"eXIf":
+                require(size == 54 and data[:8] == struct.pack(">2sHI", b"MM", 42, 24)
+                        and data[24:26] == b"\x00\x02", "png-metadata-not-allowed")
+                require(struct.unpack(">HHIIHHIII", data[26:]) == (282, 5, 1, 8, 283, 5, 1, 16, 0),
+                        "png-metadata-not-allowed")
+                require(all(0 < value <= 1_000_000 for value in struct.unpack(">IIII", data[8:24])),
+                        "png-metadata-not-allowed")
+            elif kind == b"oFFs":
+                require(data == b"\x00" * 9, "png-metadata-not-allowed")
         kinds.add(kind)
         offset = end
     require(b"IEND" in kinds, "invalid-png")
@@ -672,9 +681,6 @@ def baseline(request, commands_factory=Commands):
             try:
                 require(all(record is not None for record in recovered), "recovery-unavailable")
                 cleanup = verify_recovery(run or recovered[0], *recovered)
-                if run is not None and run.get("state") == "complete":
-                    retained = request.candidate_checkout / "artifacts/blender-box" / commands.run_id
-                    verify_baseline(retained, verify_bundle(retained, run))
                 report["cleanup"] = cleanup
                 report["outcomes"]["recovery"] = {"status": "pass", "code": "reconnect-exact-identity"}
                 report["outcomes"]["cleanup"] = {"status": "pass", "code": "settled-and-reobserved"}
@@ -682,6 +688,14 @@ def baseline(request, commands_factory=Commands):
                 code = error.code if isinstance(error, ProofError) else "recovery-unavailable"
                 report["outcomes"]["recovery"] = {"status": "fail", "code": code}
                 report["outcomes"]["cleanup"] = {"status": "fail", "code": "cleanup-unknown"}
+            else:
+                if run is not None and run.get("state") == "complete":
+                    try:
+                        retained = request.candidate_checkout / "artifacts/blender-box" / commands.run_id
+                        verify_baseline(retained, verify_bundle(retained, run))
+                    except Exception as error:
+                        code = error.code if isinstance(error, ProofError) else "retained-evidence-unavailable"
+                        report["outcomes"]["evidence"] = {"status": "fail", "code": code}
         if not commands.group_cleanup_known:
             report["outcomes"]["recovery"] = {"status": "fail", "code": "command-cleanup-unknown"}
             report["outcomes"]["cleanup"] = {"status": "fail", "code": "cleanup-unknown"}

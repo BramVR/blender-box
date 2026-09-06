@@ -20,6 +20,8 @@ sys.modules[spec.name] = proof
 spec.loader.exec_module(proof)
 SHA = "a" * 40
 RUN = "bbx_" + "a" * 32
+EXIF_RESOLUTION = (b"MM\x00*" + struct.pack(">IIIIIH", 24, 72, 1, 72, 1, 2)
+                   + struct.pack(">HHIIHHIII", 282, 5, 1, 8, 283, 5, 1, 16, 0))
 
 
 def png(width=2, height=2, *, raw=None, compressed=None, depth=8, color=2, interlace=0, metadata=None):
@@ -29,7 +31,8 @@ def png(width=2, height=2, *, raw=None, compressed=None, depth=8, color=2, inter
         raw = (b"\x00" + (b"\x00\x80\xff" if color == 2 else b"\x00\x80\xff\xff") * width) * height
     if compressed is None:
         compressed = zlib.compress(raw)
-    ancillary = chunk(*metadata) if metadata else b""
+    metadata = metadata if isinstance(metadata, list) else [metadata] if metadata else []
+    ancillary = b"".join(chunk(*item) for item in metadata)
     return (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, depth, color, 0, 0, interlace))
             + ancillary + chunk(b"IDAT", compressed) + chunk(b"IEND", b""))
 
@@ -155,6 +158,28 @@ class AssertionTests(unittest.TestCase):
                       png(depth=16), png(color=3), png(interlace=1)):
             with self.subTest(size=len(image)), self.assertRaises(proof.ProofError):
                 proof.verify_png(image, 2, 2)
+
+    def test_png_numeric_resolution(self):
+        content = png(metadata=[(b"eXIf", EXIF_RESOLUTION), (b"oFFs", struct.pack(">iiB", 0, 0, 0))])
+        before = proof.digest(content)
+        proof.verify_png(content, 2, 2)
+        self.assertEqual(proof.digest(content), before)
+
+    def test_png_exif_rejects_other_data(self):
+        cases = [EXIF_RESOLUTION + b"PRIVATE_METADATA_SENTINEL", EXIF_RESOLUTION[:-1],
+                 b"II" + EXIF_RESOLUTION[2:], EXIF_RESOLUTION[:4] + struct.pack(">I", 26) + EXIF_RESOLUTION[8:],
+                 EXIF_RESOLUTION[:26] + struct.pack(">H", 315) + EXIF_RESOLUTION[28:],
+                 EXIF_RESOLUTION[:28] + struct.pack(">H", 2) + EXIF_RESOLUTION[30:],
+                 EXIF_RESOLUTION[:30] + struct.pack(">I", 2) + EXIF_RESOLUTION[34:],
+                 EXIF_RESOLUTION[:34] + struct.pack(">I", 16) + EXIF_RESOLUTION[38:],
+                 EXIF_RESOLUTION[:12] + struct.pack(">I", 0) + EXIF_RESOLUTION[16:],
+                 EXIF_RESOLUTION[:50] + struct.pack(">I", 8)]
+        for exif in cases:
+            with self.subTest(exif=exif.hex()), self.assertRaises(proof.ProofError):
+                proof.verify_png(png(metadata=(b"eXIf", exif)), 2, 2)
+        for offsets in (struct.pack(">iiB", 1, 0, 0), struct.pack(">iiB", 0, 0, 1), b"PRIVATE_METADATA_SENTINEL"):
+            with self.subTest(offsets=offsets.hex()), self.assertRaises(proof.ProofError):
+                proof.verify_png(png(metadata=(b"oFFs", offsets)), 2, 2)
 
     def test_png_private_metadata(self):
         for kind in (b"tEXt", b"iTXt", b"zTXt", b"eXIf", b"iCCP"):
@@ -352,8 +377,11 @@ class BaselineTests(unittest.TestCase):
                 self.assertEqual(result["status"], "fail")
                 self.assertEqual(result["run"]["run_id"], RUN)
                 self.assertEqual([c[1] for c in self.commands.calls[-3:]], ["status", "stop", "status"])
-                if fault == "run-failed":
+                if fault in ("run-failed", "removed-evidence"):
                     self.assertEqual(result["cleanup"], {key: True for key in proof.CLEANUP})
+                    self.assertEqual(result["outcomes"]["recovery"]["status"], "pass")
+                    if fault == "removed-evidence":
+                        self.assertEqual(result["outcomes"]["evidence"]["status"], "fail")
                 else:
                     self.assertIsNone(result["cleanup"])
 
