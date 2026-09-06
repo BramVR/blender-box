@@ -84,6 +84,8 @@ class SetupBoundaryTests(unittest.TestCase):
 @unittest.skipIf(bootstrap is None, "POSIX setup application")
 class SetupPublicationTests(unittest.TestCase):
     def setUp(self):
+        previous_umask = os.umask(0o077)
+        self.addCleanup(os.umask, previous_umask)
         self.directory = tempfile.TemporaryDirectory()
         self.addCleanup(self.directory.cleanup)
         self.home = pathlib.Path(self.directory.name).resolve() / "home"
@@ -106,7 +108,7 @@ class SetupPublicationTests(unittest.TestCase):
         binary = b"fake owned host binary"
         self.plan = {"host_destination": str(self.host), "unit_destination": str(self.unit), "unit_name": "blender-box.service", "host_size": len(binary), "host_sha256": bootstrap.digest(binary), "unit_bytes": unit_bytes, "unit_sha256": bootstrap.digest(unit_bytes.encode())}
         self.document = {"config": self.config, "plan": self.plan, "binary": bootstrap.base64.b64encode(binary).decode()}
-        native_uid, native_lstat, native_fstat = os.getuid(), os.lstat, os.fstat
+        native_uid, native_stat, native_lstat, native_fstat = os.getuid(), os.stat, os.lstat, os.fstat
 
         def stat_uid(info):
             values = list(info)
@@ -121,8 +123,10 @@ class SetupPublicationTests(unittest.TestCase):
                 return 'ID=ubuntu\nVERSION_ID="24.04"\n'
             return read_text(path, *args, **kwargs)
 
-        patches = [mock.patch.object(bootstrap.sys, "platform", "linux"), mock.patch.object(bootstrap.sys, "version_info", (3, 12)),
+        patches = [mock.patch.dict(os.environ, {"XDG_CONFIG_HOME": str(self.home / ".config")}),
+                   mock.patch.object(bootstrap.sys, "platform", "linux"), mock.patch.object(bootstrap.sys, "version_info", (3, 12)),
                    mock.patch.object(bootstrap.os, "getuid", return_value=1000), mock.patch.object(bootstrap.os, "geteuid", return_value=1000),
+                   mock.patch.object(bootstrap.os, "stat", side_effect=lambda *a, **kw: stat_uid(native_stat(*a, **kw))),
                    mock.patch.object(bootstrap.os, "lstat", side_effect=lambda *a, **kw: stat_uid(native_lstat(*a, **kw))),
                    mock.patch.object(bootstrap.os, "fstat", side_effect=lambda *a, **kw: stat_uid(native_fstat(*a, **kw))),
                    mock.patch.object(bootstrap.pwd, "getpwuid", return_value=types.SimpleNamespace(pw_dir=str(self.home))),
@@ -149,6 +153,20 @@ class SetupPublicationTests(unittest.TestCase):
     def apply(self):
         with contextlib.redirect_stdout(io.StringIO()):
             bootstrap.apply(self.document)
+
+    def test_conflicting_xdg_config_home_refuses_before_publication(self):
+        with mock.patch.dict(os.environ, {"XDG_CONFIG_HOME": str(self.home / "other-config")}):
+            with self.assertRaisesRegex(RuntimeError, "XDG_CONFIG_HOME conflicts"):
+                self.apply()
+        self.assertEqual(self.commands, [])
+        self.assertEqual(list(self.root.iterdir()), [])
+        self.assertFalse(self.unit.exists())
+
+    def test_publication_with_path_lstat_dispatching_through_stat(self):
+        with mock.patch.object(pathlib.Path, "lstat", new=lambda path: path.stat(follow_symlinks=False)):
+            self.apply()
+        self.assertEqual(bootstrap.digest(self.host.read_bytes()), self.plan["host_sha256"])
+        self.assertEqual(bootstrap.digest(self.unit.read_bytes()), self.plan["unit_sha256"])
 
     def test_active_unit_and_host_lock_refuse_before_publication(self):
         self.active = True
