@@ -15,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/BramVR/blender-box/internal/linuxtarget"
 	"github.com/BramVR/blender-box/internal/payload"
 	"github.com/BramVR/blender-box/internal/safepath"
 	"github.com/BramVR/blender-box/internal/target"
@@ -104,12 +105,19 @@ func (claim LockClaim) Validate() error {
 	return nil
 }
 
+type LinuxLaunch struct {
+	Desktop linuxtarget.Desktop       `json:"desktop"`
+	Runtime linuxtarget.DaemonRuntime `json:"runtime"`
+	UID     uint32                    `json:"uid"`
+}
+
 type RequestBody struct {
 	SchemaVersion           int             `json:"schema_version"`
 	SessionName             string          `json:"session_name"`
 	BlenderExecutable       string          `json:"blender_executable"`
 	SessionBrokerExecutable string          `json:"session_broker_executable"`
 	Payload                 payload.Payload `json:"payload"`
+	Linux                   *LinuxLaunch    `json:"linux,omitempty"`
 }
 
 type RunRequest struct {
@@ -121,7 +129,7 @@ func (request RunRequest) Validate() error {
 	if err := request.Claim.Validate(); err != nil {
 		return err
 	}
-	if request.Body.SchemaVersion != 1 {
+	if request.Body.SchemaVersion != 1 && request.Body.SchemaVersion != 2 {
 		return fmt.Errorf("unsupported request body schema version %d", request.Body.SchemaVersion)
 	}
 	if strings.TrimSpace(request.Body.SessionName) == "" || strings.TrimSpace(request.Body.BlenderExecutable) == "" || strings.TrimSpace(request.Body.SessionBrokerExecutable) == "" {
@@ -130,8 +138,36 @@ func (request RunRequest) Validate() error {
 	if request.Body.SessionName != SessionNameForRun(request.Claim.RunID) {
 		return fmt.Errorf("request Session name does not match Run ID")
 	}
-	if !windowstarget.ValidateWindowsPath(request.Body.BlenderExecutable) || !windowstarget.ValidateWindowsPath(request.Body.SessionBrokerExecutable) {
-		return fmt.Errorf("request body contains an unsafe Windows executable path")
+	if request.Body.SchemaVersion == 1 {
+		if request.Body.Linux != nil {
+			return fmt.Errorf("Windows request cannot carry Linux launch data")
+		}
+		if !windowstarget.ValidateWindowsPath(request.Body.BlenderExecutable) || !windowstarget.ValidateWindowsPath(request.Body.SessionBrokerExecutable) {
+			return fmt.Errorf("request body contains an unsafe Windows executable path")
+		}
+	} else {
+		linux := request.Body.Linux
+		if linux == nil {
+			return fmt.Errorf("Linux request requires launch data")
+		}
+		if err := linux.Runtime.Validate(); err != nil {
+			return err
+		}
+		if err := linux.Desktop.Validate(); err != nil {
+			return err
+		}
+		if err := linuxtarget.ValidateUID(linux.UID); err != nil {
+			return err
+		}
+		if err := linuxtarget.ValidateUnitName(request.Claim.TaskName); err != nil {
+			return err
+		}
+		if err := linuxtarget.ValidateAbsolutePath(request.Body.BlenderExecutable); err != nil {
+			return err
+		}
+		if request.Body.SessionBrokerExecutable != linux.Runtime.PythonExecutable {
+			return fmt.Errorf("Linux daemon executable does not match runtime")
+		}
 	}
 	if err := request.Body.Payload.ValidateManifest(); err != nil {
 		return fmt.Errorf("invalid request payload: %w", err)
@@ -487,6 +523,15 @@ func buildRequest(intent RunIntent) (RunRequest, error) {
 		SessionBrokerExecutable: intent.Target.Windows().SessionBrokerExecutable,
 		Payload:                 intent.Payload,
 	}
+	taskName := intent.Target.Windows().TaskName
+	if intent.Target.Platform() == "linux" {
+		config := intent.Target.Linux()
+		body.SchemaVersion = 2
+		body.BlenderExecutable = config.BlenderExecutable
+		body.SessionBrokerExecutable = config.Daemon.PythonExecutable
+		body.Linux = &LinuxLaunch{Desktop: config.Desktop, Runtime: config.Daemon, UID: config.UID}
+		taskName = config.UnitName
+	}
 	requestHash, err := requestBodyHash(body)
 	if err != nil {
 		return RunRequest{}, err
@@ -498,7 +543,7 @@ func buildRequest(intent RunIntent) (RunRequest, error) {
 		ControllerID:  intent.ControllerID,
 		Deadline:      intent.Deadline.UTC(),
 		RequestHash:   requestHash,
-		TaskName:      intent.Target.Windows().TaskName,
+		TaskName:      taskName,
 	}
 	return RunRequest{Claim: claim, Body: body}, nil
 }

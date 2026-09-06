@@ -18,6 +18,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/BramVR/blender-box/internal/linuxtarget"
 	"github.com/BramVR/blender-box/internal/orchestrator"
 	"github.com/BramVR/blender-box/internal/payload"
 )
@@ -129,8 +130,10 @@ func (daemon *stoppingDaemon) Stop(_ context.Context, request DaemonStop) error 
 	return nil
 }
 
-func (fake *fakeTaskLauncher) Launch(_ context.Context, taskName string) error {
-	fake.taskName = taskName
+func (fake *fakeTaskLauncher) Prepare(context.Context, LaunchRequest) error { return nil }
+
+func (fake *fakeTaskLauncher) Launch(_ context.Context, request LaunchRequest) error {
+	fake.taskName = request.Request.Claim.TaskName
 	fake.launches++
 	return nil
 }
@@ -263,10 +266,10 @@ func (fake *fakeDaemon) Call(_ context.Context, request DaemonCall) (json.RawMes
 }
 
 func TestScenarioReadTimeoutPersistsTimedOutReceipt(t *testing.T) {
-	root := t.TempDir()
+	root := privateTempDir(t)
 	now := time.Now().UTC()
 	daemon := &fakeDaemon{callError: context.DeadlineExceeded}
-	service := NewService(Dependencies{Tasks: &fakeTaskLauncher{}, Daemon: daemon, Now: func() time.Time { return now }})
+	service := NewService(Dependencies{Platform: "windows", Tasks: &fakeTaskLauncher{}, Daemon: daemon, Now: func() time.Time { return now }})
 	request := stageHostTestRun(t, service, root, now, false)
 	if _, err := service.Start(context.Background(), root, request); err != nil {
 		t.Fatal(err)
@@ -281,10 +284,10 @@ func TestScenarioReadTimeoutPersistsTimedOutReceipt(t *testing.T) {
 }
 
 func TestExecutePendingRejectsTerminalReceiptBeforeDaemonStart(t *testing.T) {
-	root := t.TempDir()
+	root := privateTempDir(t)
 	now := time.Now().UTC()
 	daemon := &fakeDaemon{}
-	service := NewService(Dependencies{Tasks: &fakeTaskLauncher{}, Daemon: daemon, Now: func() time.Time { return now }})
+	service := NewService(Dependencies{Platform: "windows", Tasks: &fakeTaskLauncher{}, Daemon: daemon, Now: func() time.Time { return now }})
 	request := stageHostTestRun(t, service, root, now, false)
 	receipt, err := service.Start(context.Background(), root, request)
 	if err != nil {
@@ -305,9 +308,9 @@ func TestExecutePendingRejectsTerminalReceiptBeforeDaemonStart(t *testing.T) {
 }
 
 func TestSettleRemovesExactInterruptedStagingDirectory(t *testing.T) {
-	root := t.TempDir()
+	root := privateTempDir(t)
 	now := time.Now().UTC()
-	service := NewService(Dependencies{Tasks: &fakeTaskLauncher{}, Daemon: &fakeDaemon{}, Now: func() time.Time { return now }})
+	service := NewService(Dependencies{Platform: "windows", Tasks: &fakeTaskLauncher{}, Daemon: &fakeDaemon{}, Now: func() time.Time { return now }})
 	claim := testHostClaim(now, "INTERRUPTEDSTAGE")
 	if err := service.Acquire(context.Background(), root, AcquireRequest{SchemaVersion: 1, Claim: claim}); err != nil {
 		t.Fatal(err)
@@ -337,7 +340,7 @@ func TestSettleRemovesExactInterruptedStagingDirectory(t *testing.T) {
 }
 
 func TestInterruptedStagingWithoutOwnershipIsRecoverableOnlyWhenEmpty(t *testing.T) {
-	root := t.TempDir()
+	root := privateTempDir(t)
 	claim := testHostClaim(time.Now().UTC(), "EMPTYINTERRUPTEDSTAGE")
 	empty := stagingPath(root, claim.RunID)
 	if err := os.MkdirAll(empty, 0o700); err != nil {
@@ -376,7 +379,7 @@ func TestScenarioCallAcceptsMaximumResultAfterOuterJSONEscaping(t *testing.T) {
 		t.Fatalf("envelope size = %d, error = %v", len(envelope), err)
 	}
 	daemon := &fakeDaemon{scenarioResponse: envelope}
-	service := NewService(Dependencies{Daemon: daemon})
+	service := NewService(Dependencies{Platform: "windows", Daemon: daemon})
 	request := orchestrator.RunRequest{
 		Claim: orchestrator.LockClaim{RunID: "bbx_01LARGEESCAPEDRESULTRUN00000"},
 		Body: orchestrator.RequestBody{
@@ -388,17 +391,17 @@ func TestScenarioCallAcceptsMaximumResultAfterOuterJSONEscaping(t *testing.T) {
 			}},
 		},
 	}
-	result, err := service.callScenario(context.Background(), t.TempDir(), request, "bss_large-result-session-identity-123456", nil)
+	result, err := service.callScenario(context.Background(), privateTempDir(t), request, "bss_large-result-session-identity-123456", nil)
 	if err != nil || !bytes.Equal(result, append(scenario, '\n')) {
 		t.Fatalf("callScenario() bytes = %d, error = %v", len(result), err)
 	}
 }
 
 func TestViewportEvidenceRequiresSuccessfulCaptureProvenance(t *testing.T) {
-	root := t.TempDir()
+	root := privateTempDir(t)
 	runID := orchestrator.RunID("bbx_01CAPTURERUNIDENTITY00000000")
 	daemon := &fakeDaemon{captureResponse: json.RawMessage(`{"error":"capture failed"}`)}
-	service := NewService(Dependencies{Daemon: daemon})
+	service := NewService(Dependencies{Platform: "windows", Daemon: daemon})
 	request := orchestrator.RunRequest{
 		Claim: orchestrator.LockClaim{RunID: runID},
 		Body: orchestrator.RequestBody{
@@ -413,10 +416,10 @@ func TestViewportEvidenceRequiresSuccessfulCaptureProvenance(t *testing.T) {
 }
 
 func TestViewportEvidenceRequiresMatchingPNGDimensions(t *testing.T) {
-	root := t.TempDir()
+	root := privateTempDir(t)
 	runID := orchestrator.RunID("bbx_01CAPTUREDIMENSIONRUN0000000")
 	daemon := &fakeDaemon{}
-	service := NewService(Dependencies{Daemon: daemon})
+	service := NewService(Dependencies{Platform: "windows", Daemon: daemon})
 	request := orchestrator.RunRequest{
 		Claim: orchestrator.LockClaim{RunID: runID},
 		Body: orchestrator.RequestBody{
@@ -442,11 +445,11 @@ func (fake *fakeDaemon) Stop(_ context.Context, request DaemonStop) error {
 }
 
 func TestServiceRunsFencedScenarioAndReturnsEvidenceBeforeExactCleanup(t *testing.T) {
-	root := t.TempDir()
+	root := privateTempDir(t)
 	launcher := &fakeTaskLauncher{}
 	daemon := &fakeDaemon{}
 	now := time.Now().UTC()
-	service := NewService(Dependencies{
+	service := NewService(Dependencies{Platform: "windows",
 		Tasks:  launcher,
 		Daemon: daemon,
 		Now:    func() time.Time { return now },
@@ -580,8 +583,8 @@ func TestServiceRunsFencedScenarioAndReturnsEvidenceBeforeExactCleanup(t *testin
 }
 
 func TestStatusRejectsRunIDPathTraversal(t *testing.T) {
-	service := NewService(Dependencies{})
-	_, err := service.Status(t.TempDir(), StatusRequest{
+	service := NewService(Dependencies{Platform: "windows"})
+	_, err := service.Status(privateTempDir(t), StatusRequest{
 		SchemaVersion: 1,
 		RunID:         "bbx_../../host-lock",
 	})
@@ -591,9 +594,9 @@ func TestStatusRejectsRunIDPathTraversal(t *testing.T) {
 }
 
 func TestRepeatedAcquireDoesNotRegressReceiptState(t *testing.T) {
-	root := t.TempDir()
+	root := privateTempDir(t)
 	now := time.Now().UTC()
-	service := NewService(Dependencies{Now: func() time.Time { return now }})
+	service := NewService(Dependencies{Platform: "windows", Now: func() time.Time { return now }})
 	claim := orchestrator.LockClaim{
 		SchemaVersion: 1,
 		RunID:         "bbx_01IDEMPOTENTRUNIDENTITY000000",
@@ -624,9 +627,9 @@ func TestRepeatedAcquireDoesNotRegressReceiptState(t *testing.T) {
 }
 
 func TestSettledRunCleanupRemainsIdempotentWhileNewerRunOwnsHostLock(t *testing.T) {
-	root := t.TempDir()
+	root := privateTempDir(t)
 	now := time.Now().UTC()
-	service := NewService(Dependencies{Now: func() time.Time { return now }})
+	service := NewService(Dependencies{Platform: "windows", Now: func() time.Time { return now }})
 	newerClaim := testHostClaim(now, "NEWERACTIVE")
 	if err := service.Acquire(context.Background(), root, AcquireRequest{SchemaVersion: 1, Claim: newerClaim}); err != nil {
 		t.Fatal(err)
@@ -666,9 +669,9 @@ func TestSettledRunCleanupRemainsIdempotentWhileNewerRunOwnsHostLock(t *testing.
 }
 
 func TestAcquireRejectsAReleasedRunIdentity(t *testing.T) {
-	root := t.TempDir()
+	root := privateTempDir(t)
 	now := time.Now().UTC()
-	service := NewService(Dependencies{Now: func() time.Time { return now }})
+	service := NewService(Dependencies{Platform: "windows", Now: func() time.Time { return now }})
 	claim := orchestrator.LockClaim{
 		SchemaVersion: 1,
 		RunID:         "bbx_01RELEASEDRUNIDENTITY0000000",
@@ -706,9 +709,9 @@ func TestAcquireRejectsAReleasedRunIdentity(t *testing.T) {
 }
 
 func TestAcquireRejectsTerminalReceiptWithAnActiveLock(t *testing.T) {
-	root := t.TempDir()
+	root := privateTempDir(t)
 	now := time.Now().UTC()
-	service := NewService(Dependencies{Now: func() time.Time { return now }})
+	service := NewService(Dependencies{Platform: "windows", Now: func() time.Time { return now }})
 	claim := orchestrator.LockClaim{
 		SchemaVersion: 1,
 		RunID:         "bbx_01FAILEDRUNIDENTITY000000000",
@@ -738,7 +741,7 @@ func TestAcquireRejectsTerminalReceiptWithAnActiveLock(t *testing.T) {
 }
 
 func TestHostOperationLockSurvivesPriorProcessExit(t *testing.T) {
-	root := t.TempDir()
+	root := privateTempDir(t)
 	if err := os.WriteFile(filepath.Join(root, ".operation.lock"), []byte("stale-owner\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -754,7 +757,7 @@ func TestHostOperationLockSurvivesPriorProcessExit(t *testing.T) {
 func TestCanceledOperationContextDoesNotAcquireAFreeLock(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	release, err := acquireOperation(ctx, t.TempDir())
+	release, err := acquireOperation(ctx, privateTempDir(t))
 	if err == nil {
 		release()
 		t.Fatal("acquireOperation() ignored canceled context")
@@ -762,9 +765,9 @@ func TestCanceledOperationContextDoesNotAcquireAFreeLock(t *testing.T) {
 }
 
 func TestSettleReleasesExactPartialAcquireWithoutReceipt(t *testing.T) {
-	root := t.TempDir()
+	root := privateTempDir(t)
 	now := time.Now().UTC()
-	service := NewService(Dependencies{Now: func() time.Time { return now }})
+	service := NewService(Dependencies{Platform: "windows", Now: func() time.Time { return now }})
 	claim := testHostClaim(now, "PARTIALACQUIRE")
 	if err := writeJSONAtomic(lockPath(root), lockRecord{SchemaVersion: 1, Claim: claim}); err != nil {
 		t.Fatal(err)
@@ -782,9 +785,9 @@ func TestSettleReleasesExactPartialAcquireWithoutReceipt(t *testing.T) {
 }
 
 func TestStatusRecoversExactPartialAcquireWithoutReceipt(t *testing.T) {
-	root := t.TempDir()
+	root := privateTempDir(t)
 	now := time.Now().UTC()
-	service := NewService(Dependencies{Now: func() time.Time { return now }})
+	service := NewService(Dependencies{Platform: "windows", Now: func() time.Time { return now }})
 	claim := testHostClaim(now, "PARTIALSTATUS")
 	if err := writeJSONAtomic(lockPath(root), lockRecord{SchemaVersion: 1, Claim: claim}); err != nil {
 		t.Fatal(err)
@@ -800,9 +803,9 @@ func TestStatusRecoversExactPartialAcquireWithoutReceipt(t *testing.T) {
 }
 
 func TestSettleRecoversAfterLockReleaseBeforeFinalReceipt(t *testing.T) {
-	root := t.TempDir()
+	root := privateTempDir(t)
 	now := time.Now().UTC()
-	service := NewService(Dependencies{Now: func() time.Time { return now }})
+	service := NewService(Dependencies{Platform: "windows", Now: func() time.Time { return now }})
 	claim := testHostClaim(now, "FINALRECEIPT")
 	receipt := orchestrator.RunReceipt{
 		SchemaVersion: 1,
@@ -828,10 +831,10 @@ func TestSettleRecoversAfterLockReleaseBeforeFinalReceipt(t *testing.T) {
 }
 
 func TestSettleReconcilesPartialRunRootCleanupWithExactStop(t *testing.T) {
-	root := t.TempDir()
+	root := privateTempDir(t)
 	now := time.Now().UTC()
 	daemon := &fakeDaemon{}
-	service := NewService(Dependencies{Tasks: &fakeTaskLauncher{}, Daemon: daemon, Now: func() time.Time { return now }})
+	service := NewService(Dependencies{Platform: "windows", Tasks: &fakeTaskLauncher{}, Daemon: daemon, Now: func() time.Time { return now }})
 	request := stageHostTestRun(t, service, root, now, false)
 	if _, err := service.Start(context.Background(), root, request); err != nil {
 		t.Fatal(err)
@@ -873,10 +876,10 @@ func TestSettleReconcilesPartialRunRootCleanupWithExactStop(t *testing.T) {
 }
 
 func TestSettleDoesNotTrustKnownCleanupWhilePhysicalAuthorityExists(t *testing.T) {
-	root := t.TempDir()
+	root := privateTempDir(t)
 	now := time.Now().UTC()
 	daemon := &fakeDaemon{}
-	service := NewService(Dependencies{Tasks: &fakeTaskLauncher{}, Daemon: daemon, Now: func() time.Time { return now }})
+	service := NewService(Dependencies{Platform: "windows", Tasks: &fakeTaskLauncher{}, Daemon: daemon, Now: func() time.Time { return now }})
 	request := stageHostTestRun(t, service, root, now, false)
 	if _, err := service.Start(context.Background(), root, request); err != nil {
 		t.Fatal(err)
@@ -920,10 +923,10 @@ func TestTerminalizeSettledReceiptPreservesTerminalStates(t *testing.T) {
 }
 
 func TestSettleRejectsNonEmptyRunRootWithoutOwnership(t *testing.T) {
-	root := t.TempDir()
+	root := privateTempDir(t)
 	now := time.Now().UTC()
 	daemon := &fakeDaemon{}
-	service := NewService(Dependencies{Tasks: &fakeTaskLauncher{}, Daemon: daemon, Now: func() time.Time { return now }})
+	service := NewService(Dependencies{Platform: "windows", Tasks: &fakeTaskLauncher{}, Daemon: daemon, Now: func() time.Time { return now }})
 	request := stageHostTestRun(t, service, root, now, false)
 	if _, err := service.Start(context.Background(), root, request); err != nil {
 		t.Fatal(err)
@@ -958,7 +961,7 @@ func TestSettleRejectsNonEmptyRunRootWithoutOwnership(t *testing.T) {
 }
 
 func TestRunRootCleanupPreservesOwnershipUntilOtherEntriesAreRemoved(t *testing.T) {
-	runRoot := t.TempDir()
+	runRoot := privateTempDir(t)
 	ownership := filepath.Join(runRoot, "ownership.json")
 	if err := os.WriteFile(ownership, []byte("owned\n"), 0o600); err != nil {
 		t.Fatal(err)
@@ -986,8 +989,8 @@ func TestRunRootCleanupRejectsDescendantSymlinkWithoutTouchingTarget(t *testing.
 	if runtime.GOOS == "windows" {
 		t.Skip("unprivileged symlink creation is not portable on Windows")
 	}
-	runRoot := t.TempDir()
-	outside := t.TempDir()
+	runRoot := privateTempDir(t)
+	outside := privateTempDir(t)
 	outsideFile := filepath.Join(outside, "preserve.txt")
 	if err := os.WriteFile(filepath.Join(runRoot, "ownership.json"), []byte("owned\n"), 0o600); err != nil {
 		t.Fatal(err)
@@ -1007,7 +1010,7 @@ func TestRunRootCleanupRejectsDescendantSymlinkWithoutTouchingTarget(t *testing.
 }
 
 func TestRunRootCleanupRetriesTransientSharingViolation(t *testing.T) {
-	runRoot := t.TempDir()
+	runRoot := privateTempDir(t)
 	if err := os.WriteFile(filepath.Join(runRoot, "ownership.json"), []byte("owned\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -1035,9 +1038,9 @@ func TestRunRootCleanupRetriesTransientSharingViolation(t *testing.T) {
 }
 
 func TestStartRehashesPublishedPayloadBeforeLaunch(t *testing.T) {
-	root := t.TempDir()
+	root := privateTempDir(t)
 	now := time.Now().UTC()
-	service := NewService(Dependencies{Tasks: &fakeTaskLauncher{}, Now: func() time.Time { return now }})
+	service := NewService(Dependencies{Platform: "windows", Tasks: &fakeTaskLauncher{}, Now: func() time.Time { return now }})
 	request := stageHostTestRun(t, service, root, now, false)
 	path := filepath.Join(runPath(root, request.Claim.RunID), "payload", "scenario.py")
 	if err := os.WriteFile(path, []byte("tampered after transfer\n"), 0o600); err != nil {
@@ -1050,10 +1053,10 @@ func TestStartRehashesPublishedPayloadBeforeLaunch(t *testing.T) {
 }
 
 func TestExactStopCanInterruptLongScenarioCall(t *testing.T) {
-	root := t.TempDir()
+	root := privateTempDir(t)
 	now := time.Now().UTC()
 	daemon := &stoppingDaemon{started: make(chan struct{}), stopped: make(chan struct{})}
-	service := NewService(Dependencies{Tasks: &fakeTaskLauncher{}, Daemon: daemon, Now: func() time.Time { return now }})
+	service := NewService(Dependencies{Platform: "windows", Tasks: &fakeTaskLauncher{}, Daemon: daemon, Now: func() time.Time { return now }})
 	request := stageHostTestRun(t, service, root, now, false)
 	starting, err := service.Start(context.Background(), root, request)
 	if err != nil {
@@ -1090,10 +1093,10 @@ func TestExactStopCanInterruptLongScenarioCall(t *testing.T) {
 }
 
 func TestExactStopCanInterruptSessionReadiness(t *testing.T) {
-	root := t.TempDir()
+	root := privateTempDir(t)
 	now := time.Now().UTC()
 	daemon := &waitingDaemon{readyStarted: make(chan struct{}), stopped: make(chan struct{})}
-	service := NewService(Dependencies{Tasks: &fakeTaskLauncher{}, Daemon: daemon, Now: func() time.Time { return now }})
+	service := NewService(Dependencies{Platform: "windows", Tasks: &fakeTaskLauncher{}, Daemon: daemon, Now: func() time.Time { return now }})
 	request := stageHostTestRun(t, service, root, now, false)
 	starting, err := service.Start(context.Background(), root, request)
 	if err != nil {
@@ -1121,10 +1124,10 @@ func TestExactStopCanInterruptSessionReadiness(t *testing.T) {
 }
 
 func TestExpiredLaunchDeadlinePersistsTimedOutReceipt(t *testing.T) {
-	root := t.TempDir()
+	root := privateTempDir(t)
 	now := time.Now().UTC().Add(-21 * time.Minute)
 	daemon := &fakeDaemon{}
-	service := NewService(Dependencies{Tasks: &fakeTaskLauncher{}, Daemon: daemon, Now: func() time.Time { return now }})
+	service := NewService(Dependencies{Platform: "windows", Tasks: &fakeTaskLauncher{}, Daemon: daemon, Now: func() time.Time { return now }})
 	request := stageHostTestRun(t, service, root, now, false)
 	if _, err := service.Start(context.Background(), root, request); err != nil {
 		t.Fatal(err)
@@ -1142,10 +1145,10 @@ func TestExpiredLaunchDeadlinePersistsTimedOutReceipt(t *testing.T) {
 }
 
 func TestReadinessDeadlinePersistsTimedOutReceipt(t *testing.T) {
-	root := t.TempDir()
+	root := privateTempDir(t)
 	now := time.Now().UTC()
 	daemon := &deadlineReadyDaemon{}
-	service := NewService(Dependencies{Tasks: &fakeTaskLauncher{}, Daemon: daemon, Now: func() time.Time { return now }})
+	service := NewService(Dependencies{Platform: "windows", Tasks: &fakeTaskLauncher{}, Daemon: daemon, Now: func() time.Time { return now }})
 	request := stageHostTestRun(t, service, root, now, false)
 	if _, err := service.Start(context.Background(), root, request); err != nil {
 		t.Fatal(err)
@@ -1163,10 +1166,10 @@ func TestReadinessDeadlinePersistsTimedOutReceipt(t *testing.T) {
 }
 
 func TestReadinessReconciliationPersistsTimedOutReceipt(t *testing.T) {
-	root := t.TempDir()
+	root := privateTempDir(t)
 	now := time.Now().UTC().Add(-20*time.Minute + 2*time.Second)
 	daemon := &lockedReadyDaemon{root: root}
-	service := NewService(Dependencies{Tasks: &fakeTaskLauncher{}, Daemon: daemon, Now: func() time.Time { return now }})
+	service := NewService(Dependencies{Platform: "windows", Tasks: &fakeTaskLauncher{}, Daemon: daemon, Now: func() time.Time { return now }})
 	request := stageHostTestRun(t, service, root, now, false)
 	if _, err := service.Start(context.Background(), root, request); err != nil {
 		t.Fatal(err)
@@ -1184,10 +1187,10 @@ func TestReadinessReconciliationPersistsTimedOutReceipt(t *testing.T) {
 }
 
 func TestExactStopCanInterruptDaemonStartup(t *testing.T) {
-	root := t.TempDir()
+	root := privateTempDir(t)
 	now := time.Now().UTC()
 	daemon := &launchingDaemon{started: make(chan struct{}), stopped: make(chan struct{})}
-	service := NewService(Dependencies{Tasks: &fakeTaskLauncher{}, Daemon: daemon, Now: func() time.Time { return now }})
+	service := NewService(Dependencies{Platform: "windows", Tasks: &fakeTaskLauncher{}, Daemon: daemon, Now: func() time.Time { return now }})
 	request := stageHostTestRun(t, service, root, now, false)
 	starting, err := service.Start(context.Background(), root, request)
 	if err != nil {
@@ -1217,11 +1220,11 @@ func TestExactStopCanInterruptDaemonStartup(t *testing.T) {
 }
 
 func TestExactStartReplayReturnsDurableReceiptWithoutRelaunch(t *testing.T) {
-	root := t.TempDir()
+	root := privateTempDir(t)
 	now := time.Now().UTC()
 	launcher := &fakeTaskLauncher{}
 	daemon := &fakeDaemon{}
-	service := NewService(Dependencies{Tasks: launcher, Daemon: daemon, Now: func() time.Time { return now }})
+	service := NewService(Dependencies{Platform: "windows", Tasks: launcher, Daemon: daemon, Now: func() time.Time { return now }})
 	request := stageHostTestRun(t, service, root, now, false)
 	if _, err := service.Start(context.Background(), root, request); err != nil {
 		t.Fatal(err)
@@ -1242,10 +1245,10 @@ func TestExactStartReplayReturnsDurableReceiptWithoutRelaunch(t *testing.T) {
 }
 
 func TestSettleReconcilesSessionPublishedOnlyInHostLock(t *testing.T) {
-	root := t.TempDir()
+	root := privateTempDir(t)
 	now := time.Now().UTC()
 	daemon := &fakeDaemon{}
-	service := NewService(Dependencies{Tasks: &fakeTaskLauncher{}, Daemon: daemon, Now: func() time.Time { return now }})
+	service := NewService(Dependencies{Platform: "windows", Tasks: &fakeTaskLauncher{}, Daemon: daemon, Now: func() time.Time { return now }})
 	request := stageHostTestRun(t, service, root, now, false)
 	starting, err := service.Start(context.Background(), root, request)
 	if err != nil {
@@ -1269,10 +1272,10 @@ func TestSettleReconcilesSessionPublishedOnlyInHostLock(t *testing.T) {
 }
 
 func TestSettleRecoversSessionStartedBeforeHostLockPublication(t *testing.T) {
-	root := t.TempDir()
+	root := privateTempDir(t)
 	now := time.Now().UTC()
 	daemon := &fakeDaemon{recovered: "bss_exact-recovered-session-identity-123456"}
-	service := NewService(Dependencies{Tasks: &fakeTaskLauncher{}, Daemon: daemon, Now: func() time.Time { return now }})
+	service := NewService(Dependencies{Platform: "windows", Tasks: &fakeTaskLauncher{}, Daemon: daemon, Now: func() time.Time { return now }})
 	request := stageHostTestRun(t, service, root, now, false)
 	starting, err := service.Start(context.Background(), root, request)
 	if err != nil {
@@ -1289,9 +1292,9 @@ func TestSettleRecoversSessionStartedBeforeHostLockPublication(t *testing.T) {
 }
 
 func TestExecutePendingPublishesIdentityBeforeReleasingLaunchFence(t *testing.T) {
-	root := t.TempDir()
+	root := privateTempDir(t)
 	now := time.Now().UTC()
-	service := NewService(Dependencies{Tasks: &fakeTaskLauncher{}, Daemon: &fakeDaemon{}, Now: func() time.Time { return now }})
+	service := NewService(Dependencies{Platform: "windows", Tasks: &fakeTaskLauncher{}, Daemon: &fakeDaemon{}, Now: func() time.Time { return now }})
 	request := stageHostTestRun(t, service, root, now, false)
 	if _, err := service.Start(context.Background(), root, request); err != nil {
 		t.Fatal(err)
@@ -1319,10 +1322,10 @@ func TestExecutePendingPublishesIdentityBeforeReleasingLaunchFence(t *testing.T)
 }
 
 func TestExecutePendingPreservesValidIdentityReturnedWithStartError(t *testing.T) {
-	root := t.TempDir()
+	root := privateTempDir(t)
 	now := time.Now().UTC()
 	daemon := &ambiguousStartDaemon{sessionID: "bss_ambiguous-start-session-identity-123456"}
-	service := NewService(Dependencies{Tasks: &fakeTaskLauncher{}, Daemon: daemon, Now: func() time.Time { return now }})
+	service := NewService(Dependencies{Platform: "windows", Tasks: &fakeTaskLauncher{}, Daemon: daemon, Now: func() time.Time { return now }})
 	request := stageHostTestRun(t, service, root, now, false)
 	if _, err := service.Start(context.Background(), root, request); err != nil {
 		t.Fatal(err)
@@ -1341,10 +1344,10 @@ func TestExecutePendingPreservesValidIdentityReturnedWithStartError(t *testing.T
 }
 
 func TestSettleAdoptsExactReceiptIdentityAfterPublicationRollbackFails(t *testing.T) {
-	root := t.TempDir()
+	root := privateTempDir(t)
 	now := time.Now().UTC().Add(-20*time.Minute + 2*time.Second)
 	daemon := &publicationFailureDaemon{sessionID: "bss_exact-publication-failure-session-123456"}
-	service := NewService(Dependencies{Tasks: &fakeTaskLauncher{}, Daemon: daemon, Now: func() time.Time { return now }})
+	service := NewService(Dependencies{Platform: "windows", Tasks: &fakeTaskLauncher{}, Daemon: daemon, Now: func() time.Time { return now }})
 	writeCalls := 0
 	service.writeLock = func(path string, lock lockRecord) error {
 		writeCalls++
@@ -1378,10 +1381,10 @@ func TestSettleAdoptsExactReceiptIdentityAfterPublicationRollbackFails(t *testin
 }
 
 func TestSettleRecoversWhenPublicationRollbackStoppedSessionButResponseWasLost(t *testing.T) {
-	root := t.TempDir()
+	root := privateTempDir(t)
 	now := time.Now().UTC().Add(-20*time.Minute + time.Second)
 	daemon := &publicationFailureDaemon{sessionID: "bss_exact-ambiguous-rollback-session-123456", recoveryMissing: true}
-	service := NewService(Dependencies{Tasks: &fakeTaskLauncher{}, Daemon: daemon, Now: func() time.Time { return now }})
+	service := NewService(Dependencies{Platform: "windows", Tasks: &fakeTaskLauncher{}, Daemon: daemon, Now: func() time.Time { return now }})
 	writeCalls := 0
 	service.writeLock = func(path string, lock lockRecord) error {
 		writeCalls++
@@ -1408,10 +1411,10 @@ func TestSettleRecoversWhenPublicationRollbackStoppedSessionButResponseWasLost(t
 }
 
 func TestSettleAnchorsDaemonStopOutsideTamperedStoredRunRequest(t *testing.T) {
-	root := t.TempDir()
+	root := privateTempDir(t)
 	now := time.Now().UTC()
 	daemon := &fakeDaemon{}
-	service := NewService(Dependencies{Tasks: &fakeTaskLauncher{}, Daemon: daemon, Now: func() time.Time { return now }})
+	service := NewService(Dependencies{Platform: "windows", Tasks: &fakeTaskLauncher{}, Daemon: daemon, Now: func() time.Time { return now }})
 	request := stageHostTestRun(t, service, root, now, false)
 	if _, err := service.Start(context.Background(), root, request); err != nil {
 		t.Fatal(err)
@@ -1431,7 +1434,7 @@ func TestSettleAnchorsDaemonStopOutsideTamperedStoredRunRequest(t *testing.T) {
 	if err != nil || !cleanup.Known() {
 		t.Fatalf("Settle() cleanup = %+v, error = %v", cleanup, err)
 	}
-	if len(daemon.stops) != 1 || daemon.stops[0].Executable != `C:\Fake\blendersessiond.exe` || daemon.stops[0].Name != orchestrator.SessionNameForRun(receipt.Claim.RunID) {
+	if len(daemon.stops) != 1 || daemon.stops[0].Runtime.Executable != `C:\Fake\blendersessiond.exe` || daemon.stops[0].Name != orchestrator.SessionNameForRun(receipt.Claim.RunID) {
 		t.Fatalf("tampered daemon path changed stop authority: %+v", daemon.stops)
 	}
 }
@@ -1457,6 +1460,13 @@ func stageHostTestRun(t *testing.T, service *Service, root string, now time.Time
 		BlenderExecutable:       `C:\Fake\blender.exe`,
 		SessionBrokerExecutable: `C:\Fake\blendersessiond.exe`,
 		Payload:                 manifest,
+	}
+	if service.platform == "linux" {
+		claim.TaskName = "blender-box.service"
+		body.SchemaVersion = 2
+		body.BlenderExecutable = "/opt/blender/blender"
+		body.Linux = &orchestrator.LinuxLaunch{UID: 1000, Desktop: linuxtarget.Desktop{Display: ":0", XAuthority: "/run/user/1000/gdm/Xauthority"}, Runtime: linuxtarget.DaemonRuntime{VenvRoot: "/home/operator/daemon", PythonExecutable: "/home/operator/daemon/bin/python3", ProvenanceID: linuxtarget.ProvenanceID}}
+		body.SessionBrokerExecutable = body.Linux.Runtime.PythonExecutable
 	}
 	bodyJSON, err := json.Marshal(body)
 	if err != nil {
@@ -1504,4 +1514,13 @@ func mustRead(t *testing.T, path string) []byte {
 		t.Fatal(err)
 	}
 	return contents
+}
+
+func privateTempDir(t *testing.T) string {
+	t.Helper()
+	root := t.TempDir()
+	if err := os.Chmod(root, 0700); err != nil {
+		t.Fatal(err)
+	}
+	return root
 }

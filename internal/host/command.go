@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"io"
 
+	"github.com/BramVR/blender-box/internal/linuxruntime"
+	"github.com/BramVR/blender-box/internal/linuxtarget"
 	"github.com/BramVR/blender-box/internal/orchestrator"
 )
 
@@ -43,6 +45,30 @@ func (service *Service) Run(ctx context.Context, args []string, stdin io.Reader,
 	}
 
 	switch operation {
+	case "linux-check", "linux-unit-check":
+		if service.platform != "linux" {
+			return fail(fmt.Errorf("Linux check requires Linux host"))
+		}
+		var config linuxtarget.Config
+		if err := decodeJSONReader(stdin, &config, maxScenarioJSON); err != nil {
+			return fail(err)
+		}
+		if err := config.Validate(); err != nil {
+			return fail(err)
+		}
+		if config.WorkRoot != *root {
+			return fail(fmt.Errorf("Linux check root mismatch"))
+		}
+		if operation == "linux-unit-check" {
+			if err := linuxruntime.CheckPlatform(ctx, config.UID, config.Home); err != nil {
+				return fail(err)
+			}
+			if _, err := linuxruntime.CheckUnit(ctx, config.WorkRoot, config.HostExecutable, config.Home, config.UnitName, config.UID, config.Desktop); err != nil {
+				return fail(err)
+			}
+			return write(Acknowledgement{SchemaVersion: 1, Status: "unit-verified"})
+		}
+		return write(linuxruntime.Check(ctx, config))
 	case "acquire":
 		var request AcquireRequest
 		if err := decodeJSONReader(stdin, &request, maxScenarioJSON); err != nil {

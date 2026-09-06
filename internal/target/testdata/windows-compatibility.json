@@ -1,0 +1,18 @@
+{
+  "target": {
+    "schema_version": 2,
+    "platform": "windows",
+    "ssh_alias": "fake-windows",
+    "windows": {
+      "ssh_user": "test-user",
+      "interactive_user": "test-user",
+      "work_root": "C:\\BlenderBoxTest",
+      "task_name": "BlenderBoxTest",
+      "blender_executable": "C:\\Blender\\blender.exe",
+      "session_broker_executable": "C:\\BlenderBoxTest\\bin\\blendersessiond.exe",
+      "host_executable": "C:\\BlenderBoxTest\\bin\\blender-box.exe"
+    }
+  },
+  "canonical_json": "{\"schema_version\":2,\"platform\":\"windows\",\"ssh_alias\":\"fake-windows\",\"windows\":{\"ssh_user\":\"test-user\",\"interactive_user\":\"test-user\",\"work_root\":\"C:\\\\BlenderBoxTest\",\"task_name\":\"BlenderBoxTest\",\"blender_executable\":\"C:\\\\Blender\\\\blender.exe\",\"session_broker_executable\":\"C:\\\\BlenderBoxTest\\\\bin\\\\blendersessiond.exe\",\"host_executable\":\"C:\\\\BlenderBoxTest\\\\bin\\\\blender-box.exe\"}}",
+  "fingerprint": "1564df48163f37c2d873b35d7bdd1c204725236f3b9446ee519743c2fd905f1f"
+}

@@ -1,4 +1,4 @@
-package windows
+package linux
 
 import (
 	"context"
@@ -29,7 +29,13 @@ func (adapter *Adapter) Inspect(ctx context.Context, selected target.Target) err
 		return err
 	}
 	if result.Status != "pass" {
-		return fmt.Errorf("Windows host check failed")
+		var failures []string
+		for _, check := range result.Checks {
+			if check.Required && !check.Passed {
+				failures = append(failures, check.ID+": "+check.Message)
+			}
+		}
+		return fmt.Errorf("Linux host check failed: %s", strings.Join(failures, "; "))
 	}
 	return nil
 }
@@ -72,7 +78,7 @@ func (adapter *Adapter) Start(ctx context.Context, selected target.Target, reque
 	}
 	for receipt.SessionID == "" {
 		if terminalState(receipt.State) {
-			return orchestrator.RunReceipt{}, fmt.Errorf("interactive task ended before returning a Session identity: %s", receipt.Error)
+			return orchestrator.RunReceipt{}, fmt.Errorf("Linux service ended before returning a Session identity: %s", receipt.Error)
 		}
 		timer := time.NewTimer(adapter.pollInterval)
 		select {
@@ -111,11 +117,13 @@ func (adapter *Adapter) Fetch(ctx context.Context, selected target.Target, recei
 }
 
 func (adapter *Adapter) Settle(ctx context.Context, selected target.Target, receipt orchestrator.RunReceipt) (orchestrator.CleanupState, error) {
+	runtime := selected.Linux().Daemon
 	var response host.SettleResponse
 	if err := adapter.invokeJSON(ctx, selected, "settle", host.SettleRequest{
-		SchemaVersion:           1,
+		SchemaVersion:           2,
+		Linux:                   &runtime,
 		Receipt:                 receipt,
-		SessionBrokerExecutable: selected.Windows().SessionBrokerExecutable,
+		SessionBrokerExecutable: selected.Linux().Daemon.PythonExecutable,
 		SessionName:             orchestrator.SessionNameForRun(receipt.Claim.RunID),
 	}, &response); err != nil {
 		return orchestrator.CleanupState{}, err
@@ -127,8 +135,8 @@ func (adapter *Adapter) Settle(ctx context.Context, selected target.Target, rece
 }
 
 func (adapter *Adapter) invokeJSON(ctx context.Context, selected target.Target, operation string, input any, output any) error {
-	if selected.Platform() != "windows" {
-		return fmt.Errorf("Windows command requires windows platform")
+	if selected.Platform() != "linux" {
+		return fmt.Errorf("Linux command requires linux platform")
 	}
 	if err := selected.Validate(); err != nil {
 		return err
@@ -140,22 +148,7 @@ func (adapter *Adapter) invokeJSON(ctx context.Context, selected target.Target, 
 	if err != nil {
 		return fmt.Errorf("encode host %s request: %w", operation, err)
 	}
-	script := fmt.Sprintf(
-		"$ErrorActionPreference = 'Stop'\n& %s %s %s %s %s\nexit $LASTEXITCODE",
-		powerShellLiteral(selected.Windows().HostExecutable),
-		powerShellLiteral("host"),
-		powerShellLiteral(operation),
-		powerShellLiteral("--state-root"),
-		powerShellLiteral(selected.Windows().WorkRoot),
-	)
-	arguments := []string{
-		"powershell.exe",
-		"-NoLogo",
-		"-NoProfile",
-		"-NonInteractive",
-		"-EncodedCommand",
-		encodePowerShell(script),
-	}
+	arguments := []string{Quote(selected.Linux().HostExecutable) + " host " + Quote(operation) + " --state-root " + Quote(selected.Linux().WorkRoot)}
 	response, err := adapter.ssh.Run(ctx, selected.SSHAlias(), arguments, encoded)
 	if err != nil {
 		return fmt.Errorf("host %s: %w", operation, err)
@@ -190,3 +183,5 @@ func terminalState(state orchestrator.RunState) bool {
 		return false
 	}
 }
+
+func Quote(value string) string { return "'" + strings.ReplaceAll(value, "'", "'\"'\"'") + "'" }

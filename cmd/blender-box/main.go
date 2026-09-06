@@ -7,6 +7,7 @@ import (
 
 	"github.com/BramVR/blender-box/internal/cli"
 	"github.com/BramVR/blender-box/internal/host"
+	linuxhost "github.com/BramVR/blender-box/internal/linux"
 	"github.com/BramVR/blender-box/internal/orchestrator"
 	sshtransport "github.com/BramVR/blender-box/internal/ssh"
 	"github.com/BramVR/blender-box/internal/target"
@@ -27,9 +28,14 @@ func main() {
 		os.Stdout,
 		os.Stderr,
 		cli.Dependencies{
-			SSH:    sshRunner,
-			Runner: orchestrator.New(windows.NewAdapter(sshRunner), configRoot),
-			Host:   hostService,
+			SSH: sshRunner,
+			RunnerFor: func(selected target.Target) cli.RunService {
+				if selected.Platform() == "linux" {
+					return orchestrator.New(linuxhost.NewAdapter(sshRunner), configRoot)
+				}
+				return orchestrator.New(windows.NewAdapter(sshRunner), configRoot)
+			},
+			Host: hostService,
 		},
 	))
 }
