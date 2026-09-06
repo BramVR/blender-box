@@ -12,7 +12,7 @@ import (
 )
 
 func TestMaintenanceNeverWaitsForLaunchUnderOperation(t *testing.T) {
-	root := t.TempDir()
+	root := privateTempDir(t)
 	release, err := acquireLaunch(context.Background(), root)
 	if err != nil {
 		t.Fatal(err)
@@ -41,7 +41,7 @@ func TestMaintenanceReadOnlyRefusesUnresolvedAuthority(t *testing.T) {
 	}
 	for _, name := range []string{"host-lock.json", "pending-request.json", "runs/unfinished", "receipts/corrupt.json"} {
 		t.Run(name, func(t *testing.T) {
-			root := t.TempDir()
+			root := privateTempDir(t)
 			path := filepath.Join(root, filepath.FromSlash(name))
 			if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
 				t.Fatal(err)
@@ -59,7 +59,7 @@ func TestMaintenanceReadOnlyRefusesUnresolvedAuthority(t *testing.T) {
 	}
 }
 func TestMaintenanceAcceptsOnlyFullySettledReceipt(t *testing.T) {
-	root := t.TempDir()
+	root := privateTempDir(t)
 	if err := os.Mkdir(filepath.Join(root, "receipts"), 0700); err != nil {
 		t.Fatal(err)
 	}
@@ -84,10 +84,7 @@ func TestMaintenanceAcceptsOnlyFullySettledReceipt(t *testing.T) {
 }
 
 func TestPendingSetupFencesRunAdmissionAndUnrelatedMaintenance(t *testing.T) {
-	root := t.TempDir()
-	if err := os.Chmod(root, 0700); err != nil {
-		t.Fatal(err)
-	}
+	root := privateTempDir(t)
 	claim := SetupClaim{SchemaVersion: 1, InstallationID: "bbxi_" + strings.Repeat("a", 32), OperationID: "bbxo_" + strings.Repeat("b", 32), ExecutionToken: "bbxe_" + strings.Repeat("c", 32), RequestSHA256: strings.Repeat("d", 64), RootIdentity: "fake-root", OwnerSID: "fake-owner", Deadline: time.Now().Add(time.Minute).UTC()}
 	if err := WithMaintenance(context.Background(), root, func() error { return PublishSetupClaim(root, claim) }); err != nil {
 		t.Fatal(err)
