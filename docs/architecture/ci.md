@@ -33,7 +33,7 @@ The GitHub workflows call these same commands. A language implementation extends
 
 The repository gate's public interface is three commands. Runner setup and language detection stay behind it. CI contract tests protect the parts GitHub cannot validate for us: triggers, permissions, timeouts, stable job names, supported operating systems, pinned actions, and the secret scan.
 
-Real Windows Blender proof does not belong in these workflows. The project-local `verify-blender-box` skill drives it only against an explicitly authorized owned host. Proof records the exact commit, Run ID, Session identity, evidence, and cleanup result without publishing private host details.
+Real Windows Blender proof stays outside the ordinary CI and Security workflows. The separate `Windows onboarding proof` workflow calls the repository's baseline runner against an explicitly authorized owned host. The project-local `verify-blender-box` skill documents the same public CLI path. Proof records the candidate and driver revisions, binary hashes, Run and Session identities, evidence, and cleanup without publishing private host details.
 
 ## Synthesis decision
 
@@ -54,9 +54,23 @@ A custom composite action would reuse steps across jobs, but it adds an action m
 ## Open questions and risks
 
 - What exact files and command define a release candidate once the CLI has a stable artifact contract?
-- Which protected GitHub environment should own credentials for opt-in live Windows proof?
+- Has the operator configured and verified the protected proof environment, restricted host access, and dedicated fixture restoration?
 - Should macOS remain an every-commit gate once test duration becomes material, or become path-gated?
 
 ## Live-proof boundary
 
-Hosted pull-request jobs never receive host credentials or network access to an owned Windows machine. A maintainer runs the verification skill locally after checking the exact hostname and operator state. The live proof may apply only the declared Blender Box setup and must clean only the exact Run and Session it created.
+Hosted pull-request jobs never receive host credentials or network access to an owned Windows machine. The live workflow runs on a fresh GitHub-hosted controller. Its trusted main-branch driver validates an immutable candidate before the credential-bearing job. The protected environment must restrict access to main, and private SSH and Tailnet credentials stay out of repository-wide secrets. Runner labels on a shared self-hosted machine are not an authorization boundary.
+
+`scripts/onboarding_proof.py` supplies one local and hosted execution path. It builds the candidate's client and Windows executable, verifies the expected physical host and Windows identity before mutation, checks readiness, executes the baseline Scenario, and validates the returned bundle. Fresh `status`, exact `stop`, and a second `status` invocation must agree on the complete exposed Run authority. The public CLI remains responsible for acquiring and releasing the Host Lock and settling its exact Session.
+
+The baseline requires preparation, readiness, Scenario, evidence, recovery, and cleanup outcomes. Missing work fails the gate. Existing SSH connectivity does not count as product pairing. Generic evidence and recovery assertions are reusable by later `named-target`, `host-install`, and `pair-and-run` jobs; the baseline cube assertions remain separate. The first live target is Windows; adding this runner does not establish live coverage.
+
+Setup authorization names the exact candidate, target digest, prior installed binary hash, and the existing `windows setup` scope, including task registration and ACL changes. A passing read-only check does not authorize replacing an installed executable. Baseline proof does not reset installations or operator state. Dedicated prepared and unpaired restoration needs its own exact resource ownership and authorized mechanism before dependent work can run without recurring maintainer steps.
+
+Raw configuration, check details, stdout, stderr, and recovery journals remain private. Public output contains a fixed projection of validated facts and an explicitly permitted viewport capture. A viewport proves scene appearance; it does not prove Blender window chrome or the Windows desktop. Failure and unknown cleanup remain visible, and a later successful recovery does not turn a failed Scenario into a passing proof.
+
+The workflow file and local tests cannot prove GitHub environment settings, network policy, dedicated fixture restoration, or a live desktop. A missing, cancelled, skipped, fake-only, or merely local result does not satisfy the required hosted `baseline` job. See [Run the Windows onboarding baseline](../windows-onboarding-proof.md) for configuration and the remaining enrollment boundary.
+
+## Proof design decision
+
+One standard-library Python runner keeps the local and hosted interfaces identical without adding a product command or changing Run architecture. Independent design comparison selected this shape over a new Go proof package with a fixture leasing protocol. The explicit required-outcome set and separate generic assertions came from that alternative. Fixture leasing was rejected because no concrete restoration mechanism exists to justify another protocol.
