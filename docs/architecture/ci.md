@@ -74,3 +74,11 @@ The workflow file and local tests cannot prove GitHub environment settings, netw
 ## Proof design decision
 
 One standard-library Python runner keeps the local and hosted interfaces identical without adding a product command or changing Run architecture. Independent design comparison selected this shape over a new Go proof package with a fixture leasing protocol. The explicit required-outcome set and separate generic assertions came from that alternative. Fixture leasing was rejected because no concrete restoration mechanism exists to justify another protocol.
+
+## Persistent controller milestone
+
+Fresh GitHub-hosted execution was a workflow choice. It does not retain the original target and Run journal after the initiating job disappears. The next design uses a restricted dispatcher on one owned Linux controller with persistent private storage. GitHub supplies an immutable proof request; a separate runner identity executes reviewed candidate code. Controller admission remains closed until the exact local task is gone and Windows cleanup is known.
+
+`scripts/proof_controller.py` provides a render-only bootstrap preview and a locally tested dispatcher/recovery model. Production dispatch remains unqualified. No native service adapter, installation, credentials, or hosted qualification is supplied by this milestone. The existing workflow and product journal remain unchanged. See [Preview the persistent proof controller](../proof-controller.md) for the executable preview and required native proof.
+
+One immutable request, one atomic execution record, and one fixture lock keep this boundary small. Independent design comparison rejected an append-only event journal and public fake-backend switches. Complete original target and SSH trust retention, fresh recovery logs, and fixed public response fields remain part of the controller contract.

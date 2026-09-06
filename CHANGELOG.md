@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Add a local persistent proof-controller bootstrap preview and tested admission/recovery model; native dispatch remains unqualified.
 - Preserve owned command cleanup when onboarding proof receipt or process setup fails.
 - Accept Blender's numeric PNG resolution metadata in onboarding proof and preserve verified cleanup when retained evidence fails validation.
 - Add reusable Windows onboarding baseline proof with exact-candidate authorization, shared evidence and recovery assertions, and a separate protected live workflow.
