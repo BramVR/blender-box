@@ -18,12 +18,14 @@ The original flat target document also mixed common selection with Windows ident
 ```sh
 blender-box targets import studio --file /path/to/target.json --json
 blender-box windows check --target-name studio --json
+blender-box plan --target-name studio --payload payload.json --json
+blender-box doctor --target-name studio --payload payload.json --json
 blender-box run --target-name studio --payload payload.json --json
 blender-box status --target-name studio --run bbx_... --json
 blender-box stop --target /path/to/target.json --run bbx_... --json
 ```
 
-Every existing target-taking command requires exactly one nonempty `--target PATH` or `--target-name NAME`. Supplying both flags is an error even if one value is empty. There is no ambient default or interpretation of a missing file as a name.
+`windows setup`, `windows check`, `plan`, `doctor`, `run`, `status`, and `stop` each require exactly one nonempty `--target PATH` or `--target-name NAME`. Supplying both flags is an error even if one value is empty. There is no ambient default or interpretation of a missing file as a name.
 
 ## Decision
 
@@ -41,9 +43,11 @@ Before the first host inspection, the client publishes an immutable local record
 
 Recovery validates the supplied configuration against that record before any adapter call. A different target fails even when its task name and Run ID match. A missing or corrupt record reports insufficient recovery authority. The client does not adopt a claim returned by whichever host the current profile happens to select.
 
-After contact, every accepted receipt must match the complete original claim. The first valid nonempty Session identity is pinned separately. Later observations and cleanup require that exact identity. A prelaunch record cannot know an unpublished Session; the existing host and daemon fences still own startup reconciliation.
+After contact, every accepted receipt must match the complete original claim. The first valid nonempty Session identity is pinned separately. Later observations and cleanup require that exact identity. A prelaunch record cannot know an unpublished Session; the existing host and daemon fences still own startup reconciliation. Once a running controller knows that Session, a missing pin fails before another observation, evidence transfer, or cleanup. A fresh process holding only the original prelaunch claim cannot distinguish a never-published pin from a deleted historical pin; its first recovery still validates the complete original host claim before pinning the returned Session. Preserve both local records.
 
-Session pins are immutable. Concurrent identical observations agree; conflicting observations fail. Pin publication failure cannot authorize blank-Session fallback cleanup. Deferred settlement and failed-Run JSON recovery use the same original authority checks as explicit status and stop.
+Session pins are immutable. Concurrent identical observations agree; conflicting observations fail. Pin publication failure cannot authorize blank-Session fallback cleanup. Deferred settlement and failed-Run JSON recovery use the same original authority checks as explicit status and stop. Capture and UI failure recovery preserve authority errors through the same path. Evidence transfer and publication revalidate the original claim and Session pin; lost authority cannot publish a successful bundle or trigger fallback cleanup.
+
+A fully decoded receipt with the original claim can reveal a Session even when its remaining fields are invalid. The controller retains that identity to reject blank or conflicting fallback; the malformed receipt cannot publish a pin. Cleanup still requires an existing matching pin. Host observation and settlement errors cannot erase previously retained Session authority.
 
 Equivalent profile contents under another name or in a version 1 file can recover the Run. Forgetting every original copy can make recovery unavailable. Runs created before these local records existed require the original client and original profile. There is no automatic adoption or bypass switch.
 

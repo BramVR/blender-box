@@ -71,7 +71,7 @@ Setup authorization names the exact candidate, target digest, prior installed bi
 
 Raw configuration, check details, stdout, stderr, and recovery journals remain private. Public output contains a fixed projection of validated facts and an explicitly permitted viewport capture. A viewport proves scene appearance; it does not prove Blender window chrome or the Windows desktop. Failure and unknown cleanup remain visible, and a later successful recovery does not turn a failed Scenario into a passing proof.
 
-The workflow file and local tests cannot prove GitHub environment settings, network policy, dedicated fixture restoration, or a live desktop. A missing, cancelled, skipped, fake-only, or merely local result does not satisfy either required hosted job. See [Run the Windows onboarding baseline](../windows-onboarding-proof.md) for configuration and the remaining enrollment boundary.
+The workflow file and local tests cannot prove GitHub environment settings, network policy, dedicated fixture restoration, or a live desktop. A missing, cancelled, skipped, fake-only, or merely local result does not satisfy either required hosted job. See [Run Windows onboarding proof](../windows-onboarding-proof.md) for configuration and the remaining enrollment boundary.
 
 ## Proof design decision
 

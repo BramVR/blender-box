@@ -20,6 +20,8 @@ sys.modules[spec.name] = proof
 spec.loader.exec_module(proof)
 SHA = "a" * 40
 RUN = "bbx_" + "a" * 32
+EXIF_RESOLUTION = (b"MM\x00*" + struct.pack(">IIIIIH", 24, 72, 1, 72, 1, 2)
+                   + struct.pack(">HHIIHHIII", 282, 5, 1, 8, 283, 5, 1, 16, 0))
 
 
 def png(width=2, height=2, *, raw=None, compressed=None, depth=8, color=2, interlace=0, metadata=None):
@@ -29,7 +31,8 @@ def png(width=2, height=2, *, raw=None, compressed=None, depth=8, color=2, inter
         raw = (b"\x00" + (b"\x00\x80\xff" if color == 2 else b"\x00\x80\xff\xff") * width) * height
     if compressed is None:
         compressed = zlib.compress(raw)
-    ancillary = chunk(*metadata) if metadata else b""
+    metadata = metadata if isinstance(metadata, list) else [metadata] if metadata else []
+    ancillary = b"".join(chunk(*item) for item in metadata)
     return (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, depth, color, 0, 0, interlace))
             + ancillary + chunk(b"IDAT", compressed) + chunk(b"IEND", b""))
 
@@ -156,6 +159,30 @@ class AssertionTests(unittest.TestCase):
             with self.subTest(size=len(image)), self.assertRaises(proof.ProofError):
                 proof.verify_png(image, 2, 2)
 
+    def test_png_numeric_resolution(self):
+        content = png(metadata=[(b"eXIf", EXIF_RESOLUTION), (b"oFFs", struct.pack(">iiB", 0, 0, 0))])
+        before = proof.digest(content)
+        proof.verify_png(content, 2, 2)
+        self.assertEqual(proof.digest(content), before)
+
+
+    def test_png_exif_rejects_other_data(self):
+        cases = [EXIF_RESOLUTION + b"PRIVATE_METADATA_SENTINEL", EXIF_RESOLUTION[:-1],
+                 b"II" + EXIF_RESOLUTION[2:], EXIF_RESOLUTION[:4] + struct.pack(">I", 26) + EXIF_RESOLUTION[8:],
+                 EXIF_RESOLUTION[:26] + struct.pack(">H", 315) + EXIF_RESOLUTION[28:],
+                 EXIF_RESOLUTION[:28] + struct.pack(">H", 2) + EXIF_RESOLUTION[30:],
+                 EXIF_RESOLUTION[:30] + struct.pack(">I", 2) + EXIF_RESOLUTION[34:],
+                 EXIF_RESOLUTION[:34] + struct.pack(">I", 16) + EXIF_RESOLUTION[38:],
+                 EXIF_RESOLUTION[:12] + struct.pack(">I", 0) + EXIF_RESOLUTION[16:],
+                 EXIF_RESOLUTION[:50] + struct.pack(">I", 8)]
+        for exif in cases:
+            with self.subTest(exif=exif.hex()), self.assertRaises(proof.ProofError):
+                proof.verify_png(png(metadata=(b"eXIf", exif)), 2, 2)
+        for offsets in (struct.pack(">iiB", 1, 0, 0), struct.pack(">iiB", 0, 0, 1), b"PRIVATE_METADATA_SENTINEL"):
+            with self.subTest(offsets=offsets.hex()), self.assertRaises(proof.ProofError):
+                proof.verify_png(png(metadata=(b"oFFs", offsets)), 2, 2)
+
+
     def test_png_private_metadata(self):
         for kind in (b"tEXt", b"iTXt", b"zTXt", b"eXIf", b"iCCP"):
             content = png(metadata=(kind, b"PRIVATE_METADATA_SENTINEL"))
@@ -213,6 +240,7 @@ class FakeCommands(proof.Commands):
         self.call_options = []
         self.replacements = 0
         self.imports = []
+        self.host_sha256 = "1" * 64 if fault in ("setup-unapproved", "setup-hash", "setup-approved") else proof.digest(b"host")
 
     def run(self, args, **kwargs):
         args = [str(a) for a in args]
@@ -227,10 +255,9 @@ class FakeCommands(proof.Commands):
             return b""
         if args[0] == "ssh":
             observed = observation(self.config)
+            observed["host_sha256"] = self.host_sha256
             if self.fault == "wrong-host":
                 observed["hostname"] = "WRONG-HOST"
-            if self.fault in ("setup-unapproved", "setup-hash"):
-                observed["host_sha256"] = "1" * 64
             if self.fault == "no-desktop":
                 observed["console_sid"] = None
             return proof.canonical(observed)
@@ -281,7 +308,10 @@ class FakeCommands(proof.Commands):
                 raise proof.ProofError("target-does-not-match")
         if operation == "windows":
             if args[2] == "setup":
-                return proof.canonical({"schema_version": 1, "status": "plan", "applied": False,
+                applied = "--apply" in args
+                if applied:
+                    self.host_sha256 = proof.digest(b"host")
+                return proof.canonical({"schema_version": 1, "status": "applied" if applied else "plan", "applied": applied,
                                         "host_sha256": "0" * 64 if self.fault == "setup-hash" else proof.digest(b"host"), "host_size": 4})
             return proof.canonical({"schema_version": 1, "status": "pass", "checks": [
                 {"id": name, "required": True, "passed": True} for name in proof.CHECKS]})
@@ -415,8 +445,11 @@ class BaselineTests(ProofFixture):
                 self.assertEqual(result["status"], "fail")
                 self.assertEqual(result["run"]["run_id"], RUN)
                 self.assertEqual([c[1] for c in self.commands.calls[-3:]], ["status", "stop", "status"])
-                if fault == "run-failed":
+                if fault in ("run-failed", "removed-evidence"):
                     self.assertEqual(result["cleanup"], {key: True for key in proof.CLEANUP})
+                    self.assertEqual(result["outcomes"]["recovery"]["status"], "pass")
+                    if fault == "removed-evidence":
+                        self.assertEqual(result["outcomes"]["evidence"]["status"], "fail")
                 else:
                     self.assertIsNone(result["cleanup"])
 
@@ -488,6 +521,26 @@ class NamedTargetTests(ProofFixture):
         self.assertEqual(self.commands.imports[0]["schema_version"], 1)
         self.assertEqual(self.commands.imports[-1], self.config["target"])
 
+    def test_named_setup_authorization_and_owner_cleanup_budget(self):
+        for version in (1, 2):
+            with self.subTest(version=version):
+                self.request = dataclasses_replace(self.request, output=self.root / f"setup-v{version}")
+                self.config = operator_config()
+                if version == 2:
+                    self.config["target"] = proof.target_document(self.config["target"])
+                self.config["authorization"]["setup"] = {
+                    "candidate_sha": SHA, "target_sha256": proof.digest(proof.canonical(self.config["target"])),
+                    "prior_host_sha256": "1" * 64, "scope": "windows-setup-binary-task-acls"}
+                result = self.execute("setup-approved")
+                self.assertEqual(result["status"], "pass")
+                self.assertIn("windows-setup-owner-v1", result["daemon_capabilities"])
+                applied = [(call, options) for call, options in zip(self.commands.calls, self.commands.call_options)
+                           if "--apply" in call]
+                self.assertEqual(len(applied), 1)
+                self.assertIn("--target-name", applied[0][0])
+                self.assertEqual(applied[0][1], {"timeout": 420, "cleanup_grace": 65})
+                self.assertEqual(self.commands.host_sha256, proof.digest(b"host"))
+
     def test_named_false_success_and_interrupt_restore_before_cleanup(self):
         for fault in ("mismatch-succeeded", "mismatch-wrong-error", "mismatch-transport", "mismatch-interrupted"):
             with self.subTest(fault=fault):
@@ -556,8 +609,11 @@ class NamedTargetTests(ProofFixture):
                 recovered = [call[1] for call, opts in zip(self.commands.calls, self.commands.call_options)
                              if opts.get("recovery") and call[1:2] in (["status"], ["stop"])]
                 self.assertEqual(recovered, ["status", "stop", "status"])
-                if fault == "run-failed":
+                if fault in ("run-failed", "removed-evidence"):
                     self.assertEqual(result["cleanup"], {key: True for key in proof.CLEANUP})
+                    self.assertEqual(result["outcomes"]["recovery"]["status"], "pass")
+                    if fault == "removed-evidence":
+                        self.assertEqual(result["outcomes"]["evidence"]["status"], "fail")
                 else:
                     self.assertIsNone(result["cleanup"])
 
@@ -613,6 +669,151 @@ class SubprocessTests(unittest.TestCase):
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
         self.commands = proof.Commands(self.root, self.root)
+
+    def test_post_spawn_failure(self):
+        for fault in ("receipt", "reader-start", "observation"):
+            with self.subTest(fault=fault), socket.socket() as server:
+                private = self.root / fault
+                private.mkdir()
+                commands = proof.Commands(private, self.root)
+                server.bind(("127.0.0.1", 0))
+                server.listen(1)
+                server.settimeout(5)
+                port = server.getsockname()[1]
+                child_source = 'import sys; print("ready",flush=True); assert sys.stdin.buffer.readline() == b"stop\\n"'
+                source = f'''import json,signal,socket,subprocess,sys
+child=subprocess.Popen([sys.executable,"-c",{child_source!r}],stdin=subprocess.PIPE,stdout=subprocess.PIPE)
+assert child.stdout.readline()==b"ready\\n"
+with socket.create_connection(("127.0.0.1",{port})) as connection:
+    def settle(number):
+        child.communicate(b"stop\\n",timeout=3)
+        connection.sendall((json.dumps({{"signal":number,"child_exit":child.returncode}})+"\\n").encode())
+    def interrupted(number,frame):
+        settle(number)
+        raise SystemExit(0)
+    signal.signal(signal.SIGINT,interrupted)
+    print("RUN_ID={RUN}",file=sys.stderr,flush=True)
+    connection.sendall(b"ready\\n")
+    connection.recv(1)
+    settle(None)
+'''
+                connections, leaders = [], []
+                original_write = Path.write_bytes
+                original_spawn = proof.subprocess.Popen
+                original_start = threading.Thread.start
+                original_observe = os.waitid
+                starts = 0
+                observed = False
+
+                def ready():
+                    connection, _ = server.accept()
+                    connection.settimeout(2)
+                    stream = connection.makefile("rb")
+                    connections.append((connection, stream))
+                    self.assertEqual(stream.readline(), b"ready\n")
+
+                def write(path, content):
+                    if fault == "receipt" and path.name.endswith(".process.json"):
+                        ready()
+                        raise OSError("injected-receipt")
+                    return original_write(path, content)
+
+                def spawn(*args, **kwargs):
+                    process = original_spawn(*args, **kwargs)
+                    if not leaders:
+                        leaders.append(process)
+                    return process
+
+                def start(thread):
+                    nonlocal starts
+                    starts += 1
+                    if fault == "reader-start" and starts == 2:
+                        ready()
+                        raise RuntimeError("injected-reader-start")
+                    return original_start(thread)
+
+                def observe(*args):
+                    nonlocal observed
+                    if fault == "observation" and not observed:
+                        observed = True
+                        ready()
+                        raise OSError("injected-observation")
+                    return original_observe(*args)
+
+                try:
+                    with mock.patch.object(Path, "write_bytes", write), mock.patch.object(proof.subprocess, "Popen", spawn), \
+                            mock.patch.object(threading.Thread, "start", start), mock.patch.object(os, "waitid", observe):
+                        with self.assertRaisesRegex((OSError, RuntimeError), "injected-" + fault):
+                            commands.run([sys.executable, "-c", source], marker=True)
+                    connection, stream = connections[0]
+                    receipt = json.loads(stream.readline())
+                    self.assertEqual(receipt, {"signal": proof.signal.SIGINT, "child_exit": 0})
+                    self.assertEqual(stream.read(), b"")
+                    self.assertTrue(commands.group_cleanup_known)
+                    self.assertEqual(commands.process_identity["pid"], leaders[0].pid)
+                    self.assertEqual(commands.process_identity["process_group"], leaders[0].pid)
+                    self.assertEqual(leaders[0].returncode, 0)
+                    self.assertEqual(commands.run_id, RUN)
+                finally:
+                    for connection, stream in connections:
+                        try:
+                            connection.sendall(b"x")
+                        except OSError:
+                            pass
+                        stream.close()
+                        connection.close()
+                    for process in leaders:
+                        process.wait(timeout=5)
+                        for pipe in (process.stdout, process.stderr):
+                            if pipe is not None and not pipe.closed:
+                                pipe.close()
+
+
+    def test_cleanup_grace(self):
+        server = socket.socket()
+        self.addCleanup(server.close)
+        server.bind(("127.0.0.1", 0))
+        server.listen(1)
+        server.settimeout(5)
+        port = server.getsockname()[1]
+        source = f'''import signal,socket
+with socket.create_connection(("127.0.0.1", {port})) as connection:
+    def interrupted(number, frame):
+        connection.sendall(b"interrupted")
+        connection.recv(1)
+        raise SystemExit(0)
+    signal.signal(signal.SIGINT, interrupted)
+    connection.sendall(b"ready")
+    signal.pause()
+'''
+        results = []
+        def run():
+            try:
+                self.commands.json([sys.executable, "-c", source], cleanup_grace=0.05)
+            except proof.ProofError as error:
+                results.append(error.code)
+        thread = threading.Thread(target=run)
+        thread.start()
+        connection, _ = server.accept()
+        with connection:
+            try:
+                connection.settimeout(4)
+                with connection.makefile("rb") as stream:
+                    self.assertEqual(stream.read(5), b"ready")
+                    self.commands.cancelled.set()
+                    self.assertEqual(stream.read(11), b"interrupted")
+                    self.assertEqual(stream.read(1), b"")
+            finally:
+                try:
+                    connection.sendall(b"x")
+                except OSError:
+                    pass
+                self.commands.cancelled.set()
+                thread.join(5)
+        self.assertFalse(thread.is_alive())
+        self.assertEqual(results, ["interrupted"])
+        self.assertTrue(self.commands.group_cleanup_known)
+
 
     def test_real_subprocess_json_and_private_stderr(self):
         raw = self.commands.run([sys.executable, "-c", 'import sys; print(\'{"schema_version":1}\'); print("PRIVATE_SENTINEL",file=sys.stderr)'])

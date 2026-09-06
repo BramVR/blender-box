@@ -115,7 +115,6 @@ func (journal journal) accept(selected target.Target, receipt RunReceipt) error 
 		return authorityFailure("cannot encode Session pin")
 	}
 	if err := privatefile.Publish(journal.root, pinPath(record.Claim.RunID), data, false); err != nil {
-		// A concurrent identical publication is the only safe retry of a no-replace write.
 		if os.IsExist(err) {
 			_, pinned, loadErr := journal.load(selected, record.Claim.RunID)
 			if loadErr == nil && pinned == receipt.SessionID {

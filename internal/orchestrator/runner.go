@@ -15,9 +15,11 @@ import (
 	"strings"
 	"time"
 
+	"github.com/BramVR/blender-box/internal/capture"
 	"github.com/BramVR/blender-box/internal/payload"
 	"github.com/BramVR/blender-box/internal/safepath"
 	"github.com/BramVR/blender-box/internal/target"
+	"github.com/BramVR/blender-box/internal/uiaction"
 	"github.com/BramVR/blender-box/internal/windowstarget"
 )
 
@@ -62,6 +64,7 @@ const (
 	StateStarting      RunState = "starting"
 	StateRunning       RunState = "running"
 	StateCalling       RunState = "calling"
+	StateInteracting   RunState = "interacting"
 	StateCollecting    RunState = "collecting"
 	StateSettling      RunState = "settling"
 	StateComplete      RunState = "complete"
@@ -147,14 +150,27 @@ func (request RunRequest) Validate() error {
 }
 
 type EvidenceFile struct {
-	Path          string `json:"path"`
-	Type          string `json:"type"`
-	Size          int64  `json:"size"`
-	SHA256        string `json:"sha256"`
-	CaptureMethod string `json:"capture_method,omitempty"`
-	Width         int    `json:"width,omitempty"`
-	Height        int    `json:"height,omitempty"`
+	Path          string       `json:"path"`
+	Type          EvidenceType `json:"type"`
+	SourcePath    string       `json:"source_path,omitempty"`
+	MediaType     string       `json:"media_type,omitempty"`
+	SessionID     SessionID    `json:"session_id,omitempty"`
+	Size          int64        `json:"size"`
+	SHA256        string       `json:"sha256"`
+	CaptureMethod string       `json:"capture_method,omitempty"`
+	Width         int          `json:"width,omitempty"`
+	Height        int          `json:"height,omitempty"`
 }
+
+type EvidenceType string
+
+const (
+	EvidenceUIActions      EvidenceType = "ui-actions"
+	EvidenceScenarioResult EvidenceType = "scenario-result"
+	EvidenceViewport       EvidenceType = "viewport"
+	EvidenceBlenderWindow  EvidenceType = "blender-window"
+	EvidenceDesktop        EvidenceType = "desktop"
+)
 
 type EvidenceManifest struct {
 	SchemaVersion int            `json:"schema_version"`
@@ -173,13 +189,14 @@ func (state CleanupState) Known() bool {
 }
 
 type RunReceipt struct {
-	SchemaVersion int              `json:"schema_version"`
-	Claim         LockClaim        `json:"claim"`
-	State         RunState         `json:"state"`
-	SessionID     SessionID        `json:"session_id"`
-	Evidence      EvidenceManifest `json:"evidence"`
-	Cleanup       CleanupState     `json:"cleanup"`
-	Error         string           `json:"error,omitempty"`
+	UIActions     *uiaction.Journal `json:"ui_actions,omitempty"`
+	SchemaVersion int               `json:"schema_version"`
+	Claim         LockClaim         `json:"claim"`
+	State         RunState          `json:"state"`
+	SessionID     SessionID         `json:"session_id"`
+	Evidence      EvidenceManifest  `json:"evidence"`
+	Cleanup       CleanupState      `json:"cleanup"`
+	Error         string            `json:"error,omitempty"`
 }
 
 type RunIntent struct {
@@ -193,29 +210,32 @@ type RunIntent struct {
 }
 
 type RunResult struct {
-	SchemaVersion int              `json:"schema_version"`
-	RunID         RunID            `json:"run_id"`
-	RequestID     RequestID        `json:"request_id"`
-	RequestHash   string           `json:"request_hash"`
-	Deadline      time.Time        `json:"deadline"`
-	SessionID     SessionID        `json:"session_id"`
-	State         RunState         `json:"state"`
-	Evidence      EvidenceManifest `json:"evidence"`
-	Cleanup       CleanupState     `json:"cleanup"`
-	Error         string           `json:"error,omitempty"`
+	UIJournalRecoveredFromReceipt bool              `json:"ui_journal_recovered_from_receipt,omitempty"`
+	UIActions                     *uiaction.Journal `json:"ui_actions,omitempty"`
+	SchemaVersion                 int               `json:"schema_version"`
+	RunID                         RunID             `json:"run_id"`
+	RequestID                     RequestID         `json:"request_id"`
+	RequestHash                   string            `json:"request_hash"`
+	Deadline                      time.Time         `json:"deadline"`
+	SessionID                     SessionID         `json:"session_id"`
+	State                         RunState          `json:"state"`
+	Evidence                      EvidenceManifest  `json:"evidence"`
+	Cleanup                       CleanupState      `json:"cleanup"`
+	Error                         string            `json:"error,omitempty"`
 }
 
 type StatusResult struct {
-	SchemaVersion int              `json:"schema_version"`
-	RunID         RunID            `json:"run_id"`
-	RequestID     RequestID        `json:"request_id"`
-	RequestHash   string           `json:"request_hash"`
-	Deadline      time.Time        `json:"deadline"`
-	SessionID     SessionID        `json:"session_id,omitempty"`
-	State         RunState         `json:"state"`
-	Evidence      EvidenceManifest `json:"evidence"`
-	Cleanup       CleanupState     `json:"cleanup"`
-	Error         string           `json:"error,omitempty"`
+	UIActions     *uiaction.Journal `json:"ui_actions,omitempty"`
+	SchemaVersion int               `json:"schema_version"`
+	RunID         RunID             `json:"run_id"`
+	RequestID     RequestID         `json:"request_id"`
+	RequestHash   string            `json:"request_hash"`
+	Deadline      time.Time         `json:"deadline"`
+	SessionID     SessionID         `json:"session_id,omitempty"`
+	State         RunState          `json:"state"`
+	Evidence      EvidenceManifest  `json:"evidence"`
+	Cleanup       CleanupState      `json:"cleanup"`
+	Error         string            `json:"error,omitempty"`
 }
 
 type StopResult struct {
@@ -231,7 +251,7 @@ type StopResult struct {
 
 // HostAdapter owns all host-side effects. The Runner owns ordering and authority propagation.
 type HostAdapter interface {
-	Inspect(context.Context, target.Target) error
+	Inspect(context.Context, target.Target, HostRequirements) (HostInspection, error)
 	Acquire(context.Context, target.Target, LockClaim) error
 	Stage(context.Context, target.Target, LockClaim, payload.Payload) error
 	Start(context.Context, target.Target, RunRequest) (RunReceipt, error)
@@ -265,29 +285,44 @@ func New(host HostAdapter, configRoot string) *Runner {
 
 // Status reads and validates the host-owned receipt for one exact Run ID.
 func (runner *Runner) Status(ctx context.Context, selected target.Target, runID RunID) (StatusResult, error) {
-	receipt, err := runner.recoverReceipt(ctx, selected, runID)
+	receipt, err := runner.recoverReceipt(ctx, selected, runID, "")
 	if err != nil {
 		return StatusResult{}, err
 	}
 	return statusFromReceipt(receipt), nil
 }
 
-func (runner *Runner) recoverReceipt(ctx context.Context, selected target.Target, runID RunID) (RunReceipt, error) {
-	record, _, err := runner.journal.load(selected, runID)
+func (runner *Runner) recoverReceipt(ctx context.Context, selected target.Target, runID RunID, expectedSession SessionID) (RunReceipt, error) {
+	record, pinned, err := runner.journal.load(selected, runID)
 	if err != nil {
 		return RunReceipt{}, err
 	}
-	receipt, err := runner.host.Observe(ctx, selected, runID)
-	if err != nil {
-		return RunReceipt{}, fmt.Errorf("observe Run: %w", err)
+	if expectedSession != "" && pinned != expectedSession {
+		return RunReceipt{}, authorityFailure("Session identity is not pinned")
 	}
-	if err := receipt.ValidateForClaim(record.Claim); err != nil {
-		return RunReceipt{}, fmt.Errorf("status receipt: %w", err)
+	receipt, observeErr := runner.host.Observe(ctx, selected, runID)
+	authority, authorityErr := runner.journal.settlement(selected, RunReceipt{Claim: record.Claim, SessionID: pinned})
+	if observeErr != nil {
+		return authority, errors.Join(fmt.Errorf("observe Run: %w", observeErr), authorityErr)
+	}
+	if authorityErr != nil {
+		return RunReceipt{}, authorityErr
 	}
 	if !record.Claim.Equal(receipt.Claim) {
 		return RunReceipt{}, authorityFailure("Host Lock claim changed")
 	}
-	if err := runner.journal.accept(selected, receipt); err != nil {
+	if authority.SessionID != "" && receipt.SessionID != authority.SessionID {
+		return RunReceipt{}, authorityFailure("Session identity changed")
+	}
+	if err := receipt.ValidateForClaim(record.Claim); err != nil {
+		return receipt, fmt.Errorf("status receipt: %w", err)
+	}
+	if authority.SessionID != "" {
+		_, err = runner.journal.settlement(selected, receipt)
+	} else {
+		err = runner.journal.accept(selected, receipt)
+	}
+	if err != nil {
 		return RunReceipt{}, err
 	}
 	return receipt, nil
@@ -295,7 +330,7 @@ func (runner *Runner) recoverReceipt(ctx context.Context, selected target.Target
 
 // Stop settles only the exact authority recovered from the host-owned receipt.
 func (runner *Runner) Stop(ctx context.Context, selected target.Target, runID RunID) (StopResult, error) {
-	receipt, err := runner.recoverReceipt(ctx, selected, runID)
+	receipt, err := runner.recoverReceipt(ctx, selected, runID, "")
 	if err != nil {
 		return StopResult{}, err
 	}
@@ -308,7 +343,7 @@ func (runner *Runner) Stop(ctx context.Context, selected target.Target, runID Ru
 	}
 	reconcileCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), runner.settlementTTL())
 	defer cancel()
-	settledReceipt, err := runner.recoverReceipt(reconcileCtx, selected, runID)
+	settledReceipt, err := runner.recoverReceipt(reconcileCtx, selected, runID, receipt.SessionID)
 	if err != nil {
 		return StopResult{}, fmt.Errorf("observe settled Run: %w", err)
 	}
@@ -345,11 +380,16 @@ func statusFromReceipt(receipt RunReceipt) StatusResult {
 		Evidence:      receipt.Evidence,
 		Cleanup:       receipt.Cleanup,
 		Error:         receipt.Error,
+		UIActions:     receipt.UIActions,
 	}
 }
 
-func (runner *Runner) Run(ctx context.Context, intent RunIntent) (_ RunResult, resultErr error) {
+func (runner *Runner) Run(ctx context.Context, intent RunIntent) (result RunResult, resultErr error) {
 	request, err := buildRequest(intent)
+	if err != nil {
+		return RunResult{}, &preflightError{cause: err}
+	}
+	plan, err := runner.Plan(PlanIntent{Target: intent.Target, Payload: intent.Payload})
 	if err != nil {
 		return RunResult{}, &preflightError{cause: err}
 	}
@@ -362,8 +402,18 @@ func (runner *Runner) Run(ctx context.Context, intent RunIntent) (_ RunResult, r
 	}
 	runCtx, cancelRun := context.WithDeadline(ctx, intent.Deadline)
 	defer cancelRun()
-	if err := runner.host.Inspect(runCtx, intent.Target); err != nil {
+	inspection, err := runner.host.Inspect(runCtx, intent.Target, hostRequirements(plan))
+	if err != nil {
 		return RunResult{}, fmt.Errorf("inspect host: %w", err)
+	}
+	if inspection.SchemaVersion != 1 || (inspection.Status != "pass" && inspection.Status != "fail") {
+		return RunResult{}, fmt.Errorf("inspect host: invalid host inspection")
+	}
+	if inspection.Status == "fail" {
+		return RunResult{}, fmt.Errorf("inspect host: host checks failed")
+	}
+	if !inspectionSupports(inspection, plan.Captures) || !uiInspectionSupports(inspection, plan.UIActions != nil) {
+		return RunResult{}, fmt.Errorf("inspect host: requested capability is unsupported")
 	}
 	receipt := RunReceipt{SchemaVersion: 1, Claim: request.Claim, State: StateAccepted}
 	if err := runner.host.Acquire(runCtx, intent.Target, request.Claim); err != nil {
@@ -383,6 +433,18 @@ func (runner *Runner) Run(ctx context.Context, intent RunIntent) (_ RunResult, r
 		if settled || IsAuthorityError(resultErr) {
 			return
 		}
+		if intent.Payload.Scenario.UIActions != nil {
+			recovered, didSettle, recoveryErr := runner.recoverUIFailure(ctx, intent, &receipt, evidenceRoot)
+			resultErr = errors.Join(resultErr, recoveryErr)
+			if IsAuthorityError(recoveryErr) {
+				return
+			}
+			if didSettle {
+				result = recovered
+				settled = true
+				return
+			}
+		}
 		cleanup, settleErr := runner.settle(ctx, intent.Target, receipt)
 		if settleErr != nil {
 			resultErr = errors.Join(resultErr, fmt.Errorf("settle Run: %w", settleErr))
@@ -397,24 +459,42 @@ func (runner *Runner) Run(ctx context.Context, intent RunIntent) (_ RunResult, r
 		return RunResult{}, fmt.Errorf("stage Run Payload: %w", err)
 	}
 	receipt.State = StateStaged
-	startedReceipt, err := runner.host.Start(runCtx, intent.Target, request)
-	if err != nil {
-		return RunResult{}, fmt.Errorf("start Run: %w", err)
+	startedReceipt, startErr := runner.host.Start(runCtx, intent.Target, request)
+	if startErr != nil && startedReceipt.Claim == (LockClaim{}) && startedReceipt.SessionID == "" {
+		return RunResult{}, fmt.Errorf("start Run: %w", startErr)
 	}
-	if err := validateReceipt(startedReceipt, request.Claim, "", receipt.State); err != nil {
+	if startedReceipt.Claim.Equal(request.Claim) && startedReceipt.SessionID != "" {
+		receipt.SessionID = startedReceipt.SessionID
+	}
+	_, pinned, err := runner.journal.load(intent.Target, intent.RunID)
+	if err != nil {
+		return RunResult{}, err
+	}
+	if err := validateReceipt(startedReceipt, request.Claim, pinned, receipt.State); err != nil {
 		return RunResult{}, fmt.Errorf("start receipt: %w", err)
 	}
-	if err := runner.journal.accept(intent.Target, startedReceipt); err != nil {
+	if startErr != nil {
+		return RunResult{}, fmt.Errorf("start Run: %w", startErr)
+	}
+	if pinned != "" {
+		_, err = runner.journal.settlement(intent.Target, startedReceipt)
+	} else {
+		err = runner.journal.accept(intent.Target, startedReceipt)
+	}
+	if err != nil {
 		return RunResult{}, err
 	}
 	receipt = startedReceipt
+	if err := validateUIBatchReceipt(receipt, intent.Payload.Scenario.UIActions); err != nil {
+		return RunResult{}, err
+	}
 	sessionID := receipt.SessionID
 
 	for !receipt.State.terminal() {
 		if err := waitForPoll(runCtx, intent.Deadline); err != nil {
 			return RunResult{}, err
 		}
-		if _, _, err := runner.journal.load(intent.Target, intent.RunID); err != nil {
+		if _, err := runner.journal.settlement(intent.Target, receipt); err != nil {
 			return RunResult{}, err
 		}
 		observedReceipt, err := runner.host.Observe(runCtx, intent.Target, intent.RunID)
@@ -424,7 +504,13 @@ func (runner *Runner) Run(ctx context.Context, intent RunIntent) (_ RunResult, r
 		if err := validateReceipt(observedReceipt, request.Claim, sessionID, receipt.State); err != nil {
 			return RunResult{}, fmt.Errorf("observe receipt: %w", err)
 		}
-		if err := runner.journal.accept(intent.Target, observedReceipt); err != nil {
+		if err := uiaction.ValidateProgress(receipt.UIActions, observedReceipt.UIActions); err != nil {
+			return RunResult{}, err
+		}
+		if err := validateUIBatchReceipt(observedReceipt, intent.Payload.Scenario.UIActions); err != nil {
+			return RunResult{}, err
+		}
+		if _, err := runner.journal.settlement(intent.Target, observedReceipt); err != nil {
 			return RunResult{}, err
 		}
 		receipt = observedReceipt
@@ -443,7 +529,7 @@ func (runner *Runner) Run(ctx context.Context, intent RunIntent) (_ RunResult, r
 	if !cleanup.Known() {
 		return RunResult{}, fmt.Errorf("settle Run: cleanup state is not known")
 	}
-	result := RunResult{
+	result = RunResult{
 		SchemaVersion: 1,
 		RunID:         intent.RunID,
 		RequestID:     intent.RequestID,
@@ -453,6 +539,11 @@ func (runner *Runner) Run(ctx context.Context, intent RunIntent) (_ RunResult, r
 		State:         receipt.State,
 		Evidence:      receipt.Evidence,
 		Cleanup:       cleanup,
+		UIActions:     receipt.UIActions,
+		Error:         receipt.Error,
+	}
+	if _, err := runner.journal.settlement(intent.Target, receipt); err != nil {
+		return RunResult{}, err
 	}
 	if err := publishBundleMetadata(evidenceRoot, result); err != nil {
 		return RunResult{}, fmt.Errorf("publish Evidence Bundle metadata: %w", err)
@@ -519,11 +610,19 @@ func SessionNameForRun(runID RunID) string {
 }
 
 func validateReceipt(receipt RunReceipt, claim LockClaim, expectedSession SessionID, previousState RunState) error {
+	if !receipt.Claim.Equal(claim) {
+		return authorityFailure("Host Lock claim changed")
+	}
+	if expectedSession != "" && receipt.SessionID != expectedSession {
+		return authorityFailure("Session identity changed")
+	}
 	if receipt.SchemaVersion != 1 {
 		return fmt.Errorf("unsupported schema version %d", receipt.SchemaVersion)
 	}
-	if !claimsEqual(receipt.Claim, claim) {
-		return fmt.Errorf("Host Lock claim changed")
+	if receipt.UIActions != nil {
+		if err := receipt.UIActions.Validate(string(receipt.SessionID)); err != nil {
+			return err
+		}
 	}
 	if !knownState(receipt.State) {
 		return fmt.Errorf("unknown Run state %q", receipt.State)
@@ -534,31 +633,27 @@ func validateReceipt(receipt RunReceipt, claim LockClaim, expectedSession Sessio
 	if !sessionIDPattern.MatchString(string(receipt.SessionID)) {
 		return fmt.Errorf("invalid Session identity")
 	}
-	if expectedSession != "" && receipt.SessionID != expectedSession {
-		return fmt.Errorf("Session identity changed")
-	}
 	return nil
 }
 
 func (receipt RunReceipt) ValidateForClaim(expected LockClaim) error {
+	if !receipt.Claim.Equal(expected) {
+		return authorityFailure("Host Lock claim changed")
+	}
 	if receipt.SchemaVersion != 1 || receipt.Claim.SchemaVersion != 1 {
 		return fmt.Errorf("unsupported schema version")
 	}
 	claim := receipt.Claim
-	if claim.RunID != expected.RunID {
-		return fmt.Errorf("Run ID changed")
-	}
 	if !requestIDPattern.MatchString(string(claim.RequestID)) || strings.TrimSpace(claim.ControllerID) == "" || claim.Deadline.IsZero() || !hashPattern.MatchString(claim.RequestHash) {
 		return fmt.Errorf("invalid Host Lock claim")
 	}
-	if claim.TaskName != expected.TaskName {
-		return fmt.Errorf("Scheduled Task identity changed")
+	if receipt.UIActions != nil {
+		if err := receipt.UIActions.Validate(string(receipt.SessionID)); err != nil {
+			return err
+		}
 	}
 	if !knownState(receipt.State) {
 		return fmt.Errorf("unknown Run state %q", receipt.State)
-	}
-	if !claim.Equal(expected) {
-		return fmt.Errorf("Host Lock claim changed")
 	}
 	if stateRequiresSession(receipt.State) {
 		if !sessionIDPattern.MatchString(string(receipt.SessionID)) {
@@ -568,11 +663,11 @@ func (receipt RunReceipt) ValidateForClaim(expected LockClaim) error {
 		return fmt.Errorf("invalid Session identity")
 	}
 	if receipt.Evidence.SchemaVersion != 0 || len(receipt.Evidence.Files) != 0 {
-		if err := validateEvidenceManifest(receipt.Evidence); err != nil {
+		if err := validateEvidenceManifest(receipt.Evidence, receipt.SessionID); err != nil {
 			return err
 		}
 	}
-	if receipt.State == StateComplete && receipt.Evidence.SchemaVersion != 1 {
+	if receipt.State == StateComplete && receipt.Evidence.SchemaVersion != 1 && receipt.Evidence.SchemaVersion != 2 && receipt.Evidence.SchemaVersion != 3 {
 		return fmt.Errorf("complete Run has no evidence manifest")
 	}
 	return nil
@@ -580,7 +675,7 @@ func (receipt RunReceipt) ValidateForClaim(expected LockClaim) error {
 
 func stateRequiresSession(state RunState) bool {
 	switch state {
-	case StateRunning, StateCalling, StateCollecting, StateSettling, StateComplete:
+	case StateRunning, StateCalling, StateInteracting, StateCollecting, StateSettling, StateComplete:
 		return true
 	default:
 		return false
@@ -614,14 +709,16 @@ func stateRank(state RunState) (int, bool) {
 		return 3, true
 	case StateCalling:
 		return 4, true
-	case StateCollecting:
+	case StateInteracting:
 		return 5, true
-	case StateSettling:
+	case StateCollecting:
 		return 6, true
-	case StateComplete:
+	case StateSettling:
 		return 7, true
-	case StateFailed, StateTimedOut, StateCleanupFailed:
+	case StateComplete:
 		return 8, true
+	case StateFailed, StateTimedOut, StateCleanupFailed:
+		return 9, true
 	default:
 		return 0, false
 	}
@@ -644,7 +741,9 @@ func (runner *Runner) settle(parent context.Context, target target.Target, recei
 	}
 	settleCtx, cancel := context.WithTimeout(context.WithoutCancel(parent), runner.settlementTTL())
 	defer cancel()
-	return runner.host.Settle(settleCtx, target, receipt)
+	cleanup, settleErr := runner.host.Settle(settleCtx, target, receipt)
+	_, authorityErr := runner.journal.settlement(target, receipt)
+	return cleanup, errors.Join(settleErr, authorityErr)
 }
 
 func (runner *Runner) settlementTTL() time.Duration {
@@ -676,13 +775,25 @@ func waitForPoll(ctx context.Context, deadline time.Time) error {
 
 func (runner *Runner) collectEvidence(ctx context.Context, intent RunIntent, receipt RunReceipt, evidenceRoot string) error {
 	manifest := receipt.Evidence
-	if err := validateEvidenceManifest(manifest); err != nil {
-		return err
+	if manifest.SchemaVersion != intent.Payload.SchemaVersion {
+		return fmt.Errorf("evidence schema version does not match payload schema version")
 	}
-	if err := validateRequiredEvidence(manifest, intent.Payload.Scenario); err != nil {
-		return err
+	if receipt.State == StateComplete {
+		if err := ValidateEvidence(manifest, intent.Payload.Scenario, receipt.SessionID); err != nil {
+			return err
+		}
+	} else if len(manifest.Files) > 0 {
+		if err := validateEvidenceManifest(manifest, receipt.SessionID); err != nil {
+			return err
+		}
+		if err := validatePartialEvidence(manifest, intent.Payload.Scenario); err != nil {
+			return err
+		}
 	}
 	for _, file := range manifest.Files {
+		if _, err := runner.journal.settlement(intent.Target, receipt); err != nil {
+			return err
+		}
 		content, err := runner.host.Fetch(ctx, intent.Target, receipt, file)
 		if err != nil {
 			return fmt.Errorf("fetch evidence %q: %w", file.Path, err)
@@ -694,7 +805,20 @@ func (runner *Runner) collectEvidence(ctx context.Context, intent RunIntent, rec
 		if hex.EncodeToString(hash[:]) != file.SHA256 {
 			return fmt.Errorf("evidence %q: SHA-256 changed", file.Path)
 		}
-		if file.Type == "viewport" {
+		if file.Type == EvidenceUIActions {
+			var journal uiaction.Journal
+			decoder := json.NewDecoder(bytes.NewReader(content))
+			decoder.DisallowUnknownFields()
+			if decoder.Decode(&journal) != nil || journal.Validate(string(receipt.SessionID)) != nil {
+				return fmt.Errorf("invalid UI journal evidence")
+			}
+			encoded, _ := json.Marshal(journal)
+			expected, _ := json.Marshal(receipt.UIActions)
+			if !bytes.Equal(encoded, expected) {
+				return fmt.Errorf("UI journal evidence differs from Run receipt")
+			}
+		}
+		if _, isCapture := captureKindForEvidenceType(file.Type); isCapture {
 			configuration, err := png.DecodeConfig(bytes.NewReader(content))
 			if err != nil {
 				return fmt.Errorf("evidence %q: invalid PNG: %w", file.Path, err)
@@ -702,6 +826,9 @@ func (runner *Runner) collectEvidence(ctx context.Context, intent RunIntent, rec
 			if configuration.Width != file.Width || configuration.Height != file.Height {
 				return fmt.Errorf("evidence %q: PNG dimensions changed", file.Path)
 			}
+		}
+		if _, err := runner.journal.settlement(intent.Target, receipt); err != nil {
+			return err
 		}
 		if err := writeEvidence(evidenceRoot, file.Path, content); err != nil {
 			return fmt.Errorf("store evidence %q: %w", file.Path, err)
@@ -711,28 +838,52 @@ func (runner *Runner) collectEvidence(ctx context.Context, intent RunIntent, rec
 }
 
 func validateRequiredEvidence(manifest EvidenceManifest, scenario payload.Scenario) error {
-	scenarioResults := 0
-	viewports := 0
-	for _, file := range manifest.Files {
-		switch file.Type {
-		case "scenario-result":
-			scenarioResults++
-		case "viewport":
-			viewports++
-		default:
-			return fmt.Errorf("unexpected evidence type %q", file.Type)
+	want := map[EvidenceType]int{EvidenceScenarioResult: 1}
+	for _, kind := range scenario.Captures() {
+		want[EvidenceType(kind)] = 1
+	}
+	if scenario.UIActions != nil {
+		want[EvidenceUIActions] = 1
+		if scenario.CaptureBlenderWindow {
+			want[EvidenceBlenderWindow] = 2
 		}
 	}
-	if scenarioResults != 1 {
-		return fmt.Errorf("required Scenario Result evidence is missing or ambiguous")
+	got := make(map[EvidenceType]int, len(want))
+	for _, file := range manifest.Files {
+		if file.Type != EvidenceScenarioResult && file.Type != EvidenceUIActions {
+			if _, known := captureKindForEvidenceType(file.Type); !known {
+				return fmt.Errorf("unexpected evidence type %q", file.Type)
+			}
+		}
+		got[file.Type]++
 	}
-	if scenario.CaptureViewport && viewports != 1 {
-		return fmt.Errorf("required viewport evidence is missing or ambiguous")
+	for kind, count := range got {
+		if want[kind] == 0 {
+			return fmt.Errorf("unexpected evidence type %q", kind)
+		}
+		if count != want[kind] {
+			return fmt.Errorf("required %s evidence is missing or ambiguous", kind)
+		}
 	}
-	if !scenario.CaptureViewport && viewports != 0 {
-		return fmt.Errorf("unexpected viewport evidence")
+	for kind, count := range want {
+		if got[kind] != count {
+			if kind == EvidenceScenarioResult {
+				return fmt.Errorf("required Scenario Result evidence is missing or ambiguous")
+			}
+			return fmt.Errorf("required %s evidence is missing or ambiguous", kind)
+		}
 	}
 	return nil
+}
+
+func ValidateEvidence(manifest EvidenceManifest, scenario payload.Scenario, sessionID SessionID) error {
+	if err := validateEvidenceManifest(manifest, sessionID); err != nil {
+		return err
+	}
+	if err := validatePartialEvidence(manifest, scenario); err != nil {
+		return err
+	}
+	return validateRequiredEvidence(manifest, scenario)
 }
 
 func publishBundleMetadata(root string, result RunResult) error {
@@ -750,8 +901,8 @@ func publishBundleMetadata(root string, result RunResult) error {
 	return writeEvidence(root, "evidence.json", append(document, '\n'))
 }
 
-func validateEvidenceManifest(manifest EvidenceManifest) error {
-	if manifest.SchemaVersion != 1 {
+func validateEvidenceManifest(manifest EvidenceManifest, expectedSession ...SessionID) error {
+	if manifest.SchemaVersion != 1 && manifest.SchemaVersion != 2 && manifest.SchemaVersion != 3 {
 		return fmt.Errorf("evidence: unsupported schema version %d", manifest.SchemaVersion)
 	}
 	if len(manifest.Files) == 0 || len(manifest.Files) > maxEvidenceFiles {
@@ -760,7 +911,7 @@ func validateEvidenceManifest(manifest EvidenceManifest) error {
 	var total int64
 	seen := make(map[string]struct{}, len(manifest.Files))
 	for _, file := range manifest.Files {
-		if err := validateEvidenceFile(file); err != nil {
+		if err := validateEvidenceFileForSchema(file, manifest.SchemaVersion, expectedSession); err != nil {
 			return fmt.Errorf("evidence %q: %w", file.Path, err)
 		}
 		key := safepath.WindowsKey(file.Path)
@@ -777,18 +928,59 @@ func validateEvidenceManifest(manifest EvidenceManifest) error {
 }
 
 func validateEvidenceFile(file EvidenceFile) error {
+	return validateEvidenceFileForSchema(file, 1, nil)
+}
+
+func validateEvidenceFileForSchema(file EvidenceFile, schemaVersion int, expectedSession []SessionID) error {
 	if err := safepath.ValidateWindowsRelative("path", file.Path); err != nil {
 		return err
 	}
 	if file.Type == "" {
 		return fmt.Errorf("type is required")
 	}
-	if file.Type == "viewport" {
-		if (file.CaptureMethod != "offscreen" && file.CaptureMethod != "window_grab") || file.Width < 1 || file.Height < 1 {
-			return fmt.Errorf("viewport capture provenance is invalid")
+	if schemaVersion == 1 {
+		if file.SourcePath != "" || file.MediaType != "" || file.SessionID != "" {
+			return fmt.Errorf("schema version 1 does not support typed source provenance")
 		}
-	} else if file.CaptureMethod != "" || file.Width != 0 || file.Height != 0 {
-		return fmt.Errorf("capture provenance is only valid for captures")
+		if file.Type == EvidenceViewport {
+			if !capture.MethodAllowed(capture.Viewport, file.CaptureMethod) || file.Width < 1 || file.Height < 1 {
+				return fmt.Errorf("viewport capture provenance is invalid")
+			}
+		} else if file.Type != EvidenceScenarioResult {
+			return fmt.Errorf("unsupported evidence type %q", file.Type)
+		} else if file.CaptureMethod != "" || file.Width != 0 || file.Height != 0 {
+			return fmt.Errorf("capture provenance is only valid for captures")
+		}
+	} else {
+		if file.SourcePath != "evidence/"+file.Path {
+			return fmt.Errorf("source path does not match evidence path")
+		}
+		if len(expectedSession) != 1 || expectedSession[0] == "" || file.SessionID != expectedSession[0] {
+			return fmt.Errorf("Session provenance does not match Run")
+		}
+		if err := file.SessionID.Validate(); err != nil {
+			return err
+		}
+		if file.Type == EvidenceScenarioResult {
+			if file.Path != "result/scenario-result.json" || file.MediaType != "application/json" || file.CaptureMethod != "" || file.Width != 0 || file.Height != 0 {
+				return fmt.Errorf("Scenario Result provenance is invalid")
+			}
+		} else if file.Type == EvidenceUIActions {
+			if schemaVersion != 3 || file.Path != uiaction.EvidencePath || file.MediaType != "application/json" || file.CaptureMethod != "" || file.Width != 0 || file.Height != 0 {
+				return fmt.Errorf("UI journal provenance is invalid")
+			}
+		} else if kind, known := captureKindForEvidenceType(file.Type); known {
+			definition, _ := capture.Describe(kind)
+			pathOK := file.Path == definition.EvidencePath
+			if schemaVersion == 3 && kind == capture.BlenderWindow {
+				pathOK = pathOK || file.Path == uiaction.BeforePath || file.Path == uiaction.AfterPath
+			}
+			if !pathOK || file.MediaType != definition.MediaType || !capture.MethodAllowed(kind, file.CaptureMethod) || file.Width < 1 || file.Height < 1 {
+				return fmt.Errorf("%s capture provenance is invalid", kind)
+			}
+		} else {
+			return fmt.Errorf("unsupported evidence type %q", file.Type)
+		}
 	}
 	if file.Size <= 0 || file.Size > maxEvidenceFile {
 		return fmt.Errorf("invalid size %d", file.Size)
@@ -797,6 +989,11 @@ func validateEvidenceFile(file EvidenceFile) error {
 		return fmt.Errorf("invalid SHA-256")
 	}
 	return nil
+}
+
+func captureKindForEvidenceType(kind EvidenceType) (capture.Kind, bool) {
+	definition, found := capture.Describe(capture.Kind(kind))
+	return definition.Kind, found
 }
 
 func writeEvidence(root, relative string, content []byte) error {
@@ -902,4 +1099,61 @@ func evidenceDestination(root, relative string) (string, error) {
 		return "", err
 	}
 	return destination, nil
+}
+
+func validateUIBatchReceipt(receipt RunReceipt, batch *uiaction.Batch) error {
+	if batch == nil {
+		if receipt.UIActions != nil {
+			return fmt.Errorf("undeclared UI action journal")
+		}
+		return nil
+	}
+	if receipt.UIActions == nil {
+		if receipt.State == StateComplete {
+			return fmt.Errorf("complete Run has no UI journal")
+		}
+		return nil
+	}
+	if len(receipt.UIActions.Receipts) > len(batch.Actions) {
+		return fmt.Errorf("UI journal exceeds declared batch")
+	}
+	for i, r := range receipt.UIActions.Receipts {
+		if r.Kind != batch.Actions[i].Kind() || r.Outcome == uiaction.Queued && r.EventCount != batch.Actions[i].EventCount() {
+			return fmt.Errorf("UI action differs from declared batch")
+		}
+		if receipt.State.terminal() && r.Outcome == uiaction.Pending {
+			return fmt.Errorf("terminal UI receipt is pending")
+		}
+		if receipt.State == StateComplete && r.Outcome != uiaction.Queued {
+			return fmt.Errorf("complete UI action is not queued")
+		}
+	}
+	if receipt.State == StateComplete && len(receipt.UIActions.Receipts) != len(batch.Actions) {
+		return fmt.Errorf("complete UI journal is truncated")
+	}
+	return nil
+}
+func validatePartialEvidence(manifest EvidenceManifest, scenario payload.Scenario) error {
+	if manifest.SchemaVersion != 3 {
+		return nil
+	}
+	allowed := map[string]bool{"result/scenario-result.json": true}
+	for _, kind := range scenario.Captures() {
+		definition, _ := capture.Describe(kind)
+		allowed[definition.EvidencePath] = true
+	}
+	if scenario.UIActions != nil {
+		allowed[uiaction.EvidencePath] = true
+		if scenario.CaptureBlenderWindow {
+			delete(allowed, "screenshots/blender-window.png")
+			allowed[uiaction.BeforePath] = true
+			allowed[uiaction.AfterPath] = true
+		}
+	}
+	for _, file := range manifest.Files {
+		if !allowed[file.Path] {
+			return fmt.Errorf("undeclared evidence path")
+		}
+	}
+	return nil
 }

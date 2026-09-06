@@ -7,7 +7,6 @@ import (
 
 func TestWorkRootRejectsTrailingSeparator(t *testing.T) {
 	value := Config{
-
 		SSHUser:                 "test-user",
 		WorkRoot:                `C:\BlenderBoxTest\`,
 		InteractiveUser:         "test-user",
@@ -24,7 +23,6 @@ func TestWorkRootRejectsTrailingSeparator(t *testing.T) {
 
 func TestWorkRootRejectsLegacySCPShellCharacters(t *testing.T) {
 	base := Config{
-
 		SSHUser:                 "test-user",
 		WorkRoot:                `C:\BlenderBoxTest`,
 		InteractiveUser:         "test-user",
@@ -44,11 +42,13 @@ func TestWorkRootRejectsLegacySCPShellCharacters(t *testing.T) {
 	}
 }
 
-func TestWorkRootReservesLegacySCPSetupStagingSuffix(t *testing.T) {
+func TestWorkRootReservesSetupOwnerAttemptPath(t *testing.T) {
+	attemptID := "bbsa_" + strings.Repeat("A", 43)
+	setupOwnerSuffix := `\setup-owner\setup-attempts\` + attemptID + `\` + attemptID + `.ps1`
+	maximumRootTail := maxWindowsPathTail - len(setupOwnerSuffix)
 	value := Config{
-
 		SSHUser:           "test-user",
-		WorkRoot:          `C:\` + strings.Repeat("a", 195),
+		WorkRoot:          `C:\` + strings.Repeat("a", maximumRootTail+1),
 		InteractiveUser:   "test-user",
 		TaskName:          "BlenderBoxTest",
 		BlenderExecutable: `C:\Program Files\Blender Foundation\Blender\blender.exe`,
@@ -58,7 +58,7 @@ func TestWorkRootReservesLegacySCPSetupStagingSuffix(t *testing.T) {
 	if err := value.Validate(); err == nil || !strings.Contains(err.Error(), "staging") {
 		t.Fatalf("unstageable root error = %v", err)
 	}
-	maximumStageable := `C:\` + strings.Repeat("a", 194) + `\.setup-` + strings.Repeat("0", 32) + `.ps1`
+	maximumStageable := `C:\` + strings.Repeat("a", maximumRootTail) + setupOwnerSuffix
 	if !ValidateLegacySCPWindowsPath(maximumStageable) {
 		t.Fatal("documented staging boundary is not accepted by the upload grammar")
 	}
@@ -66,7 +66,6 @@ func TestWorkRootReservesLegacySCPSetupStagingSuffix(t *testing.T) {
 
 func TestHostExecutableReservesLongestReplacementSuffix(t *testing.T) {
 	base := Config{
-
 		SSHUser:                 "test-user",
 		WorkRoot:                `C:\B`,
 		InteractiveUser:         "test-user",
@@ -101,7 +100,6 @@ func TestHostExecutableReservesLongestReplacementSuffix(t *testing.T) {
 
 func TestConfigRejectsNonCanonicalWindowsPaths(t *testing.T) {
 	base := Config{
-
 		SSHUser:                 "test-user",
 		WorkRoot:                `C:\BlenderBoxTest`,
 		InteractiveUser:         "test-user",
@@ -133,7 +131,6 @@ func TestConfigRejectsNonCanonicalWindowsPaths(t *testing.T) {
 
 func TestManagedExecutablesMustStayUnderWorkRoot(t *testing.T) {
 	base := Config{
-
 		SSHUser:                 "test-user",
 		WorkRoot:                `C:\BlenderBoxTest`,
 		InteractiveUser:         "test-user",
@@ -150,6 +147,10 @@ func TestManagedExecutablesMustStayUnderWorkRoot(t *testing.T) {
 		"host directly in root": func(value *Config) { value.HostExecutable = `C:\BlenderBoxTest\blender-box.exe` },
 		"daemon directly in root": func(value *Config) {
 			value.SessionBrokerExecutable = `C:\BlenderBoxTest\blendersessiond.exe`
+		},
+		"host under setup owner": func(value *Config) { value.HostExecutable = `C:\BlenderBoxTest\setup-owner\bin\blender-box.exe` },
+		"daemon under setup owner": func(value *Config) {
+			value.SessionBrokerExecutable = `C:\BlenderBoxTest\SETUP-OWNER\bin\blendersessiond.exe`
 		},
 		"host under runs": func(value *Config) {
 			value.HostExecutable = `C:\BlenderBoxTest\RUNS\bin\blender-box.exe`
@@ -170,7 +171,6 @@ func TestManagedExecutablesMustStayUnderWorkRoot(t *testing.T) {
 
 func TestConfigRejectsExecutablePathCollisions(t *testing.T) {
 	base := Config{
-
 		SSHUser:                 "test-user",
 		WorkRoot:                `C:\BlenderBoxTest`,
 		InteractiveUser:         "test-user",
