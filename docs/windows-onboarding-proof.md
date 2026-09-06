@@ -13,7 +13,7 @@ Use this guide to prove a candidate through the existing Windows Run path. The b
 
 Select an owned Windows desktop with a logged-in interactive user, a compatible daemon, and an existing target profile. The SSH user and interactive task must resolve to the same SID. Preserve the host's existing shared Host Lock root; creating another root is not a way to bypass activity on the desktop.
 
-Record the expected hostname, Windows build, Blender version, interactive identity SID, daemon executable hash, and exact target in a private operator document outside the repository. Retain the daemon source revision, any patch digest, wheel hash, installed-source verification, and Python version beside it. A package version alone does not prove the required `blender-box-v1` and `typed-call-error-reason` capabilities.
+Record the expected hostname, Windows build, Blender version, interactive identity SID, daemon executable hash, and exact target in a private operator document outside the repository. Retain the daemon source revision, any patch digest, wheel hash, installed-source verification, and Python version beside it. A package version alone does not prove the required `blender-box-v1`, `typed-call-error-reason`, and `windows-setup-owner-v1` capabilities.
 
 Use schema version 1 with these fields:
 
@@ -41,7 +41,7 @@ python3 scripts/onboarding_proof.py baseline \
 	--execution local
 ```
 
-The runner builds both candidate executables. It verifies the expected host before mutation, rejects unrelated Blender activity or a Host Lock, and requires the installed host binary to match the candidate. A mismatch needs the exact setup authorization above. It then runs the public check, Scenario, status, stop, and final status commands.
+The runner builds both candidate executables. It verifies the expected host before mutation, rejects unrelated Blender activity or a Host Lock, and requires the installed host binary to match the candidate. A mismatch needs the exact setup authorization above. Setup has a 420-second outer timeout. Cancellation allows 65 seconds for the setup owner to stop and transfer cleanup to finish before local process escalation. The runner then runs the public check, Scenario, status, stop, and final status commands.
 
 Read `public/outcome.json` and the private receipts directly. Require a passing overall result and every required baseline outcome. Check the Run ID, request identity/hash/deadline, exact Session identity, binary hashes, matching remote/local artifact hashes, capture provenance, and all four cleanup facts. The retained product bundle lives under `artifacts/blender-box/<run-id>/` in the candidate checkout.
 

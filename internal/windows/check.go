@@ -33,7 +33,7 @@ function Normalize-Path([string]$Path) {
 }
 ` + sessionBrokerProbeFunctions + `
 function Test-SessionBrokerContract([string]$Path) {
-    $result = Invoke-SessionBrokerProbe $Path @('capabilities', '--require', 'blender-box-v1', '--require-capability', 'typed-call-error-reason')
+    $result = Invoke-SessionBrokerProbe $Path @('capabilities', '--require', 'blender-box-v1', '--require-capability', 'typed-call-error-reason', '--require-capability', 'windows-setup-owner-v1')
     return $null -ne $result -and [int]$result -eq 0
 }
 function Expand-FileSystemMask([int64]$Mask) {
@@ -291,8 +291,8 @@ Add-Check 'daemon.executable' ($daemonOK -and $daemonContractOK) $true $daemonPa
 Add-Check 'host.executable' ($hostOK -and (Test-SafePath $hostPath $expectedSid $sshSid $readExecute $true $true $false $true) -and (Test-ConservativePathAccess $hostPath $sshSid $fullControl $true) -and (Test-ConservativePathAccess ([System.IO.Path]::GetDirectoryName($hostPath)) $sshSid $fullControl $true)) $true $hostPath 'existing executable with task execution and controller update authority' 'The staged Blender Box host binary and parent must carry the setup ACL.'
 $rootExists = Test-Path -LiteralPath ([string]$config.work_root) -PathType Container -ErrorAction SilentlyContinue
 Add-Check 'work-root.access' ($rootExists -and $lockFilesOK -and (Test-SafePath ([string]$config.work_root) $expectedSid $sshSid $rootAccess $true $false $true $true) -and (Test-ConservativePathAccess ([string]$config.work_root) $sshSid $fullControl $true) -and (Test-RootStateFileInheritance ([string]$config.work_root) $expectedSid $sshSid)) $true ([ordered]@{root=[string]$config.work_root; lock_files=$lockFilesOK}) ([ordered]@{root='controller-owned'; operation_lock='sealed regular file'; launch_lock='sealed regular file'}) 'The operator-managed work root and both process lock files must preserve the declared authority.'
-$stateTreeOK = $rootExists -and (Test-SafeStateTree ([System.IO.Path]::Combine([string]$config.work_root, 'runs')) $expectedSid $sshSid) -and (Test-SafeStateTree ([System.IO.Path]::Combine([string]$config.work_root, 'receipts')) $expectedSid $sshSid)
-Add-Check 'work-root.state-tree' $stateTreeOK $true $stateTreeOK $true 'Existing Run and receipt trees must contain no reparse points and only declared writers.'
+$stateTreeOK = $rootExists -and (Test-SafeStateTree ([System.IO.Path]::Combine([string]$config.work_root, 'runs')) $expectedSid $sshSid) -and (Test-SafeStateTree ([System.IO.Path]::Combine([string]$config.work_root, 'receipts')) $expectedSid $sshSid) -and (Test-SafeStateTree ([System.IO.Path]::Combine([string]$config.work_root, 'setup-owner')) $expectedSid $sshSid)
+Add-Check 'work-root.state-tree' $stateTreeOK $true $stateTreeOK $true 'Existing Run, receipt, and setup-owner trees must contain no reparse points and only declared writers.'
 $task = Get-ScheduledTask -TaskPath '\' -TaskName ([string]$config.task_name) -ErrorAction SilentlyContinue
 $taskActual = $null
 $taskOK = $false

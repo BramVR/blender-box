@@ -3,8 +3,10 @@ package cli
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/binary"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"os"
@@ -13,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/BramVR/blender-box/internal/capture"
 	"github.com/BramVR/blender-box/internal/orchestrator"
 	"github.com/BramVR/blender-box/internal/payload"
 	"github.com/BramVR/blender-box/internal/target"
@@ -20,11 +23,12 @@ import (
 )
 
 type fakeSSH struct {
-	stdout  []byte
-	host    string
-	args    []string
-	stdin   []byte
-	uploads [][2]string
+	stdout    []byte
+	host      string
+	args      []string
+	stdin     []byte
+	uploads   [][2]string
+	runResult func([]string, []byte) ([]byte, error)
 }
 
 type fakeRunService struct {
@@ -39,7 +43,16 @@ type fakeRunService struct {
 }
 
 type noContactHost struct {
-	calls int
+	calls      int
+	inspection *orchestrator.HostInspection
+}
+
+func (fake *fakeRunService) Plan(intent orchestrator.PlanIntent) (orchestrator.PlanResult, error) {
+	return orchestrator.New(nil).Plan(intent)
+}
+
+func (fake *fakeRunService) Doctor(context.Context, orchestrator.PlanIntent) (orchestrator.DoctorResult, error) {
+	return orchestrator.DoctorResult{}, errors.New("unexpected doctor call")
 }
 
 func (host *noContactHost) unexpected() error {
@@ -47,7 +60,13 @@ func (host *noContactHost) unexpected() error {
 	return errors.New("unexpected host contact")
 }
 
-func (host *noContactHost) Inspect(context.Context, target.Target) error { return host.unexpected() }
+func (host *noContactHost) Inspect(context.Context, target.Target, orchestrator.HostRequirements) (orchestrator.HostInspection, error) {
+	host.calls++
+	if host.inspection != nil {
+		return *host.inspection, nil
+	}
+	return orchestrator.HostInspection{}, errors.New("unexpected host contact")
+}
 func (host *noContactHost) Acquire(context.Context, target.Target, orchestrator.LockClaim) error {
 	return host.unexpected()
 }
@@ -218,6 +237,75 @@ func TestRunCommandEmitsVersionedJSONAndPassesBoundedIntent(t *testing.T) {
 	}
 }
 
+func TestPlanValidatesCaptureRequestsWithoutHostContact(t *testing.T) {
+	root := t.TempDir()
+	targetPath := writeTarget(t, root)
+	if err := os.WriteFile(filepath.Join(root, "scenario.py"), []byte("print('capture')\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	payloadPath := filepath.Join(root, "payload.json")
+	document := `{"schema_version":2,"files":[{"source":"scenario.py","destination":"scenario.py"}],"scenario":{"script":"scenario.py","capture_blender_window":true,"capture_desktop":true}}`
+	if err := os.WriteFile(payloadPath, []byte(document), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	host := &noContactHost{}
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+
+	exitCode := Run(context.Background(), []string{
+		"plan", "--target", targetPath, "--payload", payloadPath, "--json",
+	}, strings.NewReader(""), &stdout, &stderr, Dependencies{Runner: orchestrator.New(host)})
+
+	if exitCode != 0 || stderr.Len() != 0 || host.calls != 0 {
+		t.Fatalf("exit = %d, stderr = %q, host calls = %d", exitCode, stderr.String(), host.calls)
+	}
+	var plan orchestrator.PlanResult
+	if err := json.Unmarshal(stdout.Bytes(), &plan); err != nil {
+		t.Fatalf("stdout is not JSON: %v\n%s", err, stdout.String())
+	}
+	if plan.Status != "pass" || len(plan.Captures) != 2 || !plan.Captures[1].PrivacySensitive {
+		t.Fatalf("plan = %+v", plan)
+	}
+}
+
+func TestDoctorReportsUnsupportedRequestedCapture(t *testing.T) {
+	root := t.TempDir()
+	targetPath := writeTarget(t, root)
+	if err := os.WriteFile(filepath.Join(root, "scenario.py"), []byte("print('capture')\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	payloadPath := filepath.Join(root, "payload.json")
+	document := `{"schema_version":2,"files":[{"source":"scenario.py","destination":"scenario.py"}],"scenario":{"script":"scenario.py","capture_desktop":true}}`
+	if err := os.WriteFile(payloadPath, []byte(document), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	inspection := orchestrator.HostInspection{
+		SchemaVersion: 1,
+		Status:        "pass",
+		Captures: []orchestrator.CaptureSupport{
+			{Kind: capture.Desktop, Capability: "capture-desktop-v1", Supported: false},
+		},
+	}
+	host := &noContactHost{inspection: &inspection}
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+
+	exitCode := Run(context.Background(), []string{
+		"doctor", "--target", targetPath, "--payload", payloadPath, "--json",
+	}, strings.NewReader(""), &stdout, &stderr, Dependencies{Runner: orchestrator.New(host)})
+
+	if exitCode != 1 || host.calls != 1 {
+		t.Fatalf("exit = %d, host calls = %d, stderr = %q", exitCode, host.calls, stderr.String())
+	}
+	var result orchestrator.DoctorResult
+	if err := json.Unmarshal(stdout.Bytes(), &result); err != nil {
+		t.Fatalf("stdout is not JSON: %v\n%s", err, stdout.String())
+	}
+	if result.Status != "fail" || len(result.Host.Captures) != 1 || result.Host.Captures[0].Supported {
+		t.Fatalf("doctor = %+v", result)
+	}
+}
+
 func TestRunPublishesRunIDBeforeTargetValidation(t *testing.T) {
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
@@ -384,6 +472,50 @@ func TestWindowsSetupPlansWithoutSSHAndRequiresApplyForWrite(t *testing.T) {
 		HostSize:      planned.HostSize,
 		HostSHA256:    planned.HostSHA256,
 	})
+	fake.runResult = func(arguments []string, stdin []byte) ([]byte, error) {
+		if len(stdin) != 0 {
+			t.Fatalf("setup SSH stdin = %q", stdin)
+		}
+		command := decodePowerShellCommand(t, arguments)
+		const marker = `$r = [Convert]::FromBase64String('`
+		start := strings.Index(command, marker)
+		if start < 0 {
+			return nil, nil
+		}
+		start += len(marker)
+		end := strings.Index(command[start:], `')`)
+		if end < 0 {
+			t.Fatal("setup owner launch has an incomplete embedded request")
+		}
+		requestBytes, err := base64.StdEncoding.DecodeString(command[start : start+end])
+		if err != nil {
+			t.Fatalf("decode embedded setup owner request: %v", err)
+		}
+		var request struct {
+			AttemptID string `json:"attempt_id"`
+			LaunchID  string `json:"launch_id"`
+		}
+		if err := json.Unmarshal(requestBytes, &request); err != nil {
+			return nil, err
+		}
+		hash := sha256.Sum256(requestBytes)
+		return json.Marshal(map[string]any{
+			"schema_version":   1,
+			"attempt_id":       request.AttemptID,
+			"launch_id":        request.LaunchID,
+			"request_sha256":   hex.EncodeToString(hash[:]),
+			"status":           "terminal",
+			"outcome":          "process_succeeded",
+			"process":          "exited",
+			"cleanup":          "tree_gone",
+			"exit_code":        0,
+			"stdout":           string(fake.stdout),
+			"stderr":           "",
+			"stdout_truncated": false,
+			"stderr_truncated": false,
+			"finished_at":      time.Now().UTC().Format(time.RFC3339Nano),
+		})
+	}
 	stdout.Reset()
 	stderr.Reset()
 	exitCode = Run(context.Background(), []string{
@@ -393,9 +525,29 @@ func TestWindowsSetupPlansWithoutSSHAndRequiresApplyForWrite(t *testing.T) {
 		"--apply",
 		"--json",
 	}, strings.NewReader(""), &stdout, &stderr, Dependencies{SSH: fake})
-	if exitCode != 0 || stderr.Len() != 0 || fake.host != "windows-test" || len(fake.uploads) != 2 || fake.uploads[0][0] == hostBinary || filepath.Base(fake.uploads[0][0]) != "blender-box.exe" || !strings.HasPrefix(fake.uploads[0][1], `C:\BlenderBoxTest\.setup-`) {
+	if exitCode != 0 || stderr.Len() != 0 || fake.host != "windows-test" || len(fake.uploads) != 3 || fake.uploads[1][0] == hostBinary || filepath.Base(fake.uploads[1][0]) != "blender-box.exe" || !strings.HasPrefix(fake.uploads[1][1], `C:\BlenderBoxTest\.setup-`) {
 		t.Fatalf("apply exit = %d, stderr = %q, SSH host = %q, uploads = %q", exitCode, stderr.String(), fake.host, fake.uploads)
 	}
+}
+
+func decodePowerShellCommand(t *testing.T, arguments []string) string {
+	t.Helper()
+	for index, argument := range arguments {
+		if argument != "-EncodedCommand" || index+1 >= len(arguments) {
+			continue
+		}
+		encoded, err := base64.StdEncoding.DecodeString(arguments[index+1])
+		if err != nil || len(encoded)%2 != 0 {
+			t.Fatalf("invalid PowerShell command: %v", err)
+		}
+		decoded := make([]byte, len(encoded)/2)
+		for offset := range decoded {
+			decoded[offset] = byte(binary.LittleEndian.Uint16(encoded[offset*2:]))
+		}
+		return string(decoded)
+	}
+	t.Fatalf("SSH arguments have no PowerShell command: %q", arguments)
+	return ""
 }
 
 func writeTarget(t *testing.T, root string) string {
@@ -427,6 +579,9 @@ func (fake *fakeSSH) Run(
 	fake.host = host
 	fake.args = append([]string(nil), args...)
 	fake.stdin = append([]byte(nil), stdin...)
+	if fake.runResult != nil {
+		return fake.runResult(args, stdin)
+	}
 	return fake.stdout, nil
 }
 

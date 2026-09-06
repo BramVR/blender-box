@@ -18,20 +18,32 @@ import (
 	"testing"
 	"time"
 
+	"github.com/BramVR/blender-box/internal/capture"
 	"github.com/BramVR/blender-box/internal/payload"
 	"github.com/BramVR/blender-box/internal/target"
 )
 
 type fakeHost struct {
-	operations []string
-	receipt    RunReceipt
-	evidence   map[string][]byte
-	manifest   *EvidenceManifest
+	operations      []string
+	receipt         RunReceipt
+	evidence        map[string][]byte
+	manifest        *EvidenceManifest
+	inspection      HostInspection
+	inspectCaptures []capture.Kind
 }
 
-func (host *fakeHost) Inspect(context.Context, target.Target) error {
+func (host *fakeHost) Inspect(_ context.Context, _ target.Target, requirements HostRequirements) (HostInspection, error) {
 	host.operations = append(host.operations, "inspect")
-	return nil
+	host.inspectCaptures = append([]capture.Kind(nil), requirements.Captures...)
+	if host.inspection.SchemaVersion != 0 {
+		return host.inspection, nil
+	}
+	supports := make([]CaptureSupport, 0, len(requirements.Captures))
+	for _, kind := range requirements.Captures {
+		definition, _ := capture.Describe(kind)
+		supports = append(supports, CaptureSupport{Kind: kind, Capability: definition.Capability, Supported: true})
+	}
+	return HostInspection{SchemaVersion: 1, Status: "pass", Captures: supports}, nil
 }
 
 func (host *fakeHost) Acquire(_ context.Context, _ target.Target, claim LockClaim) error {
@@ -146,13 +158,9 @@ func TestRunFromIntentToVerifiedEvidenceAndKnownCleanup(t *testing.T) {
 		RequestID:    "req_01TESTREQUESTIDENTITY00000",
 		ControllerID: "controller-test",
 		Deadline:     deadline,
-		Target: target.Target{
-			SchemaVersion: 1,
-			SSHAlias:      "windows-test",
-			TaskName:      "BlenderBoxTest",
-		},
-		Payload:     loadTestPayload(t),
-		EvidenceDir: evidenceDir,
+		Target:       validPlanTarget(),
+		Payload:      loadTestPayload(t),
+		EvidenceDir:  evidenceDir,
 	}
 
 	result, err := New(host).Run(context.Background(), intent)
@@ -206,6 +214,51 @@ func TestRunFromIntentToVerifiedEvidenceAndKnownCleanup(t *testing.T) {
 	}
 	if err := json.Unmarshal(resultDocument, &storedResult); err != nil || !reflect.DeepEqual(storedResult, result) {
 		t.Fatalf("stored result = %+v, error = %v", storedResult, err)
+	}
+}
+
+func TestRunPublishesEverySchemaV2CaptureWithProvenance(t *testing.T) {
+	sessionID := SessionID("bss_exact-fake-session-identity-123456")
+	resultJSON := []byte(`{"schema_version":1,"status":"pass"}`)
+	viewport := testViewportPNG()
+	window := testPNG(1280, 720)
+	desktop := testPNG(1920, 1080)
+	evidence := map[string][]byte{
+		"result/scenario-result.json":    resultJSON,
+		"screenshots/viewport.png":       viewport,
+		"screenshots/blender-window.png": window,
+		"screenshots/desktop.png":        desktop,
+	}
+	manifest := EvidenceManifest{SchemaVersion: 2, Files: []EvidenceFile{
+		evidenceFileV2("result/scenario-result.json", EvidenceScenarioResult, resultJSON, "application/json", "", 0, 0, sessionID),
+		evidenceFileV2("screenshots/viewport.png", EvidenceViewport, viewport, "image/png", "offscreen", 800, 600, sessionID),
+		evidenceFileV2("screenshots/blender-window.png", EvidenceBlenderWindow, window, "image/png", "bpy.ops.screen.screenshot", 1280, 720, sessionID),
+		evidenceFileV2("screenshots/desktop.png", EvidenceDesktop, desktop, "image/png", "windows-copy-from-screen", 1920, 1080, sessionID),
+	}}
+	host := &fakeHost{evidence: evidence, manifest: &manifest}
+	intent := testIntent(t)
+	intent.Payload = loadTestPayloadV2(t)
+	intent.EvidenceDir = filepath.Join(t.TempDir(), "evidence")
+
+	result, err := New(host).Run(context.Background(), intent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Evidence.SchemaVersion != 2 || len(result.Evidence.Files) != 4 {
+		t.Fatalf("evidence = %+v", result.Evidence)
+	}
+	for path, content := range evidence {
+		stored, err := os.ReadFile(filepath.Join(intent.EvidenceDir, filepath.FromSlash(path)))
+		if err != nil || !bytes.Equal(stored, content) {
+			t.Fatalf("stored %s changed, error = %v", path, err)
+		}
+	}
+	var published RunResult
+	if err := json.Unmarshal(mustReadFile(t, filepath.Join(intent.EvidenceDir, "evidence.json")), &published); err != nil {
+		t.Fatal(err)
+	}
+	if published.Evidence.Files[3].Type != EvidenceDesktop || published.Evidence.Files[3].SessionID != sessionID {
+		t.Fatalf("published result = %+v", published)
 	}
 }
 
@@ -386,6 +439,21 @@ func TestForgedPayloadFailsBeforeHostInspection(t *testing.T) {
 	}
 }
 
+func TestRunReportsFailedHostInspectionBeforeAcquisition(t *testing.T) {
+	host := &fakeHost{
+		evidence:   testEvidence(),
+		inspection: HostInspection{SchemaVersion: 1, Status: "fail"},
+	}
+
+	_, err := New(host).Run(context.Background(), testIntent(t))
+	if err == nil || !strings.Contains(err.Error(), "host checks failed") || strings.Contains(err.Error(), "capture") {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if !reflect.DeepEqual(host.operations, []string{"inspect"}) {
+		t.Fatalf("host operations = %v", host.operations)
+	}
+}
+
 type malformedStartHost struct {
 	startErrorHost
 }
@@ -559,6 +627,64 @@ func TestEvidenceManifestRejectsEmptyFiles(t *testing.T) {
 	})
 	if err == nil || !strings.Contains(err.Error(), "size") {
 		t.Fatalf("error = %v", err)
+	}
+}
+
+func TestEvidenceManifestV2RequiresTypedSourceAndSessionProvenance(t *testing.T) {
+	sessionID := SessionID("bss_exact-evidence-session-identity-123456")
+	valid := EvidenceFile{
+		Path:          "screenshots/desktop.png",
+		Type:          EvidenceDesktop,
+		SourcePath:    "evidence/screenshots/desktop.png",
+		MediaType:     "image/png",
+		SessionID:     sessionID,
+		Size:          128,
+		SHA256:        strings.Repeat("0", 64),
+		CaptureMethod: "windows-copy-from-screen",
+		Width:         1920,
+		Height:        1080,
+	}
+	for _, test := range []struct {
+		name   string
+		mutate func(*EvidenceFile)
+	}{
+		{name: "source", mutate: func(file *EvidenceFile) { file.SourcePath = "" }},
+		{name: "media type", mutate: func(file *EvidenceFile) { file.MediaType = "application/octet-stream" }},
+		{name: "session", mutate: func(file *EvidenceFile) { file.SessionID = "bss_other-evidence-session-identity-123456" }},
+		{name: "method", mutate: func(file *EvidenceFile) { file.CaptureMethod = "offscreen" }},
+		{name: "dimensions", mutate: func(file *EvidenceFile) { file.Width = 0 }},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			file := valid
+			test.mutate(&file)
+			err := validateEvidenceManifest(EvidenceManifest{SchemaVersion: 2, Files: []EvidenceFile{file}}, sessionID)
+			if err == nil {
+				t.Fatalf("manifest accepted invalid %s provenance", test.name)
+			}
+		})
+	}
+}
+
+func TestRequiredEvidenceUsesTheExactRequestedCaptureSet(t *testing.T) {
+	scenario := payload.Scenario{CaptureViewport: true, CaptureBlenderWindow: true}
+	base := []EvidenceFile{
+		{Type: EvidenceScenarioResult},
+		{Type: EvidenceViewport},
+		{Type: EvidenceBlenderWindow},
+	}
+	for _, test := range []struct {
+		name  string
+		files []EvidenceFile
+	}{
+		{name: "missing", files: base[:2]},
+		{name: "duplicate", files: append(append([]EvidenceFile(nil), base...), EvidenceFile{Type: EvidenceViewport})},
+		{name: "unsolicited", files: append(append([]EvidenceFile(nil), base...), EvidenceFile{Type: EvidenceDesktop})},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if err := validateRequiredEvidence(EvidenceManifest{SchemaVersion: 2, Files: test.files}, scenario); err == nil {
+				t.Fatalf("accepted %s evidence set", test.name)
+			}
+		})
 	}
 }
 
@@ -868,13 +994,9 @@ func testIntent(t *testing.T) RunIntent {
 		RequestID:    "req_01TESTREQUESTIDENTITY00000",
 		ControllerID: "controller-test",
 		Deadline:     time.Now().Add(time.Hour).UTC(),
-		Target: target.Target{
-			SchemaVersion: 1,
-			SSHAlias:      "windows-test",
-			TaskName:      "BlenderBoxTest",
-		},
-		Payload:     loadTestPayload(t),
-		EvidenceDir: filepath.Join(t.TempDir(), "evidence"),
+		Target:       validPlanTarget(),
+		Payload:      loadTestPayload(t),
+		EvidenceDir:  filepath.Join(t.TempDir(), "evidence"),
 	}
 }
 
@@ -896,6 +1018,24 @@ func loadTestPayload(t *testing.T) payload.Payload {
 	return loaded
 }
 
+func loadTestPayloadV2(t *testing.T) payload.Payload {
+	t.Helper()
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "scenario.py"), []byte("print('all captures')\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	document := `{"schema_version":2,"files":[{"source":"scenario.py","destination":"scenario.py"}],"scenario":{"script":"scenario.py","read_timeout_seconds":600,"capture_viewport":true,"capture_blender_window":true,"capture_desktop":true}}`
+	path := filepath.Join(root, "payload.json")
+	if err := os.WriteFile(path, []byte(document), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := payload.Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return loaded
+}
+
 func testEvidence() map[string][]byte {
 	return map[string][]byte{
 		"scenario-result.json": []byte(`{"status":"pass"}`),
@@ -904,14 +1044,18 @@ func testEvidence() map[string][]byte {
 }
 
 func testViewportPNG() []byte {
+	return testPNG(800, 600)
+}
+
+func testPNG(width, height int) []byte {
 	var encoded bytes.Buffer
-	if err := png.Encode(&encoded, image.NewRGBA(image.Rect(0, 0, 800, 600))); err != nil {
+	if err := png.Encode(&encoded, image.NewRGBA(image.Rect(0, 0, width, height))); err != nil {
 		panic(err)
 	}
 	return encoded.Bytes()
 }
 
-func evidenceFile(path string, kind string, content []byte) EvidenceFile {
+func evidenceFile(path string, kind EvidenceType, content []byte) EvidenceFile {
 	hash := sha256.Sum256(content)
 	file := EvidenceFile{
 		Path:   path,
@@ -925,4 +1069,24 @@ func evidenceFile(path string, kind string, content []byte) EvidenceFile {
 		file.Height = 600
 	}
 	return file
+}
+
+func evidenceFileV2(path string, kind EvidenceType, content []byte, mediaType, method string, width, height int, sessionID SessionID) EvidenceFile {
+	file := evidenceFile(path, kind, content)
+	file.SourcePath = "evidence/" + path
+	file.MediaType = mediaType
+	file.SessionID = sessionID
+	file.CaptureMethod = method
+	file.Width = width
+	file.Height = height
+	return file
+}
+
+func mustReadFile(t *testing.T, path string) []byte {
+	t.Helper()
+	contents, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return contents
 }

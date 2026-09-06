@@ -4,17 +4,61 @@
 
 Run declared Blender Scenarios on an owned Windows desktop from a developer checkout.
 
-Blender Box sends a bounded Run Payload over SSH and starts Blender through a fixed interactive Scheduled Task. A host-local `blendersessiond` owns the Blender process. The client returns a verified Evidence Bundle, then cleans up the exact Session that it started.
+Blender Box sends a bounded Run Payload over SSH and starts Blender through a fixed interactive Scheduled Task. A host-local [`blendersessiond`](https://github.com/BramVR/blendersessiond) owns the Blender process. The client returns a verified Evidence Bundle, then cleans up the exact Session that it started.
 
 Tailscale can provide private reachability, but Blender Box connects through a configured SSH alias. Blender's MCP add-on stays bound to Windows loopback.
 
 ## Project status
 
-The first end-to-end slice supports read-only host checks, explicit setup, remote Scenario runs, reconnect status, exact stop, and local Evidence Bundles. It captures the Blender viewport only. It does not claim Blender-window or Windows-desktop evidence.
+The first end-to-end slice supports read-only host checks, explicit setup, local planning, capture-aware host diagnosis, remote Scenario runs, reconnect status, exact stop, and local Evidence Bundles. A Scenario can request distinct viewport, Blender-window, and opt-in Windows-desktop captures.
 
 The default test suite replaces SSH, the Scheduled Task, `blendersessiond`, the filesystem, and Blender with fakes. Proof against a real Windows Blender host is opt-in.
 
 The repository also supplies a reusable [Windows onboarding baseline](docs/windows-onboarding-proof.md) and a separate `Windows onboarding proof` workflow. Its `baseline` job requires an authorized exact candidate and private host configuration. A local pass does not replace the required hosted job.
+
+## Drive a Blender UI workflow
+
+Payload schema 3 requires one `ui_actions` batch after the preparation script declaration. Use schema 1 or 2 for Scenarios without UI actions:
+
+```json
+{
+  "schema_version": 3,
+  "files": [{"source": "prepare.py", "destination": "prepare.py"}],
+  "scenario": {
+    "script": "prepare.py",
+    "capture_blender_window": true,
+    "ui_actions": {
+      "schema_version": 1,
+      "timeout_seconds": 15,
+      "actions": [
+        {"type": "click", "x": 400, "y": 300, "button": "left"},
+        {"type": "key", "key": "F2"},
+        {"type": "text", "text": "Blender Box proof"},
+        {"type": "key", "key": "ENTER"}
+      ]
+    }
+  }
+}
+```
+
+Choose coordinates for your Blender layout. Coordinates are physical client pixels from the top-left, bounded by the verified window. The preparation script runs first and must return the ordinary passing Scenario Result. The batch then runs in the foreground Blender window owned by that exact Session.
+
+Run `plan` to inspect the redacted batch and capture paths. Its `expected_evidence` field lists each evidence type once; `captures` lists individual files, including both Blender-window images. Run `doctor` before launching. UI actions require an updated host and a daemon advertising `blender-ui-events-v1`, plus Blender support for `--enable-event-simulate`. The host opts that Session into event simulation with `--enable-ui-events`. Blender's `--enable-event-simulate` mode disables real physical mouse and keyboard input in that Session.
+
+The action vocabulary and limits are:
+
+- `click` requires `x`, `y`, and `button`, one of `left`, `middle`, or `right`. Coordinates must be within 0..32767 and inside the client area.
+- `key` accepts `A` through `Z`, `0` through `9`, `F1` through `F12`, `ENTER`, `ESC`, `TAB`, `SPACE`, `BACKSPACE`, `DELETE`, `LEFT`, `RIGHT`, `UP`, `DOWN`, `HOME`, `END`, `PAGEUP`, and `PAGEDOWN`. Optional `modifiers` contains distinct `ctrl`, `shift`, or `alt` values. Each action presses and releases its own keys.
+- `text` accepts 1..256 Unicode scalars without control or format characters. Use key actions for Enter and Tab. IME composition, clipboard paste, and OS dialogs are outside this contract.
+- A batch contains 1..64 actions, at most 1024 text scalars, and a 1..30 second timeout. Each action also has a five-second deadline.
+
+Start a batch with a click to select the editor for later keys and text. A batch starting with a key or text action requires the physical cursor to already be inside the Blender client.
+
+The backend targets Blender's own window event queue. It does not send global Windows input or move the physical cursor. Focus loss, multiple Blender windows, replacement windows, and coordinate mismatches stop the batch.
+
+`queued` receipts mean the event-processing barrier passed. Verify the intended UI change from the images or your Scenario's own checks. With Blender-window capture enabled, the bundle contains before and after images plus `result/ui-actions.json`. On failure, it retains available evidence and stops the exact Session. An uncertain action is never replayed automatically. Receipts omit entered text, but your payload and screenshots can contain it.
+
+The [UI action contract](docs/architecture/0005-session-local-ui-actions.md) describes identity, acknowledgement, and recovery.
 
 ## Requirements
 
@@ -77,7 +121,7 @@ go run ./cmd/blender-box windows setup \
 	--json
 ```
 
-Setup publishes the hashed host binary, applies the required ACLs, checks the `blendersessiond` contract, and registers the Scheduled Task. It refuses an active Host Lock and rejects reparse points or untrusted write authority in managed paths.
+Setup publishes the hashed host binary, applies the required ACLs, checks the `blendersessiond` contract, and registers the Scheduled Task. The apply program runs inside the daemon's fenced Windows setup owner: every launch, status read, and stop carries a random Setup Attempt ID, Launch ID, and request hash, and success requires proof that the owned process tree is gone. It refuses an active Host Lock and rejects reparse points or untrusted write authority in managed paths.
 
 ## Check the installed host
 
@@ -87,17 +131,17 @@ Run the read-only host check after setup or when the host configuration changes:
 go run ./cmd/blender-box windows check --target target.json --json
 ```
 
-The check verifies the Windows identities, managed paths, ACLs, executables, operation locks, Scheduled Task, and `blendersessiond` capabilities. A failed requirement returns `status: "fail"` without launching Blender.
+The check verifies the Windows identities, managed paths, ACLs, executables, operation locks, setup-owner state tree, Scheduled Task, and `blendersessiond` capabilities. A failed requirement returns `status: "fail"` without launching Blender.
 
 ## Create a Run Payload
 
-A Run Payload lists the files to stage, the Python Scenario entry point, the daemon read timeout, and the viewport capture policy. Each `source` path is relative to the payload document. Each `destination` path is relative to the remote payload root.
+A Run Payload lists the files to stage, the Python Scenario entry point, the daemon read timeout, and its capture policy. Each `source` path is relative to the payload document. Each `destination` path is relative to the remote payload root.
 
 Create `payload.json` next to `scenario.py`:
 
 ```json
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "files": [
     {
       "source": "scenario.py",
@@ -107,12 +151,29 @@ Create `payload.json` next to `scenario.py`:
   "scenario": {
     "script": "scenario.py",
     "read_timeout_seconds": 600,
-    "capture_viewport": true
+    "capture_viewport": true,
+    "capture_blender_window": true,
+    "capture_desktop": false
   }
 }
 ```
 
-The Scenario call must return one JSON document with `schema_version: 1` and `status: "pass"`. A successful Run also requires one viewport capture when `capture_viewport` is `true`. Missing, duplicate, or unsolicited evidence fails the Run.
+The Scenario call must return one JSON document with `schema_version: 1` and `status: "pass"`. Payload schema 1 remains valid for the existing viewport-only contract. Blender-window and desktop captures require payload schema 2.
+
+- `capture_viewport` records scene pixels through the daemon's offscreen or window-grab path.
+- `capture_blender_window` records the full Blender window, including its UI chrome, through `bpy.ops.screen.screenshot` on the exact Session.
+- `capture_desktop` records the Windows virtual desktop. It is always off by default and can contain unrelated private information.
+
+A successful Run requires exactly one file for each requested capture. Missing, duplicate, malformed, or unsolicited evidence fails the Run.
+
+Validate locally without contacting the host, then inspect the installed host capabilities:
+
+```sh
+go run ./cmd/blender-box plan --target target.json --payload payload.json --json
+go run ./cmd/blender-box doctor --target target.json --payload payload.json --json
+```
+
+`doctor` is read-only. It checks the target and payload, runs the installed host inspection, and reports support for every requested capture before staging or launching Blender. Schema 1 viewport-only Payloads retain the existing host inspection path. Every schema 2 Payload requires the matching upgraded host binary.
 
 ## Run the Scenario
 
@@ -162,8 +223,10 @@ A successful Evidence Bundle contains:
 - `evidence.json` with the Run identity, request identity, deadline, Session identity, terminal state, and cleanup result.
 - `result/scenario-result.json` with the Scenario Result.
 - `screenshots/viewport.png` when the Run requests a viewport capture.
+- `screenshots/blender-window.png` when the Run requests a Blender-window capture.
+- `screenshots/desktop.png` only when the Run explicitly requests a desktop capture.
 
-The client verifies hashes after transfer and never replaces an existing evidence file.
+Schema 2 manifest entries record the capture type, method, dimensions, media type, byte size, SHA-256, source path, and exact Session identity. The client verifies hashes and PNG dimensions after transfer and never replaces an existing evidence file. Keep desktop Evidence Bundles private unless you have reviewed the image.
 
 ## Ownership boundaries
 

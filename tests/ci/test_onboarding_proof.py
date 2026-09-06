@@ -486,6 +486,51 @@ with socket.create_connection(("127.0.0.1", {port})) as connection:
         self.assertEqual(saved["child_exit"], 0)
         self.assertEqual(self.commands.run_id, RUN)
 
+    def test_cleanup_grace(self):
+        server = socket.socket()
+        self.addCleanup(server.close)
+        server.bind(("127.0.0.1", 0))
+        server.listen(1)
+        server.settimeout(5)
+        port = server.getsockname()[1]
+        source = f'''import signal,socket
+with socket.create_connection(("127.0.0.1", {port})) as connection:
+    def interrupted(number, frame):
+        connection.sendall(b"interrupted")
+        connection.recv(1)
+        raise SystemExit(0)
+    signal.signal(signal.SIGINT, interrupted)
+    connection.sendall(b"ready")
+    signal.pause()
+'''
+        results = []
+        def run():
+            try:
+                self.commands.json([sys.executable, "-c", source], cleanup_grace=0.05)
+            except proof.ProofError as error:
+                results.append(error.code)
+        thread = threading.Thread(target=run)
+        thread.start()
+        connection, _ = server.accept()
+        with connection:
+            try:
+                connection.settimeout(4)
+                with connection.makefile("rb") as stream:
+                    self.assertEqual(stream.read(5), b"ready")
+                    self.commands.cancelled.set()
+                    self.assertEqual(stream.read(11), b"interrupted")
+                    self.assertEqual(stream.read(1), b"")
+            finally:
+                try:
+                    connection.sendall(b"x")
+                except OSError:
+                    pass
+                self.commands.cancelled.set()
+                thread.join(5)
+        self.assertFalse(thread.is_alive())
+        self.assertEqual(results, ["interrupted"])
+        self.assertTrue(self.commands.group_cleanup_known)
+
     def test_owned_orphan_group(self):
         server = socket.socket()
         self.addCleanup(server.close)

@@ -28,7 +28,7 @@ CHECKS = {
     "blender.executable", "daemon.executable", "host.executable", "work-root.access",
     "work-root.state-tree", "task.interactive",
 }
-CAPABILITIES = ("blender-box-v1", "typed-call-error-reason")
+CAPABILITIES = ("blender-box-v1", "typed-call-error-reason", "windows-setup-owner-v1")
 SHA = r"[0-9a-f]{40}"
 HASH = r"[0-9a-f]{64}"
 RUN_ID = r"bbx_[A-Za-z0-9_-]{16,64}"
@@ -405,7 +405,7 @@ class Commands:
             if self.on_run_id is not None:
                 self.on_run_id(value)
 
-    def run(self, args, timeout=180, stdin=None, marker=False, env=None, recovery=False, limit=24 << 20):
+    def run(self, args, timeout=180, stdin=None, marker=False, env=None, recovery=False, limit=24 << 20, cleanup_grace=5):
         require(os.name == "posix" and os.uname().sysname in ("Darwin", "Linux")
                 and all(hasattr(os, name) for name in ("waitid", "WNOWAIT", "P_PID")),
                 "controller-platform-unsupported")
@@ -482,7 +482,7 @@ class Commands:
                     failure = ProofError("command-cleanup-unknown")
                     break
                 # Run may settle twice and recover status, each with a 30-second deadline.
-                wait_owned(95 if marker else 65 if recovery else 5)
+                wait_owned(95 if marker else 65 if recovery else cleanup_grace)
                 break
             tick.wait(0.05)
         if not readers_done.wait(2):
@@ -628,7 +628,7 @@ def baseline(request, commands_factory=Commands):
                 and plan["host_size"] == host_size, "setup-plan-mismatch")
         if observed["host_sha256"] != host_hash:
             verify_setup_authorization(operator, request.candidate_sha, observed["host_sha256"])
-            applied = commands.json(setup_args + ["--apply"], timeout=300)
+            applied = commands.json(setup_args + ["--apply"], timeout=420, cleanup_grace=65)
             require(applied.get("status") == "applied" and applied.get("applied") is True
                     and applied.get("host_sha256") == host_hash and type(applied.get("host_size")) is int
                     and applied["host_size"] == host_size, "setup-apply-mismatch")

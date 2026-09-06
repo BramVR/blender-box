@@ -15,7 +15,8 @@ import (
 
 const (
 	maxWindowsPathTail         = 238
-	maxSetupWorkRootTail       = maxWindowsPathTail - len(`\.setup-`) - 32 - len(`.ps1`)
+	setupOwnerIDLength         = len("bbsa_") + 43
+	maxSetupWorkRootTail       = maxWindowsPathTail - len(`\setup-owner\setup-attempts\`) - setupOwnerIDLength - len(`\`) - setupOwnerIDLength - len(`.ps1`)
 	maxSetupHostExecutableTail = maxWindowsPathTail - len(`.setup-backup-`) - 32
 )
 
@@ -114,8 +115,10 @@ func (value Target) Validate() error {
 			return fmt.Errorf("target %s must be inside a dedicated executable directory", label)
 		}
 		pathKey := safepath.WindowsKey(path)
-		if strings.HasPrefix(pathKey, safepath.WindowsKey(value.WorkRoot+`\runs\`)) || strings.HasPrefix(pathKey, safepath.WindowsKey(value.WorkRoot+`\receipts\`)) {
-			return fmt.Errorf("target %s must not use a reserved state directory", label)
+		for _, directory := range []string{"runs", "receipts", "setup-owner"} {
+			if strings.HasPrefix(pathKey, safepath.WindowsKey(value.WorkRoot+`\`+directory+`\`)) {
+				return fmt.Errorf("target %s must not use a reserved state directory", label)
+			}
 		}
 	}
 	executables := []string{value.BlenderExecutable, value.SessionBrokerExecutable, value.HostExecutable}
