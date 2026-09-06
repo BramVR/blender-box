@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"time"
 
+	linuxhost "github.com/BramVR/blender-box/internal/linux"
 	"github.com/BramVR/blender-box/internal/orchestrator"
 	"github.com/BramVR/blender-box/internal/payload"
 	"github.com/BramVR/blender-box/internal/target"
@@ -32,6 +33,7 @@ type HostService interface {
 type Dependencies struct {
 	SSH           windows.SetupSSH
 	Runner        RunService
+	RunnerFor     func(target.Target) RunService
 	Now           func() time.Time
 	NewIdentities func() (orchestrator.RunID, orchestrator.RequestID, string, error)
 	Host          HostService
@@ -60,6 +62,10 @@ func Run(ctx context.Context, args []string, stdin io.Reader, stdout io.Writer, 
 			return fail(stderr, "host command", fmt.Errorf("host service is unavailable"))
 		}
 		return dependencies.Host.Run(ctx, args[1:], stdin, stdout, stderr)
+	case "linux":
+		if len(args) >= 2 && (args[1] == "check" || args[1] == "setup") {
+			return linuxCommand(ctx, args[1], args[2:], stdout, stderr, dependencies)
+		}
 	case "windows":
 		if len(args) >= 2 && args[1] == "check" {
 			return windowsCheckCommand(ctx, args[2:], stdout, stderr, dependencies)
@@ -75,6 +81,7 @@ func Run(ctx context.Context, args []string, stdin io.Reader, stdout io.Writer, 
 func printUsage(output io.Writer) {
 	fmt.Fprintln(output, "usage:")
 	fmt.Fprintln(output, "  blender-box targets import NAME --file PATH [--replace] [--json]\n  blender-box targets list [--json]\n  blender-box targets show NAME [--json]\n  blender-box targets forget NAME [--json]")
+	fmt.Fprintln(output, "  blender-box linux check (--target PATH | --target-name NAME) [--json]\n  blender-box linux setup (--target PATH | --target-name NAME) --host-binary PATH [--apply] [--json]")
 	fmt.Fprintln(output, "  blender-box windows check (--target PATH | --target-name NAME) [--json]")
 	fmt.Fprintln(output, "  blender-box windows setup (--target PATH | --target-name NAME) --host-binary PATH [--apply] [--json]")
 	fmt.Fprintln(output, "  blender-box run (--target PATH | --target-name NAME) --payload PATH [--evidence-dir PATH] [--timeout 15m] [--json]")
@@ -109,12 +116,16 @@ func doctorCommand(ctx context.Context, args []string, stdout io.Writer, stderr 
 	if err != nil {
 		return fail(stderr, "load payload", err)
 	}
-	if dependencies.Runner == nil {
+	runner := dependencies.Runner
+	if runner == nil && dependencies.RunnerFor != nil {
+		runner = dependencies.RunnerFor(selected)
+	}
+	if runner == nil {
 		return fail(stderr, "doctor", fmt.Errorf("Run service is unavailable"))
 	}
 	requestCtx, cancel := context.WithTimeout(ctx, *timeout)
 	defer cancel()
-	result, err := dependencies.Runner.Doctor(requestCtx, orchestrator.PlanIntent{Target: selected, Payload: loaded})
+	result, err := runner.Doctor(requestCtx, orchestrator.PlanIntent{Target: selected, Payload: loaded})
 	if err != nil {
 		return fail(stderr, "doctor", err)
 	}
@@ -155,10 +166,14 @@ func planCommand(args []string, stdout io.Writer, stderr io.Writer, dependencies
 	if err != nil {
 		return fail(stderr, "load payload", err)
 	}
-	if dependencies.Runner == nil {
+	runner := dependencies.Runner
+	if runner == nil && dependencies.RunnerFor != nil {
+		runner = dependencies.RunnerFor(selected)
+	}
+	if runner == nil {
 		return fail(stderr, "plan", fmt.Errorf("Run service is unavailable"))
 	}
-	result, err := dependencies.Runner.Plan(orchestrator.PlanIntent{Target: selected, Payload: loaded})
+	result, err := runner.Plan(orchestrator.PlanIntent{Target: selected, Payload: loaded})
 	if err != nil {
 		return fail(stderr, "plan", err)
 	}
@@ -282,7 +297,11 @@ func runCommand(ctx context.Context, args []string, stdout io.Writer, stderr io.
 	if err != nil {
 		return failRunResult(stdout, stderr, *asJSON, orchestrator.RunResult{SchemaVersion: 1, RunID: runID, State: orchestrator.StateFailed, Error: err.Error()}, err)
 	}
-	if dependencies.Runner == nil {
+	runner := dependencies.Runner
+	if runner == nil && dependencies.RunnerFor != nil {
+		runner = dependencies.RunnerFor(selected)
+	}
+	if runner == nil {
 		err := fmt.Errorf("Run service is unavailable")
 		return failRunResult(stdout, stderr, *asJSON, orchestrator.RunResult{SchemaVersion: 1, RunID: runID, State: orchestrator.StateFailed, Error: err.Error()}, err)
 	}
@@ -294,7 +313,7 @@ func runCommand(ctx context.Context, args []string, stdout io.Writer, stderr io.
 	if dependencies.Now != nil {
 		now = dependencies.Now()
 	}
-	result, err := dependencies.Runner.Run(ctx, orchestrator.RunIntent{
+	result, err := runner.Run(ctx, orchestrator.RunIntent{
 		RunID:        runID,
 		RequestID:    requestID,
 		ControllerID: controllerID,
@@ -316,7 +335,7 @@ func runCommand(ctx context.Context, args []string, stdout io.Writer, stderr io.
 		if *asJSON && !hasUIResult && !orchestrator.IsPreflightError(err) && !orchestrator.IsAuthorityError(err) {
 			recoveryCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
 			defer cancel()
-			if status, statusErr := dependencies.Runner.Status(recoveryCtx, selected, runID); statusErr == nil {
+			if status, statusErr := runner.Status(recoveryCtx, selected, runID); statusErr == nil {
 				failure = runResultFromStatus(status)
 				if failure.State == orchestrator.StateComplete {
 					failure.State = orchestrator.StateFailed
@@ -357,12 +376,16 @@ func statusCommand(ctx context.Context, args []string, stdout io.Writer, stderr 
 	if err != nil {
 		return failRun(stderr, orchestrator.RunID(*runID), err)
 	}
-	if dependencies.Runner == nil {
+	runner := dependencies.Runner
+	if runner == nil && dependencies.RunnerFor != nil {
+		runner = dependencies.RunnerFor(selected)
+	}
+	if runner == nil {
 		return failRun(stderr, orchestrator.RunID(*runID), fmt.Errorf("Run service is unavailable"))
 	}
 	requestCtx, cancel := context.WithTimeout(ctx, *timeout)
 	defer cancel()
-	result, err := dependencies.Runner.Status(requestCtx, selected, orchestrator.RunID(*runID))
+	result, err := runner.Status(requestCtx, selected, orchestrator.RunID(*runID))
 	if err != nil {
 		return failRun(stderr, orchestrator.RunID(*runID), err)
 	}
@@ -397,12 +420,16 @@ func stopCommand(ctx context.Context, args []string, stdout io.Writer, stderr io
 	if err != nil {
 		return failRun(stderr, orchestrator.RunID(*runID), err)
 	}
-	if dependencies.Runner == nil {
+	runner := dependencies.Runner
+	if runner == nil && dependencies.RunnerFor != nil {
+		runner = dependencies.RunnerFor(selected)
+	}
+	if runner == nil {
 		return failRun(stderr, orchestrator.RunID(*runID), fmt.Errorf("Run service is unavailable"))
 	}
 	requestCtx, cancel := context.WithTimeout(ctx, *timeout)
 	defer cancel()
-	result, err := dependencies.Runner.Stop(requestCtx, selected, orchestrator.RunID(*runID))
+	result, err := runner.Stop(requestCtx, selected, orchestrator.RunID(*runID))
 	if err != nil {
 		return failRun(stderr, orchestrator.RunID(*runID), err)
 	}
@@ -483,4 +510,65 @@ func runResultFromStatus(status orchestrator.StatusResult) orchestrator.RunResul
 		Error:         status.Error,
 		UIActions:     status.UIActions,
 	}
+}
+
+func linuxCommand(ctx context.Context, operation string, args []string, stdout, stderr io.Writer, dependencies Dependencies) int {
+	flags := flag.NewFlagSet("linux "+operation, flag.ContinueOnError)
+	flags.SetOutput(stderr)
+	selection := targetFlags(flags)
+	asJSON := flags.Bool("json", false, "print versioned JSON")
+	var hostBinary *string
+	var apply *bool
+	if operation == "setup" {
+		hostBinary = flags.String("host-binary", "", "path to the Linux blender-box executable")
+		apply = flags.Bool("apply", false, "publish managed binary, state and static user unit")
+	}
+	if err := flags.Parse(args); err != nil {
+		if err == flag.ErrHelp {
+			return 0
+		}
+		return 2
+	}
+	if !selection.valid(flags) || flags.NArg() != 0 || (operation == "setup" && *hostBinary == "") {
+		fmt.Fprintln(stderr, "linux "+operation+" requires exactly one of --target PATH or --target-name NAME")
+		return 2
+	}
+	selected, err := selection.resolve()
+	if err != nil {
+		return fail(stderr, "load target", err)
+	}
+	if operation == "setup" {
+		result, err := linuxhost.Setup(ctx, dependencies.SSH, selected, *hostBinary, *apply)
+		if err != nil {
+			return fail(stderr, "Linux setup", err)
+		}
+		if *asJSON {
+			return writeJSON(stdout, stderr, result)
+		}
+		fmt.Fprintf(stdout, "Linux setup: %s\nHost binary: %d bytes, SHA-256 %s\nUnit: %s\n", result.Status, result.HostSize, result.HostSHA256, result.UnitDestination)
+		if !result.Applied {
+			fmt.Fprintln(stdout, "No remote changes made; pass --apply to install.")
+		}
+		return 0
+	}
+	result, err := linuxhost.Check(ctx, dependencies.SSH, selected)
+	if err != nil {
+		return fail(stderr, "Linux check", err)
+	}
+	if *asJSON {
+		if code := writeJSON(stdout, stderr, result); code != 0 {
+			return code
+		}
+	} else {
+		fmt.Fprintf(stdout, "Linux check: %s\n", result.Status)
+		for _, check := range result.Checks {
+			if !check.Passed {
+				fmt.Fprintf(stdout, "%s: %s\n", check.ID, check.Message)
+			}
+		}
+	}
+	if result.Status != "pass" {
+		return 1
+	}
+	return 0
 }

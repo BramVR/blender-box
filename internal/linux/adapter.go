@@ -1,4 +1,4 @@
-package windows
+package linux
 
 import (
 	"context"
@@ -25,57 +25,32 @@ func NewAdapter(ssh SSH) *Adapter {
 }
 
 func (adapter *Adapter) Inspect(ctx context.Context, selected target.Target, requirements orchestrator.HostRequirements) (orchestrator.HostInspection, error) {
+	if requirements.UIActions {
+		return orchestrator.HostInspection{}, fmt.Errorf("Linux targets do not support UI actions")
+	}
+	for _, kind := range requirements.Captures {
+		if kind != capture.Viewport {
+			return orchestrator.HostInspection{}, fmt.Errorf("Linux targets do not support %s capture", kind)
+		}
+	}
 	result, err := Check(ctx, adapter.ssh, selected)
 	if err != nil {
 		return orchestrator.HostInspection{}, err
 	}
 	if result.Status != "pass" {
-		return orchestrator.HostInspection{SchemaVersion: 1, Status: "fail"}, nil
-	}
-	legacy := make([]orchestrator.CaptureSupport, 0, len(requirements.Captures))
-	for _, kind := range requirements.Captures {
-		if kind != capture.Viewport {
-			legacy = nil
-			break
+		var failures []string
+		for _, check := range result.Checks {
+			if check.Required && !check.Passed {
+				failures = append(failures, check.ID+": "+check.Message)
+			}
 		}
-		definition, _ := capture.Describe(kind)
-		legacy = append(legacy, orchestrator.CaptureSupport{Kind: kind, Capability: definition.Capability, Supported: true})
+		return orchestrator.HostInspection{}, fmt.Errorf("Linux host check failed: %s", strings.Join(failures, "; "))
 	}
-	if requirements.PayloadSchemaVersion == 1 && legacy != nil {
-		return orchestrator.HostInspection{SchemaVersion: 1, Status: "pass", Captures: legacy}, nil
+	inspection := orchestrator.HostInspection{SchemaVersion: 1, Status: result.Status}
+	for _, definition := range capture.Definitions() {
+		inspection.Captures = append(inspection.Captures, orchestrator.CaptureSupport{Kind: definition.Kind, Capability: definition.Capability, Supported: result.Status == "pass" && definition.Kind == capture.Viewport})
 	}
-	var capabilities host.CapabilitiesResponse
-	capabilityRequest := host.CapabilitiesRequest{SchemaVersion: 1}
-	if requirements.UIActions {
-		capabilityRequest.UIActions = true
-		capabilityRequest.BlenderExecutable = selected.Windows().BlenderExecutable
-		capabilityRequest.SessionBrokerExecutable = selected.Windows().SessionBrokerExecutable
-	}
-	if err := adapter.invokeJSON(ctx, selected, "capabilities", capabilityRequest, &capabilities); err != nil {
-		return orchestrator.HostInspection{}, err
-	}
-	if err := validateCapabilities(capabilities); err != nil {
-		return orchestrator.HostInspection{}, err
-	}
-	return orchestrator.HostInspection{SchemaVersion: 1, Status: "pass", Captures: capabilities.Captures, UIActions: capabilities.UIActions}, nil
-}
-
-func validateCapabilities(result host.CapabilitiesResponse) error {
-	if result.SchemaVersion != 1 || result.Status != "pass" || len(result.Captures) != len(capture.Definitions()) {
-		return fmt.Errorf("host returned invalid capture capabilities")
-	}
-	seen := make(map[capture.Kind]struct{}, len(result.Captures))
-	for _, support := range result.Captures {
-		definition, exists := capture.Describe(support.Kind)
-		if !exists || support.Capability != definition.Capability {
-			return fmt.Errorf("host returned invalid capture capabilities")
-		}
-		if _, duplicate := seen[support.Kind]; duplicate {
-			return fmt.Errorf("host returned duplicate capture capability %q", support.Kind)
-		}
-		seen[support.Kind] = struct{}{}
-	}
-	return nil
+	return inspection, nil
 }
 
 func (adapter *Adapter) Acquire(ctx context.Context, selected target.Target, claim orchestrator.LockClaim) error {
@@ -116,7 +91,7 @@ func (adapter *Adapter) Start(ctx context.Context, selected target.Target, reque
 	}
 	for receipt.SessionID == "" {
 		if terminalState(receipt.State) {
-			return orchestrator.RunReceipt{}, fmt.Errorf("interactive task ended before returning a Session identity: %s", receipt.Error)
+			return orchestrator.RunReceipt{}, fmt.Errorf("Linux service ended before returning a Session identity: %s", receipt.Error)
 		}
 		timer := time.NewTimer(adapter.pollInterval)
 		select {
@@ -155,11 +130,13 @@ func (adapter *Adapter) Fetch(ctx context.Context, selected target.Target, recei
 }
 
 func (adapter *Adapter) Settle(ctx context.Context, selected target.Target, receipt orchestrator.RunReceipt) (orchestrator.CleanupState, error) {
+	runtime := selected.Linux().Daemon
 	var response host.SettleResponse
 	if err := adapter.invokeJSON(ctx, selected, "settle", host.SettleRequest{
-		SchemaVersion:           1,
+		SchemaVersion:           2,
+		Linux:                   &runtime,
 		Receipt:                 receipt,
-		SessionBrokerExecutable: selected.Windows().SessionBrokerExecutable,
+		SessionBrokerExecutable: selected.Linux().Daemon.PythonExecutable,
 		SessionName:             orchestrator.SessionNameForRun(receipt.Claim.RunID),
 	}, &response); err != nil {
 		return orchestrator.CleanupState{}, err
@@ -171,8 +148,8 @@ func (adapter *Adapter) Settle(ctx context.Context, selected target.Target, rece
 }
 
 func (adapter *Adapter) invokeJSON(ctx context.Context, selected target.Target, operation string, input any, output any) error {
-	if selected.Platform() != "windows" {
-		return fmt.Errorf("Windows command requires windows platform")
+	if selected.Platform() != "linux" {
+		return fmt.Errorf("Linux command requires linux platform")
 	}
 	if err := selected.Validate(); err != nil {
 		return err
@@ -184,22 +161,7 @@ func (adapter *Adapter) invokeJSON(ctx context.Context, selected target.Target, 
 	if err != nil {
 		return fmt.Errorf("encode host %s request: %w", operation, err)
 	}
-	script := fmt.Sprintf(
-		"$ErrorActionPreference = 'Stop'\n& %s %s %s %s %s\nexit $LASTEXITCODE",
-		powerShellLiteral(selected.Windows().HostExecutable),
-		powerShellLiteral("host"),
-		powerShellLiteral(operation),
-		powerShellLiteral("--state-root"),
-		powerShellLiteral(selected.Windows().WorkRoot),
-	)
-	arguments := []string{
-		"powershell.exe",
-		"-NoLogo",
-		"-NoProfile",
-		"-NonInteractive",
-		"-EncodedCommand",
-		encodePowerShell(script),
-	}
+	arguments := []string{Quote(selected.Linux().HostExecutable) + " host " + Quote(operation) + " --state-root " + Quote(selected.Linux().WorkRoot)}
 	response, err := adapter.ssh.Run(ctx, selected.SSHAlias(), arguments, encoded)
 	if err != nil {
 		return fmt.Errorf("host %s: %w", operation, err)
@@ -234,3 +196,5 @@ func terminalState(state orchestrator.RunState) bool {
 		return false
 	}
 }
+
+func Quote(value string) string { return "'" + strings.ReplaceAll(value, "'", "'\"'\"'") + "'" }

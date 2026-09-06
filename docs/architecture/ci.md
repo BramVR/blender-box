@@ -92,3 +92,9 @@ Exact stop targets the recorded attempt cgroup through a checked directory handl
 An observed failure before release uses a typed root-owned proof instead of an invented Invocation. Exact supervisor cleanup, a completed start command, absent release authority, and fresh unit quiescence must all agree before admission can reopen. An unknown start remains fenced. Failure of a recovery attempt never proves cleanup of the original Windows Run.
 
 The named-target driver and hosted retention guard require coordinated integration with qualified controller authority. Running the hosted driver as local would mislabel proof and bypass that guard. Both hosted jobs remain required after native process, storage, disconnect, reboot, and original-target recovery qualification.
+
+## Linux proof
+
+The separate `Linux Blender proof` workflow uses the `linux-blender-proof` job and the shared evidence, fencing, and public-projection assertions. The local runner targets the documented Ubuntu GNOME Xorg configuration. Its workflow retains the unconditional `hosted-recovery-retention-unavailable` preflight before operator loading or host activity.
+
+Default Go tests exercise Linux orchestration through fake external boundaries. POSIX bootstrap tests and recursive Python import tests skip Windows while the Windows build and existing runtime tests preserve compatibility. These tests do not establish native Linux, Blender, or hosted acceptance. See [Linux Blender proof](../linux-proof.md).

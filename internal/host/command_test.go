@@ -9,7 +9,7 @@ import (
 )
 
 func TestHostCapabilitiesCommandReturnsVersionedCaptureSupport(t *testing.T) {
-	service := NewService(Dependencies{Daemon: &fakeDaemon{}, Desktop: &fakeDesktopCapturer{}})
+	service := NewService(Dependencies{Platform: "windows", Daemon: &fakeDaemon{}, Desktop: &fakeDesktopCapturer{}})
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
 	exitCode := service.Run(

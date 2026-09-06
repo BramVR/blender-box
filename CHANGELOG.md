@@ -4,6 +4,10 @@
 
 - Add fixed Linux proof-controller helper, worker, private file access, and enrollment artifacts; runtime dispatch requires matching native qualification.
 - Add a local persistent proof-controller bootstrap preview and tested admission/recovery model; native dispatch remains unqualified.
+- Keep Linux daemon and Blender temporary files under each private Run root, with prelaunch validation and exact settlement cleanup.
+- Recover interrupted Linux setup final receipts only when prior pending hashes match both installed artifacts, and reject relative or noncanonical host paths before traversal.
+
+- Add Linux targets, read-only readiness, explicit static-user-unit setup, and fenced Scenario execution with reviewed daemon provenance; preserve Windows wire compatibility and keep native Linux and hosted proof as outstanding acceptance requirements.
 - Add platform-aware named targets with legacy Windows profile support, atomic user-local storage, and recovery bound to original Run authority; prepare named-target proof and block hosted execution until private recovery authority can be retained.
 - Preserve owned command cleanup when onboarding proof receipt or process setup fails.
 - Accept Blender's numeric PNG resolution metadata in onboarding proof and preserve verified cleanup when retained evidence fails validation.
