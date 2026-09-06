@@ -19,7 +19,10 @@ import test_proof_controller as baseline
 model = baseline.controller
 import proof_controller_native as native
 import proof_controller_store as store
-import proof_controller_worker as worker
+if model.fcntl is not None:
+    import proof_controller_worker as worker
+else:
+    worker = None
 
 
 def spec():
@@ -121,6 +124,7 @@ class NativeParsingTests(unittest.TestCase):
                 native.NativeReceipt.parse(raw)
 
 
+@unittest.skipUnless(model.fcntl is not None, "POSIX native controller fixtures")
 class NativeStoreTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
@@ -254,6 +258,7 @@ class StopOps(native.LinuxOps):
         return self.unit_empty
 
 
+@unittest.skipUnless(model.fcntl is not None, "POSIX native controller fixtures")
 class NativeStopTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
@@ -313,6 +318,7 @@ class NativeCLITests(unittest.TestCase):
         return subprocess.run([sys.executable, str(baseline.ROOT / "scripts" / script), *args], input=raw,
                               capture_output=True, timeout=10, check=False, env=env)
 
+    @unittest.skipUnless(model.fcntl is not None, "POSIX private files and ownership")
     def test_actual_enrollment_manifest_hashes_modes_fixture_and_false_qualification(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary).resolve()
@@ -372,6 +378,7 @@ class NativeCLITests(unittest.TestCase):
             self.assertEqual(repeat.returncode, 1)
             self.assertEqual(repeat.stderr, b"")
 
+    @unittest.skipUnless(model.fcntl is not None, "POSIX private files and ownership")
     def test_cli_bad_enrollment_and_qualification_never_expose_traceback_or_input(self):
         with tempfile.TemporaryDirectory() as temporary:
             path = Path(temporary).resolve() / "bad.json"
@@ -402,6 +409,7 @@ class NativeCLITests(unittest.TestCase):
         with self.assertRaisesRegex(model.ControllerError, "native-policy-invalid"):
             native.NativePolicy.parse(model.proof.canonical(without_tmpfiles))
 
+    @unittest.skipUnless(model.fcntl is not None, "POSIX private files and ownership")
     def test_qualified_loader_checks_every_pinned_byte_before_capabilities(self):
         contents = {path: ("pinned " + path).encode() for path in native.artifact_paths()}
         tools = {path: ("tool " + path).encode() for path in native.TOOLS}
@@ -450,6 +458,7 @@ class NativeCLITests(unittest.TestCase):
         attempt(str(native.BASE / "scripts/proof_controller_worker.py"))
         attempt("/usr/bin/scp")
 
+    @unittest.skipUnless(model.fcntl is not None, "POSIX private files and ownership")
     def test_fixed_tool_symlink_resolves_with_root_owner_model_and_rejects_untrusted_link(self):
         from types import SimpleNamespace
         actual_lstat = Path.lstat
@@ -491,6 +500,7 @@ class NativeCLITests(unittest.TestCase):
             ops.assert_not_called()
 
 
+@unittest.skipUnless(model.fcntl is not None, "POSIX native controller fixtures")
 class WorkerProtocolTests(unittest.TestCase):
     def test_real_socket_gate_has_zero_work_before_authorized_envelope(self):
         expires = (datetime.now(timezone.utc) + timedelta(minutes=5)).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -587,6 +597,7 @@ class WorkerProtocolTests(unittest.TestCase):
             connection.sendall.assert_not_called()
 
 
+@unittest.skipUnless(model.fcntl is not None, "POSIX native controller fixtures")
 class NativeLifecycleTests(unittest.TestCase):
     def setUp(self):
         self.fixture = baseline.ControllerTests("run")

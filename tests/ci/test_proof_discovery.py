@@ -1,0 +1,47 @@
+from pathlib import Path
+import subprocess
+import sys
+import unittest
+
+
+class ProofDiscoveryTests(unittest.TestCase):
+    def test_discovery_without_posix_modules_keeps_portable_contracts(self):
+        script = """
+import sys
+import unittest
+
+sys.modules['resource'] = None
+sys.modules['fcntl'] = None
+loader = unittest.TestLoader()
+suite = unittest.TestSuite([
+    loader.discover('tests/ci', pattern='test_proof_controller*.py'),
+    loader.discover('tests/ci', pattern='test_proof_adoption.py'),
+])
+assert not loader.errors, '\\n'.join(loader.errors)
+assert 'proof_controller_worker' not in sys.modules
+required = {
+    'test_proof_controller.WireAndCLITests.test_request_exact_keys_bounds_and_duplicates',
+    'test_proof_controller.WireAndCLITests.test_dispatch_never_reflects_input_or_starts_anything',
+    'test_proof_controller_native.NativeParsingTests.test_unit_parser_rejects_partial_duplicate_and_inconsistent_identity',
+    'test_proof_controller_native.NativeParsingTests.test_native_receipt_only_accepts_unique_fixed_subtree',
+    'test_proof_controller_native.NativeCLITests.test_scp_pin_and_tmpfiles_binding_are_required',
+    'test_proof_controller_native.NativeCLITests.test_false_or_wrong_binding_refuses_before_any_native_mutation',
+}
+pending = list(suite)
+discovered = set()
+while pending:
+    case = pending.pop()
+    if isinstance(case, unittest.TestSuite):
+        pending.extend(case)
+    else:
+        discovered.add(case.id())
+assert required <= discovered, required - discovered
+result = unittest.TextTestRunner(verbosity=2).run(suite)
+skipped = {case.id() for case, reason in result.skipped}
+assert required.isdisjoint(skipped), required & skipped
+assert result.wasSuccessful()
+"""
+        result = subprocess.run([sys.executable, "-c", script],
+                                cwd=Path(__file__).resolve().parents[2],
+                                capture_output=True, text=True, timeout=30, check=False)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)

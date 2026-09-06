@@ -16,6 +16,7 @@ import test_proof_controller_native as fixtures
 model, native, protocol, store = fixtures.model, fixtures.native, fixtures.worker, fixtures.store
 
 
+@unittest.skipUnless(model.fcntl is not None, "POSIX native controller fixtures")
 class PublicAdoptionTests(unittest.TestCase):
     def setUp(self):
         self.fixture = fixtures.NativeLifecycleTests("run")
@@ -175,6 +176,7 @@ class PublicAdoptionTests(unittest.TestCase):
         self.assertEqual((self.stops, self.releases), (0, 0))
 
 
+@unittest.skipUnless(model.fcntl is not None, "POSIX native controller fixtures")
 class ProtectedProofTests(unittest.TestCase):
     setUp = base.ControllerTests.setUp
     reopen = base.ControllerTests.reopen
