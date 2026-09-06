@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Opt-in prepared Windows baseline, through the public Blender Box CLI."""
+"""Opt-in prepared Windows proofs, through the public Blender Box CLI."""
 
 import argparse
 import base64
@@ -22,6 +22,8 @@ import zlib
 
 
 REQUIRED = ("preparation", "readiness", "scenario", "evidence", "recovery", "cleanup")
+NAMED_REQUIRED = ("target-catalog", "target-binding", "target-restoration", "target-forget")
+PROOF_TARGET = "onboarding-proof"
 CLEANUP = ("session_stopped", "payload_removed", "run_root_removed", "lock_released")
 CHECKS = {
     "host.windows", "host.console-user", "host.ssh-user", "host.limited-token-policy",
@@ -317,6 +319,33 @@ def verify_readiness(record):
     require(CHECKS <= seen, "readiness-failed")
 
 
+def windows_target(target):
+    require(isinstance(target, dict), "operator-config-invalid")
+    keys = {"ssh_user", "work_root", "interactive_user", "task_name", "blender_executable",
+            "session_broker_executable", "host_executable"}
+    version = target.get("schema_version")
+    require(type(version) is int, "operator-config-invalid")
+    if version == 1:
+        require(set(target) == keys | {"schema_version", "ssh_alias"}, "operator-config-invalid")
+        view = dict(target)
+    elif version == 2:
+        require(target.get("platform") == "windows", "operator-platform-unsupported")
+        require(set(target) == {"schema_version", "platform", "ssh_alias", "windows"}
+                and isinstance(target["windows"], dict) and set(target["windows"]) == keys,
+                "operator-config-invalid")
+        view = {"schema_version": 1, "ssh_alias": target["ssh_alias"], **target["windows"]}
+    else:
+        raise ProofError("operator-config-invalid")
+    require(all(isinstance(view[k], str) and view[k] for k in keys)
+            and matches(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}", view["ssh_alias"]), "operator-config-invalid")
+    return view
+
+
+def target_document(view):
+    return {"schema_version": 2, "platform": "windows", "ssh_alias": view["ssh_alias"],
+            "windows": {k: v for k, v in view.items() if k not in ("schema_version", "ssh_alias")}}
+
+
 @dataclasses.dataclass(frozen=True)
 class Operator:
     target: dict
@@ -325,6 +354,10 @@ class Operator:
     authorization: dict
     ssh_config: Path | None
     publish_viewport: bool = False
+
+    @property
+    def windows(self):
+        return windows_target(self.target)
 
     @classmethod
     def load(cls, path, candidate):
@@ -336,11 +369,7 @@ class Operator:
         target, expected = data.get("target"), data.get("expected_host")
         fixture, auth = data.get("fixture"), data.get("authorization")
         require(all(isinstance(v, dict) for v in (target, expected, fixture, auth)), "operator-config-invalid")
-        target_keys = {"schema_version", "ssh_alias", "ssh_user", "work_root", "interactive_user",
-                       "task_name", "blender_executable", "session_broker_executable", "host_executable"}
-        require(set(target) == target_keys and target["schema_version"] == 1
-                and all(isinstance(target[k], str) and target[k] for k in target_keys - {"schema_version"})
-                and matches(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}", target["ssh_alias"]), "operator-config-invalid")
+        windows_target(target)
         require(set(expected) == {"hostname", "windows_build", "blender_version", "identity_sid", "daemon_sha256"}
                 and matches(r"[A-Za-z0-9_.-]{1,128}", expected.get("hostname"))
                 and matches(r"\d{4,6}", expected.get("windows_build"))
@@ -377,6 +406,7 @@ class ProofRequest:
     output: Path
     execution: str = "local"
     driver_sha: str | None = None
+    proof: str = "baseline"
 
 
 class Commands:
@@ -405,7 +435,8 @@ class Commands:
             if self.on_run_id is not None:
                 self.on_run_id(value)
 
-    def run(self, args, timeout=180, stdin=None, marker=False, env=None, recovery=False, limit=24 << 20, cleanup_grace=5):
+    def run(self, args, timeout=180, stdin=None, marker=False, env=None, recovery=False, limit=24 << 20, cleanup_grace=5,
+            expected_error=None):
         require(os.name == "posix" and os.uname().sysname in ("Darwin", "Linux")
                 and all(hasattr(os, name) for name in ("waitid", "WNOWAIT", "P_PID")),
                 "controller-platform-unsupported")
@@ -557,7 +588,11 @@ class Commands:
             settle_process()
         if failure or errors:
             raise failure or errors[0]
-        require(process.returncode == 0, "command-failed")
+        if expected_error is not None:
+            require(process.returncode != 0 and expected_error.encode() in outputs["stderr"],
+                    "target-mismatch-not-rejected")
+        else:
+            require(process.returncode == 0, "command-failed")
         return outputs["stdout"]
 
     def json(self, args, **kwargs):
@@ -584,6 +619,74 @@ def configure_ssh(commands, config):
                         + " -o ClearAllForwardings=yes \"$@\"\n", encoding="utf-8")
         shim.chmod(0o700)
     commands.env["PATH"] = str(shim_root) + os.pathsep + commands.env.get("PATH", "")
+
+
+def prepare_hosted_credentials(env):
+    for key in ("OPERATOR_CONFIG", "SSH_KEY", "KNOWN_HOSTS", "SSH_HOSTNAME", "TS_CLIENT_ID", "TS_CLIENT_SECRET"):
+        require(bool(env.get(key)), "hosted-credential-missing")
+    config = document(env["OPERATOR_CONFIG"])
+    require(config.get("fixture") == {"id": "windows-onboarding-prepared-v1", "kind": "dedicated", "state": "prepared"},
+            "fixture-not-prepared")
+    auth = config.get("authorization")
+    require(isinstance(auth, dict) and auth.get("candidate_sha") == "protected-environment-approval"
+            and matches(SHA, env.get("CANDIDATE_SHA")), "hosted-authorization-invalid")
+    auth["candidate_sha"] = env["CANDIDATE_SHA"]
+    target = windows_target(config.get("target"))
+    alias, user, host = target["ssh_alias"], target["ssh_user"], env["SSH_HOSTNAME"]
+    require(matches(r"[A-Za-z0-9_.:-]+", host) and matches(r"[A-Za-z0-9_.@\\-]+", user), "ssh-config-invalid")
+    root = Path(env["RUNNER_TEMP"]) / "onboarding-credentials"
+    require(root.is_absolute(), "ssh-config-invalid")
+    root.mkdir(mode=0o700)
+    (root / "key").write_text(env["SSH_KEY"])
+    (root / "known_hosts").write_text(env["KNOWN_HOSTS"])
+    ssh = root / "config"
+    ssh.write_text(f'Host {alias}\n  HostName {host}\n  User "{user.replace(chr(92), chr(92)*2)}"\n'
+                   f'  IdentityFile "{root}/key"\n  UserKnownHostsFile "{root}/known_hosts"\n'
+                   '  IdentitiesOnly yes\n  BatchMode yes\n  StrictHostKeyChecking yes\n'
+                   '  ForwardAgent no\n  ClearAllForwardings yes\n')
+    config["ssh_config"] = str(ssh)
+    (root / "operator.json").write_bytes(canonical(config))
+
+
+def verify_catalog(commands, client, original):
+    source = commands.private / "import-source.json"
+    raw = canonical(original)
+    source.write_bytes(raw)
+    imported = commands.json([client, "targets", "import", PROOF_TARGET, "--file", source, "--json"])
+    require(imported == {"schema_version": 1, "name": PROOF_TARGET, "platform": "windows", "status": "imported"},
+            "target-import-mismatch")
+    require(source.read_bytes() == raw, "target-source-rewritten")
+    source.write_bytes(b"source changed after import\n")
+    shown = commands.json([client, "targets", "show", PROOF_TARGET, "--json"])
+    require(shown == {"schema_version": 1, "name": PROOF_TARGET, "platform": "windows",
+                      "target": target_document(original)}, "target-copy-migration-mismatch")
+    listed = commands.json([client, "targets", "list", "--json"])
+    require(listed == {"schema_version": 1, "targets": [{"name": PROOF_TARGET, "platform": "windows"}]},
+            "target-list-mismatch")
+
+
+def verify_target_mismatch(commands, client):
+    guard = commands.private / "transport-tripwire"
+    guard.mkdir(mode=0o700)
+    attempts = guard / "attempts"
+    attempts.write_bytes(b"")
+    for name in ("ssh", "scp"):
+        shim = guard / name
+        shim.write_text("#!/bin/sh\nprintf '%s\\n' " + shlex.quote(name) + " >> "
+                        + shlex.quote(str(attempts)) + "\nexit 97\n")
+        shim.chmod(0o700)
+    env = dict(commands.env, PATH=str(guard) + os.pathsep + commands.env.get("PATH", ""))
+    failures = []
+    for operation in ("status", "stop"):
+        try:
+            commands.run([client, operation, "--target-name", PROOF_TARGET, "--run", commands.run_id,
+                          "--timeout", "10s", "--json"], timeout=30, env=env,
+                         expected_error="target does not match original Run")
+        except Exception as error:
+            failures.append(error)
+    require(attempts.read_bytes() == b"", "target-mismatch-attempted-transport")
+    if failures:
+        raise failures[0]
 
 
 def inspect_host(commands, target):
@@ -619,26 +722,33 @@ def baseline(request, commands_factory=Commands):
     private, public = request.output / "private", request.output / "public"
     private.mkdir(mode=0o700)
     public.mkdir(mode=0o700)
-    report = {"schema_version": 1, "proof": "windows-onboarding-baseline",
+    named = request.proof == "named-target"
+    required = REQUIRED + NAMED_REQUIRED if named else REQUIRED
+    report = {"schema_version": 1, "proof": "windows-onboarding-" + ("named-target" if named else "baseline"),
               "candidate_sha": request.candidate_sha if matches(SHA, request.candidate_sha) else None,
               "driver_sha": request.driver_sha if matches(SHA, request.driver_sha) else None,
               "execution": request.execution, "status": "fail", "run": None, "cleanup": None,
-              "outcomes": {name: {"status": "not-run", "code": "not-run"} for name in REQUIRED},
+              "outcomes": {name: {"status": "not-run", "code": "not-run"} for name in required},
               "not_exercised": ["pairing", "fixture-reset", "kept-session-stop"], "artifacts": []}
     commands = commands_factory(private, request.candidate_checkout)
+    commands.env["BLENDER_BOX_CONFIG_DIR"] = str((private / "config").absolute())
     def publish_run_id(run_id):
         report["run"] = {"run_id": run_id}
         write_outcome(public, report)
     commands.on_run_id = publish_run_id
     current, run, target_path, client = "preparation", None, private / "target.json", private / "blender-box"
+    selector = ["--target", target_path]
+    catalog_attempted, replacement_attempted = False, False
     old_signals = {}
     if threading.current_thread() is threading.main_thread():
         for sig in (signal.SIGINT, signal.SIGTERM):
             old_signals[sig] = signal.signal(sig, lambda *_: commands.cancelled.set())
     try:
-        require(matches(SHA, request.candidate_sha) and request.execution in ("local", "hosted"), "candidate-invalid")
+        require(matches(SHA, request.candidate_sha) and request.execution in ("local", "hosted")
+                and request.proof in ("baseline", "named-target"), "candidate-invalid")
         if request.execution == "hosted":
             require(matches(SHA, request.driver_sha) and os.environ.get("GITHUB_RUN_ATTEMPT") == "1", "hosted-authorization-invalid")
+            raise ProofError("hosted-recovery-retention-unavailable")
         operator = Operator.load(request.operator_config, request.candidate_sha)
         require(commands.run(["git", "rev-parse", "HEAD"], timeout=30).decode().strip() == request.candidate_sha,
                 "candidate-mismatch")
@@ -646,15 +756,22 @@ def baseline(request, commands_factory=Commands):
                 "candidate-dirty")
         target_path.write_bytes(canonical(operator.target))
         configure_ssh(commands, operator.ssh_config)
-        observed = inspect_host(commands, operator.target)
+        observed = inspect_host(commands, operator.windows)
         verify_expected_host(operator.expected, observed)
         commands.run(["go", "build", "-trimpath", "-o", client, "./cmd/blender-box"], timeout=300)
+        if named:
+            current = "target-catalog"
+            catalog_attempted = True
+            verify_catalog(commands, client, operator.windows)
+            selector = ["--target-name", PROOF_TARGET]
+            report["outcomes"][current] = {"status": "pass", "code": "import-copy-migration-verified"}
+            current = "preparation"
         host = private / "blender-box.exe"
         host_env = dict(commands.env, GOOS="windows", GOARCH="amd64", CGO_ENABLED="0")
         commands.run(["go", "build", "-trimpath", "-o", host, "./cmd/blender-box"], timeout=300, env=host_env)
         host_bytes = read_regular(private, host.name, 128 << 20)
         host_hash, host_size = digest(host_bytes), len(host_bytes)
-        setup_args = [client, "windows", "setup", "--target", target_path, "--host-binary", host, "--json"]
+        setup_args = [client, "windows", "setup", *selector, "--host-binary", host, "--json"]
         plan = commands.json(setup_args)
         require(plan.get("status") == "plan" and plan.get("applied") is False
                 and plan.get("host_sha256") == host_hash and type(plan.get("host_size")) is int
@@ -665,7 +782,7 @@ def baseline(request, commands_factory=Commands):
             require(applied.get("status") == "applied" and applied.get("applied") is True
                     and applied.get("host_sha256") == host_hash and type(applied.get("host_size")) is int
                     and applied["host_size"] == host_size, "setup-apply-mismatch")
-        installed = inspect_host(commands, operator.target)
+        installed = inspect_host(commands, operator.windows)
         verify_expected_host(operator.expected, installed)
         require(installed["host_sha256"] == host_hash, "installed-host-mismatch")
         report["binaries"] = {"host_sha256": host_hash, "host_size": host_size,
@@ -673,11 +790,11 @@ def baseline(request, commands_factory=Commands):
         report["blender_version"] = operator.expected["blender_version"]
         report["outcomes"][current] = {"status": "pass", "code": "prepared-fixture-verified"}
         current = "readiness"
-        verify_readiness(commands.json([client, "windows", "check", "--target", target_path, "--json"]))
+        verify_readiness(commands.json([client, "windows", "check", *selector, "--json"]))
         report["daemon_capabilities"] = list(CAPABILITIES)
         report["outcomes"][current] = {"status": "pass", "code": "windows-check-passed"}
         current = "scenario"
-        run = commands.json([client, "run", "--target", target_path, "--payload", FIXTURE / "payload.json",
+        run = commands.json([client, "run", *selector, "--payload", FIXTURE / "payload.json",
                              "--timeout", "20m", "--json"], timeout=1320, marker=True)
         fence = Fence.parse(run)
         require(commands.run_id == fence.run_id, "run-marker-mismatch")
@@ -696,16 +813,53 @@ def baseline(request, commands_factory=Commands):
             require(digest(viewport) == next(a.local_sha256 for a in artifacts if a.type == "viewport"),
                     "evidence-changed")
             (public / "viewport.png").write_bytes(viewport)
+        if named:
+            current = "target-binding"
+            before = commands.json([client, "status", *selector, "--run", commands.run_id,
+                                    "--timeout", "60s", "--json"], timeout=100)
+            require(Fence.parse(before) == fence and before.get("state") == "complete"
+                    and before.get("evidence") == run.get("evidence") and not before.get("error"),
+                    "recovery-record-changed")
+            verify_cleanup(before)
+            sentinel = dict(operator.windows, ssh_alias="onboarding-mismatch"
+                            if operator.windows["ssh_alias"] != "onboarding-mismatch" else "onboarding-mismatch-other")
+            sentinel_path = private / "sentinel.json"
+            sentinel_path.write_bytes(canonical(target_document(sentinel)))
+            replacement_attempted = True
+            replaced = commands.json([client, "targets", "import", PROOF_TARGET, "--file", sentinel_path,
+                                      "--replace", "--json"])
+            require(replaced == {"schema_version": 1, "name": PROOF_TARGET, "platform": "windows", "status": "imported"},
+                    "target-replace-mismatch")
+            shown = commands.json([client, "targets", "show", PROOF_TARGET, "--json"])
+            require(shown == {"schema_version": 1, "name": PROOF_TARGET, "platform": "windows",
+                              "target": target_document(sentinel)}, "target-replace-mismatch")
+            verify_target_mismatch(commands, client)
+            report["outcomes"][current] = {"status": "pass", "code": "status-stop-mismatch-offline"}
         current = "recovery"
     except Exception as error:
         code = error.code if isinstance(error, ProofError) else "proof-internal-error"
         report["outcomes"][current] = {"status": "fail", "code": code}
     finally:
+        if named and catalog_attempted and commands.group_cleanup_known:
+            try:
+                if replacement_attempted:
+                    restored = commands.json([client, "targets", "import", PROOF_TARGET, "--file", target_path,
+                                              "--replace", "--json"], recovery=True)
+                    require(restored == {"schema_version": 1, "name": PROOF_TARGET, "platform": "windows", "status": "imported"},
+                            "target-restore-failed")
+                shown = commands.json([client, "targets", "show", PROOF_TARGET, "--json"], recovery=True)
+                require(shown == {"schema_version": 1, "name": PROOF_TARGET, "platform": "windows",
+                                  "target": target_document(operator.windows)}, "target-restore-failed")
+                selector = ["--target-name", PROOF_TARGET]
+                report["outcomes"]["target-restoration"] = {"status": "pass", "code": "original-target-restored"}
+            except Exception:
+                selector = ["--target", target_path]
+                report["outcomes"]["target-restoration"] = {"status": "fail", "code": "target-restore-failed"}
         if commands.run_id and commands.group_cleanup_known:
             recovered = []
             for operation in ("status", "stop", "status"):
                 try:
-                    record = commands.json([client, operation, "--target", target_path, "--run", commands.run_id,
+                    record = commands.json([client, operation, *selector, "--run", commands.run_id,
                                             "--timeout", "60s", "--json"], timeout=100, recovery=True)
                     require(Fence.parse(record, require_session=False).run_id == commands.run_id, "recovery-identity-changed")
                     recovered.append(record)
@@ -732,16 +886,26 @@ def baseline(request, commands_factory=Commands):
         if not commands.group_cleanup_known:
             report["outcomes"]["recovery"] = {"status": "fail", "code": "command-cleanup-unknown"}
             report["outcomes"]["cleanup"] = {"status": "fail", "code": "cleanup-unknown"}
+        if named and catalog_attempted and commands.group_cleanup_known and (not commands.run_id or report["cleanup"]):
+            try:
+                forgotten = commands.json([client, "targets", "forget", PROOF_TARGET, "--json"], recovery=True)
+                require(forgotten.get("status") == "forgotten" and forgotten.get("name") == PROOF_TARGET,
+                        "target-forget-failed")
+                require(commands.json([client, "targets", "list", "--json"], recovery=True)
+                        == {"schema_version": 1, "targets": []}, "target-forget-failed")
+                report["outcomes"]["target-forget"] = {"status": "pass", "code": "proof-profile-forgotten"}
+            except Exception:
+                report["outcomes"]["target-forget"] = {"status": "fail", "code": "target-forget-failed"}
         for sig, previous in old_signals.items():
             signal.signal(sig, previous)
-        report["status"] = "pass" if all(report["outcomes"][name]["status"] == "pass" for name in REQUIRED) else "fail"
+        report["status"] = "pass" if all(report["outcomes"][name]["status"] == "pass" for name in required) else "fail"
         write_outcome(public, report)
     return report
 
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=["baseline"])
+    parser.add_argument("command", choices=["baseline", "named-target"])
     parser.add_argument("--candidate", required=True)
     parser.add_argument("--candidate-checkout", type=Path, required=True)
     parser.add_argument("--operator-config", type=Path, required=True)
@@ -750,13 +914,13 @@ def main(argv=None):
     parser.add_argument("--driver-sha")
     args = parser.parse_args(argv)
     request = ProofRequest(args.candidate, args.candidate_checkout.resolve(), args.operator_config.resolve(),
-                           args.output.absolute(), args.execution, args.driver_sha)
+                           args.output.absolute(), args.execution, args.driver_sha, args.command)
     try:
         report = baseline(request)
     except (OSError, ProofError):
         print("Proof output must be a fresh directory with an existing parent.")
         return 1
-    print("Windows onboarding baseline " + report["status"] + ".")
+    print("Windows onboarding " + args.command + " " + report["status"] + ".")
     return 0 if report["status"] == "pass" else 1
 
 

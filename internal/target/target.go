@@ -1,171 +1,104 @@
 package target
 
 import (
-	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"io"
-	"os"
 	"regexp"
-	"strings"
-	"unicode/utf16"
 
-	"github.com/BramVR/blender-box/internal/safepath"
+	"github.com/BramVR/blender-box/internal/privatefile"
+	"github.com/BramVR/blender-box/internal/strictjson"
+	"github.com/BramVR/blender-box/internal/windowstarget"
 )
 
-const (
-	maxWindowsPathTail         = 238
-	setupOwnerIDLength         = len("bbsa_") + 43
-	maxSetupWorkRootTail       = maxWindowsPathTail - len(`\setup-owner\setup-attempts\`) - setupOwnerIDLength - len(`\`) - setupOwnerIDLength - len(`.ps1`)
-	maxSetupHostExecutableTail = maxWindowsPathTail - len(`.setup-backup-`) - 32
-)
+const MaxDocumentSize = 64 << 10
 
-var (
-	sshAliasPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$`)
-	taskNamePattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._ -]{0,127}$`)
-	userPattern     = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._\\@-]{0,127}$`)
-	workRootPattern = regexp.MustCompile(`^[A-Za-z]:\\[^\r\n"'*?<>|]{1,238}$`)
-	scpPathPattern  = regexp.MustCompile(`^[A-Za-z]:\\[A-Za-z0-9._\\-]{1,238}$`)
-	reservedDevice  = regexp.MustCompile(`(?i)^(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])$`)
-)
+var sshAliasPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$`)
 
-// Target contains operator-selected host values. It contains no credentials or addresses.
 type Target struct {
-	SchemaVersion           int    `json:"schema_version"`
-	SSHAlias                string `json:"ssh_alias"`
-	SSHUser                 string `json:"ssh_user"`
-	WorkRoot                string `json:"work_root"`
-	InteractiveUser         string `json:"interactive_user"`
-	TaskName                string `json:"task_name"`
-	BlenderExecutable       string `json:"blender_executable"`
-	SessionBrokerExecutable string `json:"session_broker_executable"`
-	HostExecutable          string `json:"host_executable"`
+	platform string
+	alias    string
+	windows  windowstarget.Config
 }
 
-func Load(path string) (Target, error) {
-	content, err := os.ReadFile(path)
-	if err != nil {
-		return Target{}, fmt.Errorf("read target: %w", err)
-	}
-	var value Target
-	decoder := json.NewDecoder(bytes.NewReader(content))
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&value); err != nil {
-		return Target{}, fmt.Errorf("parse target: %w", err)
-	}
-	if err := decoder.Decode(&struct{}{}); err != io.EOF {
-		if err == nil {
-			return Target{}, fmt.Errorf("parse target: trailing JSON value")
-		}
-		return Target{}, fmt.Errorf("parse target: %w", err)
-	}
+type document struct {
+	SchemaVersion int                  `json:"schema_version"`
+	Platform      string               `json:"platform"`
+	SSHAlias      string               `json:"ssh_alias"`
+	Windows       windowstarget.Config `json:"windows"`
+}
+
+func NewWindows(alias string, config windowstarget.Config) (Target, error) {
+	value := Target{platform: "windows", alias: alias, windows: config}
 	if err := value.Validate(); err != nil {
 		return Target{}, err
 	}
 	return value, nil
 }
-
+func (value Target) Platform() string              { return value.platform }
+func (value Target) SSHAlias() string              { return value.alias }
+func (value Target) Windows() windowstarget.Config { return value.windows }
 func (value Target) Validate() error {
-	if value.SchemaVersion != 1 {
-		return fmt.Errorf("target schema_version must be 1")
+	if value.platform != "windows" {
+		return fmt.Errorf("target platform must be windows")
 	}
-	if !sshAliasPattern.MatchString(value.SSHAlias) {
+	if !sshAliasPattern.MatchString(value.alias) {
 		return fmt.Errorf("target ssh_alias is unsafe")
 	}
-	if !userPattern.MatchString(value.SSHUser) {
-		return fmt.Errorf("target ssh_user is unsafe")
-	}
-	if !ValidateWindowsPath(value.WorkRoot) {
-		return fmt.Errorf("target work_root must be an absolute safe Windows path")
-	}
-	if !ValidateLegacySCPWindowsPath(value.WorkRoot) {
-		return fmt.Errorf("target work_root must use the legacy-SCP-safe Windows path grammar")
-	}
-	if len(value.WorkRoot[3:]) > maxSetupWorkRootTail {
-		return fmt.Errorf("target work_root must reserve space for setup staging paths")
-	}
-	if !userPattern.MatchString(value.InteractiveUser) {
-		return fmt.Errorf("target interactive_user is unsafe")
-	}
-	if !taskNamePattern.MatchString(value.TaskName) {
-		return fmt.Errorf("target task_name is unsafe")
-	}
-	for label, path := range map[string]string{
-		"blender_executable":        value.BlenderExecutable,
-		"session_broker_executable": value.SessionBrokerExecutable,
-		"host_executable":           value.HostExecutable,
-	} {
-		if !ValidateWindowsPath(path) {
-			return fmt.Errorf("target %s must be an absolute safe Windows file path", label)
-		}
-	}
-	if windowsPathTailUnits(value.HostExecutable) > maxSetupHostExecutableTail {
-		return fmt.Errorf("target host_executable must reserve space for setup replacement paths")
-	}
-	for label, path := range map[string]string{
-		"session_broker_executable": value.SessionBrokerExecutable,
-		"host_executable":           value.HostExecutable,
-	} {
-		rootKey := safepath.WindowsKey(value.WorkRoot)
-		if !strings.HasPrefix(safepath.WindowsKey(path), rootKey+`\`) {
-			return fmt.Errorf("target %s must be inside work_root", label)
-		}
-		parent := path[:strings.LastIndex(path, `\`)]
-		if safepath.WindowsKey(parent) == rootKey {
-			return fmt.Errorf("target %s must be inside a dedicated executable directory", label)
-		}
-		pathKey := safepath.WindowsKey(path)
-		for _, directory := range []string{"runs", "receipts", "setup-owner"} {
-			if strings.HasPrefix(pathKey, safepath.WindowsKey(value.WorkRoot+`\`+directory+`\`)) {
-				return fmt.Errorf("target %s must not use a reserved state directory", label)
-			}
-		}
-	}
-	executables := []string{value.BlenderExecutable, value.SessionBrokerExecutable, value.HostExecutable}
-	seenExecutables := make(map[string]struct{}, len(executables))
-	for _, path := range executables {
-		key := safepath.WindowsKey(path)
-		if _, exists := seenExecutables[key]; exists {
-			return fmt.Errorf("target executable paths must be distinct")
-		}
-		seenExecutables[key] = struct{}{}
-	}
-	return nil
+	return value.windows.Validate()
 }
-
-// ValidateLegacySCPWindowsPath accepts paths that cannot add syntax to a legacy remote SCP command.
-func ValidateLegacySCPWindowsPath(path string) bool {
-	return scpPathPattern.MatchString(path) && ValidateWindowsPath(path)
+func (value Target) MarshalJSON() ([]byte, error) {
+	if err := value.Validate(); err != nil {
+		return nil, err
+	}
+	return json.Marshal(document{SchemaVersion: 2, Platform: value.platform, SSHAlias: value.alias, Windows: value.windows})
 }
-
-// ValidateWindowsPath accepts the absolute, non-device Windows path grammar used across process boundaries.
-func ValidateWindowsPath(path string) bool {
-	if !workRootPattern.MatchString(path) || windowsPathTailUnits(path) > maxWindowsPathTail || strings.Contains(path, "/") || strings.HasSuffix(path, `\`) {
-		return false
-	}
-	for _, segment := range strings.Split(path[3:], `\`) {
-		if segment == "" || segment == "." || segment == ".." || strings.TrimRight(segment, " .") != segment {
-			return false
-		}
-		for _, character := range segment {
-			if character < 32 || strings.ContainsRune(`%:"'*?<>|`, character) {
-				return false
-			}
-		}
-		base := segment
-		if dot := strings.IndexByte(base, '.'); dot >= 0 {
-			base = base[:dot]
-		}
-		if reservedDevice.MatchString(base) {
-			return false
-		}
-	}
-	return true
+func (value Target) Fingerprint() string {
+	encoded, _ := value.MarshalJSON()
+	hash := sha256.Sum256(append([]byte("blender-box-target-v1\x00"), encoded...))
+	return hex.EncodeToString(hash[:])
 }
-
-func windowsPathTailUnits(path string) int {
-	if len(path) < 3 {
-		return 0
+func Load(path string) (Target, error) {
+	content, err := privatefile.ReadSource(path, MaxDocumentSize)
+	if err != nil {
+		return Target{}, fmt.Errorf("read target: %w", err)
 	}
-	return len(utf16.Encode([]rune(path[3:])))
+	return Decode(content)
+}
+func Decode(content []byte) (Target, error) {
+	if len(content) > MaxDocumentSize {
+		return Target{}, fmt.Errorf("target exceeds size limit")
+	}
+	var fields map[string]json.RawMessage
+	if err := strictjson.Decode(content, &fields); err != nil {
+		return Target{}, fmt.Errorf("parse target: %w", err)
+	}
+	var version int
+	if err := json.Unmarshal(fields["schema_version"], &version); err != nil {
+		return Target{}, fmt.Errorf("invalid target schema_version")
+	}
+	switch version {
+	case 1:
+		var wire struct {
+			SchemaVersion int    `json:"schema_version"`
+			SSHAlias      string `json:"ssh_alias"`
+			windowstarget.Config
+		}
+		if err := strictjson.Decode(content, &wire); err != nil {
+			return Target{}, fmt.Errorf("parse target: %w", err)
+		}
+		return NewWindows(wire.SSHAlias, wire.Config)
+	case 2:
+		var wire document
+		if err := strictjson.Decode(content, &wire); err != nil {
+			return Target{}, fmt.Errorf("parse target: %w", err)
+		}
+		if wire.Platform != "windows" {
+			return Target{}, fmt.Errorf("unsupported target platform")
+		}
+		return NewWindows(wire.SSHAlias, wire.Windows)
+	default:
+		return Target{}, fmt.Errorf("target schema_version must be 1 or 2")
+	}
 }

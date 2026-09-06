@@ -602,14 +602,13 @@
 
     <section id="contract">
       <div class="section-head">
-        <h2>Proposed contract</h2>
-        <p>Repo config stays non-secret and Blender-specific. Operator Host Config supplies the SSH alias, Windows work root, interactive user, and task name. Tailscale details stay in SSH configuration.</p>
+        <h2>Scenario proposal and implemented target contract</h2>
+        <p>The richer Scenario format below remains proposed. Operator targets use the implemented versioned JSON contract, stored outside the consuming repository. Tailscale details stay in SSH configuration. See the <a href="../architecture/target-contract.md">target contract decision</a> for normalization, local storage, and recovery authority.</p>
       </div>
 
       <div class="grid two">
         <article>
 <pre><code>version: 1
-defaultTargetProfile: windows-blender
 scenarios:
   addon-smoke:
     requirements:
@@ -648,40 +647,43 @@ scenarios:
         required: true</code></pre>
         </article>
         <article>
-<pre><code>version: 1
-targetProfiles:
-  windows-blender:
-    host: blender-win-01
-hosts:
-  blender-win-01:
-    platform: windows
-    transport: ssh
-    ssh:
-      host: blender-win
-      user: &lt;windows-ssh-user&gt;
-    workRoot: "&lt;operator-managed-work-root&gt;"
-    interactive:
-      user: "&lt;logged-in-windows-user&gt;"
-      task: BlenderStallSession
-    sessionBroker:
-      command: blendersessiond</code></pre>
+<pre><code>{
+  "schema_version": 2,
+  "platform": "windows",
+  "ssh_alias": "owned-windows-host",
+  "windows": {
+    "ssh_user": "HOST\\operator",
+    "interactive_user": "HOST\\operator",
+    "work_root": "C:\\BlenderBox",
+    "task_name": "BlenderBoxHost",
+    "blender_executable": "C:\\Blender\\blender.exe",
+    "session_broker_executable": "C:\\BlenderBox\\bin\\blendersessiond.exe",
+    "host_executable": "C:\\BlenderBox\\bin\\blender-box.exe"
+  }
+}</code></pre>
+          <p>Flat version 1 Windows targets remain accepted and normalize to the same values. Unknown versions, platforms, fields, and duplicate JSON keys fail locally. There is no implicit default target.</p>
         </article>
       </div>
 
       <div class="mt-14">
-<pre><code># setup is a read-only preview unless --apply is present
-blender-box windows check --target target.json --json
-blender-box windows setup --target target.json --host-binary blender-box.exe --json
-blender-box windows setup --target target.json --host-binary blender-box.exe --apply --json
+<pre><code>blender-box targets import studio --file target.json --json
+blender-box targets list --json
+blender-box targets show studio --json
 
-blender-box plan addon-smoke
-blender-box doctor --scenario addon-smoke
-blender-box run --target target.json --payload payload.json --json
+# setup is a read-only preview unless --apply is present
+blender-box windows setup --target-name studio --host-binary blender-box.exe --json
+blender-box windows setup --target-name studio --host-binary blender-box.exe --apply --json
+blender-box windows check --target-name studio --json
+blender-box plan --target-name studio --payload payload.json --json
+blender-box doctor --target-name studio --payload payload.json --json
+blender-box run --target-name studio --payload payload.json --json
+blender-box status --target-name studio --run bbx_... --json
+blender-box stop --target-name studio --run bbx_... --json
 
-blender-box run --keep-on-failure addon-smoke
-blender-box status --run bbx_...
-blender-box attach bbx_...
-blender-box stop bbx_...</code></pre>
+blender-box targets forget studio --json</code></pre>
+        <p>Each target-taking command requires exactly one of <code>--target PATH</code> and <code>--target-name NAME</code>. Import copies a normalized profile into the user's configuration directory; replacement requires <code>--replace</code>. Forgetting a profile preserves Run authority.</p>
+        <p>Before contacting the host, recovery checks the selected configuration against a local record published before the original Run contacted the host. Host observations must match the complete original claim and the first accepted Session identity, which is pinned durably. Missing or corrupt local authority fails closed. Identical configuration under another name or either supported file version permits recovery; replacing a name with different configuration cannot redirect it.</p>
+        <p>This binds declared configuration, including the SSH alias string. SSH route resolution and host-key trust remain operator-managed; the local fingerprint does not identify a physical host. Payload planning and capture/UI-aware host diagnosis are implemented; richer Scenario planning, attach, and keep policy remain future work.</p>
         <p class="note">Implemented setup ownership: <code>windows setup --apply</code> stages its bounded program under a private setup-owner root and launches it through <code>blendersessiond</code> with immutable Attempt, Launch, request-hash, and deadline fences. Lost responses reconcile through the same fence; failure cleanup removes staged files only after the daemon proves the exact process tree is gone.</p>
       </div>
 
@@ -696,7 +698,7 @@ blender-box stop bbx_...</code></pre>
         </article>
         <article class="card">
           <h3>Network configuration</h3>
-          <p>The user config selects the normal Host Config, so <code>run</code> needs no transport flag. Host Config stores a safe SSH alias, not a Tailnet IP or Tailscale credential.</p>
+          <p>The command selects an explicit target file or saved name, so <code>run</code> needs no transport flag. The target stores a safe SSH alias, not a Tailnet IP or Tailscale credential.</p>
         </article>
       </div>
     </section>

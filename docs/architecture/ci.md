@@ -35,6 +35,8 @@ The repository gate's public interface is three commands. Runner setup and langu
 
 Real Windows Blender proof stays outside the ordinary CI and Security workflows. The separate `Windows onboarding proof` workflow calls the repository's baseline runner against an explicitly authorized owned host. The project-local `verify-blender-box` skill documents the same public CLI path. Proof records the candidate and driver revisions, binary hashes, Run and Session identities, evidence, and cleanup without publishing private host details.
 
+Hosted proof currently refuses preflight until private original Run authority can survive loss of its ephemeral controller. Public artifact uploads retain neither the original claim nor the Session pin. A private durable retention mechanism and recovery procedure are prerequisites for enabling hosted execution.
+
 ## Synthesis decision
 
 The repo-owned command design is the base. It keeps the caller's interface small and makes local proof match hosted proof. The alternative's explicit job names and runner limits were retained in thin workflow files.
@@ -63,13 +65,13 @@ Hosted pull-request jobs never receive host credentials or network access to an 
 
 `scripts/onboarding_proof.py` supplies one local and hosted execution path. It builds the candidate's client and Windows executable, verifies the expected physical host and Windows identity before mutation, checks readiness, executes the baseline Scenario, and validates the returned bundle. Fresh `status`, exact `stop`, and a second `status` invocation must agree on the complete exposed Run authority. The public CLI remains responsible for acquiring and releasing the Host Lock and settling its exact Session.
 
-The baseline requires preparation, readiness, Scenario, evidence, recovery, and cleanup outcomes. Missing work fails the gate. Existing SSH connectivity does not count as product pairing. Generic evidence and recovery assertions are reusable by later `named-target`, `host-install`, and `pair-and-run` jobs; the baseline cube assertions remain separate. The first live target is Windows; adding this runner does not establish live coverage.
+The baseline requires preparation, readiness, Scenario, evidence, recovery, and cleanup outcomes. Missing work fails the gate. Existing SSH connectivity does not count as product pairing. The `named-target` job extends the same runner with import, named selection, and replacement-refusal outcomes. It runs after `baseline` so the two jobs do not share the Windows fixture concurrently. Generic evidence and recovery assertions remain reusable by later `host-install` and `pair-and-run` jobs; the baseline cube assertions remain separate. The first live target is Windows; adding this runner does not establish live coverage.
 
 Setup authorization names the exact candidate, target digest, prior installed binary hash, and the existing `windows setup` scope, including task registration and ACL changes. A passing read-only check does not authorize replacing an installed executable. Baseline proof does not reset installations or operator state. Dedicated prepared and unpaired restoration needs its own exact resource ownership and authorized mechanism before dependent work can run without recurring maintainer steps.
 
 Raw configuration, check details, stdout, stderr, and recovery journals remain private. Public output contains a fixed projection of validated facts and an explicitly permitted viewport capture. A viewport proves scene appearance; it does not prove Blender window chrome or the Windows desktop. Failure and unknown cleanup remain visible, and a later successful recovery does not turn a failed Scenario into a passing proof.
 
-The workflow file and local tests cannot prove GitHub environment settings, network policy, dedicated fixture restoration, or a live desktop. A missing, cancelled, skipped, fake-only, or merely local result does not satisfy the required hosted `baseline` job. See [Run the Windows onboarding baseline](../windows-onboarding-proof.md) for configuration and the remaining enrollment boundary.
+The workflow file and local tests cannot prove GitHub environment settings, network policy, dedicated fixture restoration, or a live desktop. A missing, cancelled, skipped, fake-only, or merely local result does not satisfy either required hosted job. See [Run Windows onboarding proof](../windows-onboarding-proof.md) for configuration and the remaining enrollment boundary.
 
 ## Proof design decision
 

@@ -14,12 +14,18 @@ import (
 	"github.com/BramVR/blender-box/internal/uiaction"
 )
 
-func (runner *Runner) recoverUIFailure(ctx context.Context, intent RunIntent, previous RunReceipt, root string) (RunResult, bool, error) {
+func (runner *Runner) recoverUIFailure(ctx context.Context, intent RunIntent, previous *RunReceipt, root string) (RunResult, bool, error) {
 	recoveryCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), runner.settlementTTL())
 	defer cancel()
-	receipt, observeErr := runner.recoverReceipt(recoveryCtx, intent.Target, intent.RunID)
-	if observeErr != nil || !receipt.Claim.Equal(previous.Claim) || (previous.SessionID != "" && receipt.SessionID != previous.SessionID) {
-		return RunResult{}, false, fmt.Errorf("UI failure receipt could not be recovered")
+	receipt, observeErr := runner.recoverReceipt(recoveryCtx, intent.Target, intent.RunID, previous.SessionID)
+	if !IsAuthorityError(observeErr) && receipt.Claim.Equal(previous.Claim) && receipt.SessionID != "" && (previous.SessionID == "" || previous.SessionID == receipt.SessionID) {
+		previous.SessionID = receipt.SessionID
+	}
+	if observeErr != nil {
+		return RunResult{}, false, fmt.Errorf("UI failure receipt could not be recovered: %w", observeErr)
+	}
+	if !receipt.Claim.Equal(previous.Claim) || (previous.SessionID != "" && receipt.SessionID != previous.SessionID) {
+		return RunResult{}, false, authorityFailure("UI failure receipt identity changed")
 	}
 	if err := uiaction.ValidateProgress(previous.UIActions, receipt.UIActions); err != nil {
 		return RunResult{}, false, err
@@ -51,6 +57,9 @@ func (runner *Runner) recoverUIFailure(ctx context.Context, intent RunIntent, pr
 			}
 		}
 		if err != nil {
+			if IsAuthorityError(err) {
+				return RunResult{}, false, errors.Join(recoveryErr, err)
+			}
 			recoveryErr = errors.Join(recoveryErr, err)
 			continue
 		}
@@ -60,8 +69,14 @@ func (runner *Runner) recoverUIFailure(ctx context.Context, intent RunIntent, pr
 	if err != nil || !cleanup.Known() {
 		return RunResult{}, false, errors.Join(recoveryErr, err, fmt.Errorf("UI failure cleanup is not known"))
 	}
-	terminal, err := runner.recoverReceipt(recoveryCtx, intent.Target, intent.RunID)
-	if err != nil || !terminal.Claim.Equal(receipt.Claim) || terminal.SessionID != receipt.SessionID || !terminal.Cleanup.Known() {
+	terminal, err := runner.recoverReceipt(recoveryCtx, intent.Target, intent.RunID, receipt.SessionID)
+	if err != nil {
+		return RunResult{}, true, errors.Join(recoveryErr, fmt.Errorf("settled UI receipt could not be verified: %w", err))
+	}
+	if !terminal.Claim.Equal(receipt.Claim) || terminal.SessionID != receipt.SessionID {
+		return RunResult{}, true, errors.Join(recoveryErr, authorityFailure("settled UI receipt identity changed"))
+	}
+	if !terminal.Cleanup.Known() {
 		return RunResult{}, true, errors.Join(recoveryErr, fmt.Errorf("settled UI receipt could not be verified"))
 	}
 	if err := uiaction.ValidateProgress(receipt.UIActions, terminal.UIActions); err != nil {
@@ -88,6 +103,9 @@ func (runner *Runner) recoverUIFailure(ctx context.Context, intent RunIntent, pr
 					recoveryErr = errors.Join(recoveryErr, fmt.Errorf("recovered UI journal hash differs from host evidence"))
 					break
 				}
+				if _, err := runner.journal.settlement(intent.Target, terminal); err != nil {
+					return RunResult{}, true, errors.Join(recoveryErr, err)
+				}
 				if err := writeEvidence(root, file.Path, encoded.Bytes()); err != nil {
 					recoveryErr = errors.Join(recoveryErr, err)
 					break
@@ -98,6 +116,9 @@ func (runner *Runner) recoverUIFailure(ctx context.Context, intent RunIntent, pr
 		}
 	}
 	result := RunResult{SchemaVersion: 1, RunID: terminal.Claim.RunID, RequestID: terminal.Claim.RequestID, RequestHash: terminal.Claim.RequestHash, Deadline: terminal.Claim.Deadline, SessionID: terminal.SessionID, State: terminal.State, Evidence: available, Cleanup: cleanup, Error: terminal.Error, UIActions: terminal.UIActions, UIJournalRecoveredFromReceipt: recoveredJournal}
+	if _, err := runner.journal.settlement(intent.Target, terminal); err != nil {
+		return RunResult{}, true, errors.Join(recoveryErr, err)
+	}
 	if err := publishBundleMetadata(root, result); err != nil {
 		recoveryErr = errors.Join(recoveryErr, err)
 	}

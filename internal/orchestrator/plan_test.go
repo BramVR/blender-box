@@ -13,19 +13,9 @@ import (
 
 func TestPlanReturnsCanonicalCaptureAndEvidenceRequirements(t *testing.T) {
 	loaded := loadCapturePayload(t)
-	selected := target.Target{
-		SchemaVersion:           1,
-		SSHAlias:                "windows-test",
-		SSHUser:                 "test-user",
-		WorkRoot:                `C:\BlenderBoxTest`,
-		InteractiveUser:         "test-user",
-		TaskName:                "BlenderBoxTest",
-		BlenderExecutable:       `C:\Program Files\Blender Foundation\Blender 5.2\blender.exe`,
-		SessionBrokerExecutable: `C:\BlenderBoxTest\bin\blendersessiond.exe`,
-		HostExecutable:          `C:\BlenderBoxTest\bin\blender-box.exe`,
-	}
+	selected := testTarget(t)
 
-	plan, err := New(nil).Plan(PlanIntent{Target: selected, Payload: loaded})
+	plan, err := New(nil, filepath.Join(t.TempDir(), "private")).Plan(PlanIntent{Target: selected, Payload: loaded})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -51,7 +41,7 @@ func TestPlanReturnsCanonicalCaptureAndEvidenceRequirements(t *testing.T) {
 
 func TestDoctorFailsWhenHostDoesNotSupportARequestedCapture(t *testing.T) {
 	loaded := loadCapturePayload(t)
-	selected := validPlanTarget()
+	selected := validPlanTarget(t)
 	host := &fakeHost{inspection: HostInspection{
 		SchemaVersion: 1,
 		Status:        "pass",
@@ -62,7 +52,7 @@ func TestDoctorFailsWhenHostDoesNotSupportARequestedCapture(t *testing.T) {
 		},
 	}}
 
-	result, err := New(host).Doctor(context.Background(), PlanIntent{Target: selected, Payload: loaded})
+	result, err := New(host, filepath.Join(t.TempDir(), "private")).Doctor(context.Background(), PlanIntent{Target: selected, Payload: loaded})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -92,16 +82,6 @@ func loadCapturePayload(t *testing.T) payload.Payload {
 	return loaded
 }
 
-func validPlanTarget() target.Target {
-	return target.Target{
-		SchemaVersion:           1,
-		SSHAlias:                "windows-test",
-		SSHUser:                 "test-user",
-		WorkRoot:                `C:\BlenderBoxTest`,
-		InteractiveUser:         "test-user",
-		TaskName:                "BlenderBoxTest",
-		BlenderExecutable:       `C:\Program Files\Blender Foundation\Blender 5.2\blender.exe`,
-		SessionBrokerExecutable: `C:\BlenderBoxTest\bin\blendersessiond.exe`,
-		HostExecutable:          `C:\BlenderBoxTest\bin\blender-box.exe`,
-	}
+func validPlanTarget(t *testing.T) target.Target {
+	return testTarget(t)
 }

@@ -43,6 +43,8 @@ func Run(ctx context.Context, args []string, stdin io.Reader, stdout io.Writer, 
 		return 2
 	}
 	switch args[0] {
+	case "targets":
+		return targetsCommand(args[1:], stdout, stderr)
 	case "plan":
 		return planCommand(args[1:], stdout, stderr, dependencies)
 	case "doctor":
@@ -72,19 +74,20 @@ func Run(ctx context.Context, args []string, stdin io.Reader, stdout io.Writer, 
 
 func printUsage(output io.Writer) {
 	fmt.Fprintln(output, "usage:")
-	fmt.Fprintln(output, "  blender-box plan --target PATH --payload PATH [--json]")
-	fmt.Fprintln(output, "  blender-box doctor --target PATH --payload PATH [--timeout 2m] [--json]")
-	fmt.Fprintln(output, "  blender-box windows check --target PATH [--json]")
-	fmt.Fprintln(output, "  blender-box windows setup --target PATH --host-binary PATH [--apply] [--json]")
-	fmt.Fprintln(output, "  blender-box run --target PATH --payload PATH [--evidence-dir PATH] [--timeout 15m] [--json]")
-	fmt.Fprintln(output, "  blender-box status --target PATH --run RUN_ID [--timeout 2m] [--json]")
-	fmt.Fprintln(output, "  blender-box stop --target PATH --run RUN_ID [--timeout 2m] [--json]")
+	fmt.Fprintln(output, "  blender-box targets import NAME --file PATH [--replace] [--json]\n  blender-box targets list [--json]\n  blender-box targets show NAME [--json]\n  blender-box targets forget NAME [--json]")
+	fmt.Fprintln(output, "  blender-box windows check (--target PATH | --target-name NAME) [--json]")
+	fmt.Fprintln(output, "  blender-box windows setup (--target PATH | --target-name NAME) --host-binary PATH [--apply] [--json]")
+	fmt.Fprintln(output, "  blender-box run (--target PATH | --target-name NAME) --payload PATH [--evidence-dir PATH] [--timeout 15m] [--json]")
+	fmt.Fprintln(output, "  blender-box status (--target PATH | --target-name NAME) --run RUN_ID [--timeout 2m] [--json]")
+	fmt.Fprintln(output, "  blender-box stop (--target PATH | --target-name NAME) --run RUN_ID [--timeout 2m] [--json]")
+	fmt.Fprintln(output, "  blender-box plan (--target PATH | --target-name NAME) --payload PATH [--json]")
+	fmt.Fprintln(output, "  blender-box doctor (--target PATH | --target-name NAME) --payload PATH [--timeout 2m] [--json]")
 }
 
 func doctorCommand(ctx context.Context, args []string, stdout io.Writer, stderr io.Writer, dependencies Dependencies) int {
 	flags := flag.NewFlagSet("doctor", flag.ContinueOnError)
 	flags.SetOutput(stderr)
-	targetPath := flags.String("target", "", "path to target JSON")
+	selection := targetFlags(flags)
 	payloadPath := flags.String("payload", "", "path to Run Payload JSON")
 	timeout := flags.Duration("timeout", 2*time.Minute, "host inspection timeout")
 	asJSON := flags.Bool("json", false, "print versioned JSON")
@@ -94,11 +97,11 @@ func doctorCommand(ctx context.Context, args []string, stdout io.Writer, stderr 
 		}
 		return 2
 	}
-	if *targetPath == "" || *payloadPath == "" || *timeout <= 0 || flags.NArg() != 0 {
-		fmt.Fprintln(stderr, "doctor requires --target PATH and --payload PATH; --timeout must be positive")
+	if !selection.valid(flags) || *payloadPath == "" || *timeout <= 0 || flags.NArg() != 0 {
+		fmt.Fprintln(stderr, "doctor requires exactly one of --target PATH or --target-name NAME and --payload PATH; --timeout must be positive")
 		return 2
 	}
-	selected, err := target.Load(*targetPath)
+	selected, err := selection.resolve()
 	if err != nil {
 		return fail(stderr, "load target", err)
 	}
@@ -131,7 +134,7 @@ func doctorCommand(ctx context.Context, args []string, stdout io.Writer, stderr 
 func planCommand(args []string, stdout io.Writer, stderr io.Writer, dependencies Dependencies) int {
 	flags := flag.NewFlagSet("plan", flag.ContinueOnError)
 	flags.SetOutput(stderr)
-	targetPath := flags.String("target", "", "path to target JSON")
+	selection := targetFlags(flags)
 	payloadPath := flags.String("payload", "", "path to Run Payload JSON")
 	asJSON := flags.Bool("json", false, "print versioned JSON")
 	if err := flags.Parse(args); err != nil {
@@ -140,11 +143,11 @@ func planCommand(args []string, stdout io.Writer, stderr io.Writer, dependencies
 		}
 		return 2
 	}
-	if *targetPath == "" || *payloadPath == "" || flags.NArg() != 0 {
-		fmt.Fprintln(stderr, "plan requires --target PATH and --payload PATH")
+	if !selection.valid(flags) || *payloadPath == "" || flags.NArg() != 0 {
+		fmt.Fprintln(stderr, "plan requires exactly one of --target PATH or --target-name NAME and --payload PATH")
 		return 2
 	}
-	selected, err := target.Load(*targetPath)
+	selected, err := selection.resolve()
 	if err != nil {
 		return fail(stderr, "load target", err)
 	}
@@ -170,7 +173,7 @@ func planCommand(args []string, stdout io.Writer, stderr io.Writer, dependencies
 func windowsSetupCommand(ctx context.Context, args []string, stdout io.Writer, stderr io.Writer, dependencies Dependencies) int {
 	flags := flag.NewFlagSet("windows setup", flag.ContinueOnError)
 	flags.SetOutput(stderr)
-	targetPath := flags.String("target", "", "path to target JSON")
+	selection := targetFlags(flags)
 	hostBinary := flags.String("host-binary", "", "path to the Windows blender-box executable")
 	apply := flags.Bool("apply", false, "install the bounded host binary and exact Scheduled Task")
 	asJSON := flags.Bool("json", false, "print versioned JSON")
@@ -180,11 +183,11 @@ func windowsSetupCommand(ctx context.Context, args []string, stdout io.Writer, s
 		}
 		return 2
 	}
-	if *targetPath == "" || *hostBinary == "" || flags.NArg() != 0 {
-		fmt.Fprintln(stderr, "windows setup requires --target PATH and --host-binary PATH")
+	if !selection.valid(flags) || *hostBinary == "" || flags.NArg() != 0 {
+		fmt.Fprintln(stderr, "windows setup requires exactly one of --target PATH or --target-name NAME and --host-binary PATH")
 		return 2
 	}
-	selected, err := target.Load(*targetPath)
+	selected, err := selection.resolve()
 	if err != nil {
 		return fail(stderr, "load target", err)
 	}
@@ -206,7 +209,7 @@ func windowsSetupCommand(ctx context.Context, args []string, stdout io.Writer, s
 func windowsCheckCommand(ctx context.Context, args []string, stdout io.Writer, stderr io.Writer, dependencies Dependencies) int {
 	flags := flag.NewFlagSet("windows check", flag.ContinueOnError)
 	flags.SetOutput(stderr)
-	targetPath := flags.String("target", "", "path to target JSON")
+	selection := targetFlags(flags)
 	asJSON := flags.Bool("json", false, "print versioned JSON")
 	if err := flags.Parse(args); err != nil {
 		if err == flag.ErrHelp {
@@ -214,11 +217,11 @@ func windowsCheckCommand(ctx context.Context, args []string, stdout io.Writer, s
 		}
 		return 2
 	}
-	if *targetPath == "" || flags.NArg() != 0 {
-		fmt.Fprintln(stderr, "windows check requires --target PATH")
+	if !selection.valid(flags) || flags.NArg() != 0 {
+		fmt.Fprintln(stderr, "windows check requires exactly one of --target PATH or --target-name NAME")
 		return 2
 	}
-	selected, err := target.Load(*targetPath)
+	selected, err := selection.resolve()
 	if err != nil {
 		fmt.Fprintf(stderr, "ERROR: %v\n", err)
 		return 1
@@ -251,7 +254,7 @@ func windowsCheckCommand(ctx context.Context, args []string, stdout io.Writer, s
 func runCommand(ctx context.Context, args []string, stdout io.Writer, stderr io.Writer, dependencies Dependencies) int {
 	flags := flag.NewFlagSet("run", flag.ContinueOnError)
 	flags.SetOutput(stderr)
-	targetPath := flags.String("target", "", "path to target JSON")
+	selection := targetFlags(flags)
 	payloadPath := flags.String("payload", "", "path to Run Payload JSON")
 	evidenceDir := flags.String("evidence-dir", "", "new directory for the Evidence Bundle")
 	timeout := flags.Duration("timeout", 15*time.Minute, "Run deadline from now")
@@ -262,8 +265,8 @@ func runCommand(ctx context.Context, args []string, stdout io.Writer, stderr io.
 		}
 		return 2
 	}
-	if *targetPath == "" || *payloadPath == "" || *timeout <= 0 || flags.NArg() != 0 {
-		fmt.Fprintln(stderr, "run requires --target PATH and --payload PATH; --timeout must be positive")
+	if !selection.valid(flags) || *payloadPath == "" || *timeout <= 0 || flags.NArg() != 0 {
+		fmt.Fprintln(stderr, "run requires exactly one of --target PATH or --target-name NAME and --payload PATH; --timeout must be positive")
 		return 2
 	}
 	runID, requestID, controllerID, err := identities(dependencies)
@@ -271,7 +274,7 @@ func runCommand(ctx context.Context, args []string, stdout io.Writer, stderr io.
 		return fail(stderr, "create Run identity", err)
 	}
 	fmt.Fprintf(stderr, "RUN_ID=%s\n", runID)
-	selected, err := target.Load(*targetPath)
+	selected, err := selection.resolve()
 	if err != nil {
 		return failRunResult(stdout, stderr, *asJSON, orchestrator.RunResult{SchemaVersion: 1, RunID: runID, State: orchestrator.StateFailed, Error: err.Error()}, err)
 	}
@@ -310,7 +313,7 @@ func runCommand(ctx context.Context, args []string, stdout io.Writer, stderr io.
 			}
 			failure.Error = err.Error()
 		}
-		if *asJSON && !hasUIResult && !orchestrator.IsPreflightError(err) {
+		if *asJSON && !hasUIResult && !orchestrator.IsPreflightError(err) && !orchestrator.IsAuthorityError(err) {
 			recoveryCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
 			defer cancel()
 			if status, statusErr := dependencies.Runner.Status(recoveryCtx, selected, runID); statusErr == nil {
@@ -336,7 +339,7 @@ func runCommand(ctx context.Context, args []string, stdout io.Writer, stderr io.
 func statusCommand(ctx context.Context, args []string, stdout io.Writer, stderr io.Writer, dependencies Dependencies) int {
 	flags := flag.NewFlagSet("status", flag.ContinueOnError)
 	flags.SetOutput(stderr)
-	targetPath := flags.String("target", "", "path to target JSON")
+	selection := targetFlags(flags)
 	runID := flags.String("run", "", "exact Run ID")
 	timeout := flags.Duration("timeout", 2*time.Minute, "status request timeout")
 	asJSON := flags.Bool("json", false, "print versioned JSON")
@@ -346,11 +349,11 @@ func statusCommand(ctx context.Context, args []string, stdout io.Writer, stderr 
 		}
 		return 2
 	}
-	if *targetPath == "" || *runID == "" || *timeout <= 0 || flags.NArg() != 0 {
-		fmt.Fprintln(stderr, "status requires --target PATH and --run RUN_ID; --timeout must be positive")
+	if !selection.valid(flags) || *runID == "" || *timeout <= 0 || flags.NArg() != 0 {
+		fmt.Fprintln(stderr, "status requires exactly one of --target PATH or --target-name NAME and --run RUN_ID; --timeout must be positive")
 		return 2
 	}
-	selected, err := target.Load(*targetPath)
+	selected, err := selection.resolve()
 	if err != nil {
 		return failRun(stderr, orchestrator.RunID(*runID), err)
 	}
@@ -376,7 +379,7 @@ func statusCommand(ctx context.Context, args []string, stdout io.Writer, stderr 
 func stopCommand(ctx context.Context, args []string, stdout io.Writer, stderr io.Writer, dependencies Dependencies) int {
 	flags := flag.NewFlagSet("stop", flag.ContinueOnError)
 	flags.SetOutput(stderr)
-	targetPath := flags.String("target", "", "path to target JSON")
+	selection := targetFlags(flags)
 	runID := flags.String("run", "", "exact Run ID")
 	timeout := flags.Duration("timeout", 2*time.Minute, "receipt lookup timeout")
 	asJSON := flags.Bool("json", false, "print versioned JSON")
@@ -386,11 +389,11 @@ func stopCommand(ctx context.Context, args []string, stdout io.Writer, stderr io
 		}
 		return 2
 	}
-	if *targetPath == "" || *runID == "" || *timeout <= 0 || flags.NArg() != 0 {
-		fmt.Fprintln(stderr, "stop requires --target PATH and --run RUN_ID; --timeout must be positive")
+	if !selection.valid(flags) || *runID == "" || *timeout <= 0 || flags.NArg() != 0 {
+		fmt.Fprintln(stderr, "stop requires exactly one of --target PATH or --target-name NAME and --run RUN_ID; --timeout must be positive")
 		return 2
 	}
-	selected, err := target.Load(*targetPath)
+	selected, err := selection.resolve()
 	if err != nil {
 		return failRun(stderr, orchestrator.RunID(*runID), err)
 	}
