@@ -234,6 +234,15 @@ class Policy:
     candidate_checkout: Path
     operator_config: Path
     expected_client_sha256: str
+    variant: str = "baseline"
+
+
+@dataclass(frozen=True)
+class BoundAttempt:
+    invocation: Invocation
+    mode: str
+    process: str
+    release: str
 
 
 @dataclass(frozen=True)
@@ -391,12 +400,12 @@ class ProofWorker:
         self.commands_factory = commands_factory
         self.clock = clock or (lambda: datetime.now(timezone.utc))
 
-    def baseline(self, job):
+    def baseline(self, job, *, native_authority=None):
         require(self.clock() < utc(job.request.expires_at), "execution-expired")
         verify_worker_inputs(job)
         request = proof.ProofRequest(job.request.candidate_sha, job.candidate_checkout,
                                      job.root / "inputs/operator.json", job.output,
-                                     execution="hosted", driver_sha=job.request.driver_sha)
+                                     execution="hosted", driver_sha=job.request.driver_sha, proof=job.request.variant)
 
         def commands(private, cwd):
             result = self.commands_factory(private, cwd)
@@ -415,7 +424,7 @@ class ProofWorker:
             return result
         previous = os.umask(0o077)
         try:
-            return proof.baseline(request, commands)
+            return proof.baseline(request, commands, native_authority=native_authority)
         finally:
             os.umask(previous)
 
@@ -567,7 +576,8 @@ class Controller:
                    state["expected_client_sha256"], state["attempt"], state["inputs_digest"])
 
     def start(self, control, request):
-        require(request.variant == "baseline", "variant-driver-unavailable")
+        require(request.variant == self.policy.variant and request.variant in ("baseline", "named-target"),
+                "variant-driver-unavailable")
         require((request.candidate_sha, request.driver_sha) == (self.policy.candidate_sha, self.policy.driver_sha),
                 "request-not-authorized")
         require(proof.matches(proof.HASH, self.policy.expected_client_sha256), "client-artifact-unavailable")
@@ -614,7 +624,24 @@ class Controller:
             require(invocation.boot_id == observed.boot_id, "service-observation-invalid")
         return observed
 
+    def bound_attempt(self, control, state):
+        inspect = getattr(self.service, "inspect_attempt", None)
+        if inspect is None or state["attempt"] == 0:
+            return None
+        job = self.job(control, state)
+        verify_inputs(control, job, state["inputs_digest"], self.files)
+        return inspect(job.request, job.attempt, Invocation.parse(state["invocation"]) if state["invocation"] else None)
+
     def terminate(self, state):
+        attempt = self.bound_attempt(self.control_root / state["execution_id"], state)
+        if attempt is not None:
+            require(state["invocation"] == asdict(attempt.invocation), "service-identity-unavailable")
+            if attempt.process == "live":
+                require(self.service.stop_exact(attempt.invocation) is True, "local-termination-unknown")
+            after = self.bound_attempt(self.control_root / state["execution_id"], state)
+            require(after == replace(attempt, process="gone"), "local-termination-unknown")
+            state["local_termination"] = "proven"
+            return
         if state["invocation"] is None:
             require(self.unreleased(self.control_root / state["execution_id"], state, fresh=True, publish=True) is not None,
                     "service-identity-unavailable")
@@ -694,6 +721,21 @@ class Controller:
         return state
 
     def reconcile(self, control, state):
+        attempt = self.bound_attempt(control, state)
+        if attempt is not None and attempt.release == "withheld":
+            state.update(invocation=asdict(attempt.invocation), closed=True, phase="unresolved")
+            self.save(control, state)
+            fresh = self.bound_attempt(control, state)
+            require(fresh == attempt, "native-attempt-changed")
+            if fresh.process == "gone":
+                state.update(local_termination="proven", proof_result="fail")
+                if fresh.mode == "baseline":
+                    require(state["attempt"] == 1 and state["recovery_inputs"] is None, "native-attempt-invalid")
+                    state.update(phase="settled", windows_cleanup="proven")
+                else:
+                    require(state["attempt"] > 1 and state["recovery_inputs"] is not None, "native-attempt-invalid")
+                self.save(control, state)
+            return state
         if state["invocation"] is None:
             proof_record = self.unreleased(control, state, fresh=True, publish=True)
             if proof_record is not None:

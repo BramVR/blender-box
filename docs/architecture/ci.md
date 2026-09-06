@@ -91,7 +91,9 @@ Exact stop targets the recorded attempt cgroup through a checked directory handl
 
 An observed failure before release uses a typed root-owned proof instead of an invented Invocation. Exact supervisor cleanup, a completed start command, absent release authority, and fresh unit quiescence must all agree before admission can reopen. An unknown start remains fenced. Failure of a recovery attempt never proves cleanup of the original Windows Run.
 
-The named-target driver and hosted retention guard require coordinated integration with qualified controller authority. Running the hosted driver as local would mislabel proof and bypass that guard. Both hosted jobs remain required after native process, storage, disconnect, reboot, and original-target recovery qualification.
+After a helper crash before Invocation persistence, a matching native receipt supplies the original identity. Adoption binds the accepted request, intent, inputs, and current process evidence, then durably closes admission before stop. It never authorizes release or Scenario replay. Conflicting publication prefixes or replacement processes remain fenced. Reconciliation repeats these checks after an adoption-save crash. A never-authorized first attempt can settle as failure only after fresh proof of original process exit. A failed recovery attempt preserves the original Windows Run.
+
+One immutable policy variant selects the baseline or named-target Windows driver. The root supervisor reloads qualified runtime and durable request authorization before sending the exact native receipt through the inherited socket. The worker checks the root peer and both process identities, binds the proof request and retained inputs, then consumes and closes the socket before candidate execution. This authority admits only the concrete Windows proof host. Direct hosted calls and Linux hosted proof retain their preflight refusal. Both Windows hosted jobs remain required after native process, storage, disconnect, reboot, and original-target recovery qualification.
 
 ## Linux proof
 

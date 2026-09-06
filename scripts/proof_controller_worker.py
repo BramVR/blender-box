@@ -17,8 +17,8 @@ import proof_controller as model
 import proof_controller_native as native
 
 
-def receive(connection, limit):
-    raw, _, flags, _ = connection.recvmsg(limit + 1)
+def receive(connection, limit, flags=0):
+    raw, _, flags, _ = connection.recvmsg(limit + 1, 0, flags)
     model.require(raw and len(raw) <= limit and not flags & socket.MSG_TRUNC, "native-message-invalid")
     return model.document(raw, limit)
 
@@ -43,36 +43,99 @@ def worker_envelope(policy, files, receipt, mode):
     model.require(state["invocation"] == asdict(inv) and state["phase"] == ("running" if mode == "baseline" else "recovering"),
                   "native-authorization-invalid")
     job = controller.job(root, state)
+    policy.admit(model.Command("start", job.request.execution_id, job.request))
     model.verify_inputs(root, job, state["inputs_digest"], files)
     if mode == "baseline":
         model.require(datetime.now(timezone.utc) < model.utc(job.request.expires_at), "execution-expired")
-    return {"schema_version": 1, "request": asdict(job.request), "attempt": job.attempt,
+    return {"schema_version": 1, "envelope_version": 2, "native_receipt": asdict(receipt), "request": asdict(job.request), "attempt": job.attempt,
             "expected_client_sha256": job.expected_client_sha256, "inputs_digest": job.inputs_digest,
             "mode": mode, "retained": state["recovery_inputs"]}
 
 
 def parse_envelope(value):
     model.require(isinstance(value, dict) and set(value) == {"schema_version", "request", "attempt", "expected_client_sha256",
-                  "inputs_digest", "mode", "retained"} and value["schema_version"] == 1
+                  "inputs_digest", "mode", "retained", "native_receipt", "envelope_version"} and value["schema_version"] == 1
+                  and type(value["envelope_version"]) is int and value["envelope_version"] == 2
                   and type(value["attempt"]) is int and 0 < value["attempt"] <= 9999
                   and value["mode"] in ("baseline", "recover")
                   and model.proof.matches(model.proof.HASH, value["inputs_digest"])
                   and model.proof.matches(model.proof.HASH, value["expected_client_sha256"]), "native-message-invalid")
     request = model.ProofExecutionRequest.parse(value["request"])
-    model.require(request.variant == "baseline", "variant-driver-unavailable")
     job = model.Job(request, native.JOBS / request.execution_id, native.CANDIDATE,
                     value["expected_client_sha256"], value["attempt"], value["inputs_digest"])
-    return job, value["mode"], value["retained"]
+    receipt = native.NativeReceipt.parse(value["native_receipt"])
+    inv = receipt.invocation
+    model.require((inv.execution_id, inv.attempt, inv.request_digest) == (request.execution_id, job.attempt, request.digest)
+                  and (value["mode"] == "baseline") == (job.attempt == 1), "native-message-invalid")
+    return job, value["mode"], value["retained"], receipt
+
+
+class NativeAdmission:
+    def __init__(self, gate):
+        model.require(type(gate) is socket.socket, "native-peer-invalid")
+        self.gate = gate
+        gate.set_inheritable(False)
+        gate.settimeout(native.STARTUP_SECONDS)
+        self.job, self.mode, self.retained, receipt = parse_envelope(receive(gate, model.MAX_FILE, socket.MSG_PEEK))
+        NativeAdmission.check_process(gate, receipt)
+
+    @staticmethod
+    def check_process(gate, receipt):
+        inv = receipt.invocation
+        model.require(type(gate) is socket.socket and gate.fileno() >= 0
+                      and gate.family == socket.AF_UNIX
+                      and gate.getsockopt(socket.SOL_SOCKET, socket.SO_TYPE) == socket.SOCK_SEQPACKET,
+                      "native-peer-invalid")
+        pid, uid, _ = struct.unpack("3i", gate.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, 12))
+        model.require(uid == 0 and pid == inv.parent_pid and os.getpid() == inv.leader_pid
+                      and os.getppid() == inv.parent_pid and os.getuid() == os.geteuid() != 0,
+                      "native-peer-invalid")
+        ops = native.LinuxOps(None)
+        model.require(ops.boot() == inv.boot_id, "native-process-changed")
+        parent, child = ops.process(pid), ops.process(os.getpid())
+        model.require(parent.start == receipt.supervisor_start and parent.cgroup == native.UNIT_CGROUP
+                      and (child.start, child.parent, child.cgroup) == (inv.leader_start_ticks, pid, inv.cgroup),
+                      "native-process-changed")
+        with ops.group(inv.cgroup) as fd:
+            info = os.fstat(fd)
+            model.require((info.st_dev, info.st_ino) == (receipt.cgroup_device, receipt.cgroup_inode),
+                          "native-cgroup-changed")
+
+    def consume(self):
+        gate = self.gate
+        try:
+            model.require(type(gate) is socket.socket and gate.fileno() >= 0, "native-peer-invalid")
+            gate.setblocking(False)
+            job, mode, retained, receipt = parse_envelope(receive(gate, model.MAX_FILE, socket.MSG_DONTWAIT))
+            NativeAdmission.check_process(gate, receipt)
+            return job, mode, retained
+        finally:
+            if type(gate) is socket.socket:
+                gate.close()
+            self.gate = None
+
+    def require_proof(self, request):
+        job, mode, _ = NativeAdmission.consume(self)
+        expected = model.proof.ProofRequest(job.request.candidate_sha, job.candidate_checkout,
+            job.root / "inputs/operator.json", job.output, execution="hosted",
+            driver_sha=job.request.driver_sha, proof=job.request.variant)
+        model.require(mode == "baseline" and request == expected, "native-request-changed")
+        model.verify_worker_inputs(job)
 
 
 def run_worker(gate, result, worker=None):
+    gate.set_inheritable(False)
+    result.set_inheritable(False)
     gate.settimeout(native.STARTUP_SECONDS)
     result.sendall(b'{"schema_version":1,"ready":true}')
-    envelope = receive(gate, model.MAX_FILE)
-    job, mode, retained = parse_envelope(envelope)
+    authority = NativeAdmission(gate)
+    job, mode, retained = authority.job, authority.mode, authority.retained
     worker = worker or model.ProofWorker()
     model.require(mode != "baseline" or datetime.now(timezone.utc) < model.utc(job.request.expires_at), "execution-expired")
-    completed = worker.baseline(job) if mode == "baseline" else worker.recover(job, retained)
+    if mode == "recover":
+        job, mode, retained = NativeAdmission.consume(authority)
+        model.require(mode == "recover", "native-request-changed")
+    completed = worker.baseline(job, native_authority=authority) if mode == "baseline" else worker.recover(job, retained)
     raw = model.proof.canonical({"schema_version": 1, "result": completed})
     model.require(len(raw) <= model.MAX_FILE, "native-result-invalid")
     result.sendall(raw)
@@ -216,7 +279,9 @@ class Supervisor:
                 mode = parse_release(release, receipt, authorization)
                 model.require(mode == expected_mode and self.ops.boot() == inv.boot_id, "native-authorization-invalid")
                 native.reject_unreleased(self.files, {"execution_id": inv.execution_id, "attempt": inv.attempt})
-                envelope = worker_envelope(self.policy, self.files, receipt, mode)
+                policy, files = native.load_runtime()
+                model.require(policy.digest == self.policy.digest, "native-policy-changed")
+                envelope = worker_envelope(policy, files, receipt, mode)
                 gate.sendall(model.proof.canonical(envelope))
                 connection.sendall(model.proof.canonical({"schema_version": 1, "released": True, "invocation": asdict(inv)}))
 

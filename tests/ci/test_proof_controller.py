@@ -1,4 +1,7 @@
 import copy
+from contextlib import contextmanager, ExitStack
+import socket
+import struct
 from dataclasses import asdict, replace
 from datetime import datetime, timedelta, timezone
 import importlib.util
@@ -47,6 +50,61 @@ class Crash(BaseException):
     pass
 
 
+@contextmanager
+def native_gate(job, *, mode="baseline", retained=None, mutate=None, delayed=False):
+    import proof_controller_native as native
+    import proof_controller_worker as protocol
+    with tempfile.TemporaryDirectory() as directory, ExitStack() as stack:
+        group_fd = os.open(directory, os.O_RDONLY | os.O_DIRECTORY)
+        stack.callback(os.close, group_fd)
+        info = os.fstat(group_fd)
+        inv = controller.Invocation("1" * 32, "2" * 32, native.UNIT_CGROUP + "/attempt-" + "3" * 32,
+                                    301, 4001, 300, job.request.execution_id, job.attempt, job.request.digest)
+        receipt = native.NativeReceipt(inv, 3000, info.st_dev, info.st_ino)
+        envelope = {"schema_version": 1, "envelope_version": 2, "native_receipt": asdict(receipt), "request": asdict(job.request),
+                    "attempt": job.attempt, "expected_client_sha256": job.expected_client_sha256,
+                    "inputs_digest": job.inputs_digest, "mode": mode, "retained": retained}
+        observations = {"uid": 0, "peer": 300, "pid": 301, "parent": 300, "start": 4001, "boot": "1" * 32}
+        if mutate:
+            mutate(envelope, observations)
+        parent, gate = socket.socketpair(socket.AF_UNIX, socket.SOCK_DGRAM)
+        stack.callback(parent.close)
+        stack.callback(gate.close)
+        observations["fds"] = {gate.fileno()}
+        original = socket.socket.getsockopt
+        def getsockopt(endpoint, level, option, *args):
+            if endpoint.fileno() in observations["fds"] and option == socket.SO_TYPE:
+                return socket.SOCK_SEQPACKET
+            if endpoint.fileno() in observations["fds"] and option == socket.SO_PEERCRED:
+                return struct.pack("3i", observations["peer"], observations["uid"], 0)
+            return original(endpoint, level, option, *args)
+        @contextmanager
+        def group(ops, name):
+            assert name == inv.cgroup
+            yield group_fd
+        def process(ops, pid):
+            return native.Process(300, 1, 3000, native.UNIT_CGROUP) if pid == 300 else native.Process(
+                pid, observations["parent"], observations["start"], inv.cgroup)
+        stack.enter_context(mock.patch.multiple(native, JOBS=job.root.parent, CANDIDATE=job.candidate_checkout))
+        stack.enter_context(mock.patch.object(socket, "SO_PEERCRED", 17, create=True))
+        stack.enter_context(mock.patch.object(socket.socket, "getsockopt", getsockopt))
+        for name, value in (("getpid", observations["pid"]), ("getppid", observations["parent"]), ("getuid", os.getuid()), ("geteuid", os.geteuid())):
+            stack.enter_context(mock.patch.object(os, name, return_value=value))
+        stack.enter_context(mock.patch.object(native.LinuxOps, "boot", lambda ops: observations["boot"]))
+        stack.enter_context(mock.patch.object(native.LinuxOps, "process", process))
+        stack.enter_context(mock.patch.object(native.LinuxOps, "group", group))
+        observations["send"] = lambda: parent.sendall(proof.canonical(envelope))
+        if not delayed:
+            observations["send"]()
+        yield gate, protocol, observations
+
+
+def admitted_baseline(worker, job):
+    with native_gate(job) as (gate, protocol, _):
+        authority = protocol.NativeAdmission(gate)
+        return worker.baseline(job, native_authority=authority)
+
+
 class FakeService:
     def __init__(self, control):
         self.control = control
@@ -90,7 +148,7 @@ class FakeService:
             controller.fcntl.flock(lock, controller.fcntl.LOCK_EX | controller.fcntl.LOCK_NB)
             controller.fcntl.flock(lock, controller.fcntl.LOCK_UN)
         try:
-            result = worker.baseline(job) if mode == "baseline" else worker.recover(job, retained)
+            result = admitted_baseline(worker, job) if mode == "baseline" else worker.recover(job, retained)
             self.completed[invocation.invocation_id] = {"schema_version": 1, "invocation": asdict(invocation),
                                                        "mode": mode, "result": result}
         finally:

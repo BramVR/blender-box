@@ -493,32 +493,32 @@ class NativeCLITests(unittest.TestCase):
 
 class WorkerProtocolTests(unittest.TestCase):
     def test_real_socket_gate_has_zero_work_before_authorized_envelope(self):
-        parent, child = socket.socketpair(socket.AF_UNIX, socket.SOCK_DGRAM)
-        result_parent, result_child = socket.socketpair(socket.AF_UNIX, socket.SOCK_DGRAM)
-        for endpoint in (parent, child, result_parent, result_child):
-            self.addCleanup(endpoint.close)
+        expires = (datetime.now(timezone.utc) + timedelta(minutes=5)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        job = model.Job(baseline.request(expires_at=expires), native.JOBS / "gha_123_1", native.CANDIDATE,
+                        "c" * 64, 1, "d" * 64)
         fake = mock.Mock()
         fake.baseline.return_value = {"status": "pass"}
-        errors = []
-        def run():
-            try:
-                worker.run_worker(child, result_child, fake)
-            except Exception as error:
-                errors.append(error)
-        thread = threading.Thread(target=run)
-        thread.start()
-        self.addCleanup(lambda: thread.join(1))
-        self.assertEqual(worker.receive(result_parent, model.MAX_WIRE), {"schema_version": 1, "ready": True})
-        fake.baseline.assert_not_called()
-        expires = (datetime.now(timezone.utc) + timedelta(minutes=5)).strftime("%Y-%m-%dT%H:%M:%SZ")
-        envelope = {"schema_version": 1, "request": asdict(baseline.request(expires_at=expires)), "attempt": 1,
-                    "expected_client_sha256": "c" * 64, "inputs_digest": "d" * 64, "mode": "baseline", "retained": None}
-        parent.sendall(model.proof.canonical(envelope))
-        self.assertEqual(worker.receive(result_parent, model.MAX_FILE), {"schema_version": 1, "result": {"status": "pass"}})
-        thread.join(1)
-        self.assertFalse(thread.is_alive())
-        self.assertEqual(errors, [])
-        self.assertEqual(fake.baseline.call_args.args[0].root, native.JOBS / "gha_123_1")
+        with baseline.native_gate(job, delayed=True) as (gate, protocol, observations):
+            result_parent, result_child = socket.socketpair(socket.AF_UNIX, socket.SOCK_DGRAM)
+            with result_parent, result_child:
+                errors = []
+                def execute():
+                    try:
+                        protocol.run_worker(gate, result_child, fake)
+                    except Exception as error:
+                        errors.append(error)
+                thread = threading.Thread(target=execute)
+                thread.start()
+                self.assertEqual(protocol.receive(result_parent, model.MAX_WIRE), {"schema_version": 1, "ready": True})
+                fake.baseline.assert_not_called()
+                self.assertFalse(gate.get_inheritable())
+                self.assertFalse(result_child.get_inheritable())
+                observations["send"]()
+                self.assertEqual(protocol.receive(result_parent, model.MAX_FILE), {"schema_version": 1, "result": {"status": "pass"}})
+                thread.join(1)
+                self.assertFalse(thread.is_alive())
+                self.assertEqual(errors, [])
+        self.assertEqual(fake.baseline.call_args.args[0], job)
 
     def test_closed_expired_or_malformed_gate_cannot_run_proof(self):
         for raw in (b"", b"{}", model.proof.canonical({"schema_version": 1, "request": asdict(baseline.request()),
@@ -609,7 +609,13 @@ class NativeLifecycleTests(unittest.TestCase):
         self.ops.supervisor_gone.return_value = True
         self.ops.process.return_value = native.Process(300, 1, 3000, native.UNIT_CGROUP)
         self.ops.systemctl.side_effect = self.start_native
-        self.ops.unit.side_effect = lambda: native.UnitState("active", 300, "2" * 32, native.UNIT_CGROUP)
+        self.ops.unit.side_effect = lambda: native.UnitState("inactive" if self.empty else "active",
+                                                            0 if self.empty else 300, "2" * 32, native.UNIT_CGROUP)
+        self.group = self.fixture.root / "cgroup"
+        self.group.mkdir()
+        self.ops.group.side_effect = lambda name: self.open_group()
+        self.ops.process.side_effect = lambda pid: (native.Process(300, 1, 3000, native.UNIT_CGROUP) if pid == 300
+                                                    else native.Process(301, 300, 4001, invocation().cgroup))
         self.ops.exchange.side_effect = self.release_native
         self.ops.stop.side_effect = self.stop_native
         self.native_service = native.NativeService(policy(), self.files, self.ops)
@@ -626,6 +632,14 @@ class NativeLifecycleTests(unittest.TestCase):
                                            self.native_service, self.fixture.worker, lambda: baseline.NOW,
                                            files=self.files, admission=self.admission)
 
+    @contextmanager
+    def open_group(self):
+        fd = os.open(self.group, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            yield fd
+        finally:
+            os.close(fd)
+
     def start_native(self, operation):
         self.assertEqual(operation, "start")
         pending = model.document(self.files.read(self.runtime / "pending.json"))
@@ -634,7 +648,8 @@ class NativeLifecycleTests(unittest.TestCase):
         self.assertEqual(model.document(self.files.read(root / "intent-0001.json")), pending)
         self.assertFalse((root / "authorization-0001.json").exists())
         self.events.append("intent-before-start")
-        self.receipt = native.NativeReceipt(invocation(), 3000, 2, 3)
+        info = self.group.stat()
+        self.receipt = native.NativeReceipt(invocation(), 3000, info.st_dev, info.st_ino)
         self.files.publish(native.receipt_path(invocation()), model.proof.canonical(asdict(self.receipt)))
         self.empty = False
 
@@ -661,7 +676,7 @@ class NativeLifecycleTests(unittest.TestCase):
         control = self.fixture.control / "gha_123_1"
         state = self.controller.load(control)
         job = self.controller.job(control, state)
-        result = self.fixture.worker.baseline(job)
+        result = baseline.admitted_baseline(self.fixture.worker, job)
         self.files.publish(control / "result-0001.json", model.proof.canonical({"schema_version": 1,
                            "invocation": asdict(invocation()), "mode": "baseline", "result": result}))
         self.assertEqual(self.controller.dispatch(baseline.command("status"))["phase"], "running")

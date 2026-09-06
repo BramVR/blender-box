@@ -146,14 +146,14 @@ class NativePolicy:
     @property
     def controller(self):
         return model.Policy(self.value["candidate_sha"], self.value["driver_sha"], CANDIDATE,
-                            CONFIG / "operator.json", self.value["expected_client_sha256"])
+                            CONFIG / "operator.json", self.value["expected_client_sha256"], self.value["variant"])
 
     @classmethod
     def parse(cls, raw):
         value = model.document(raw)
         fields = {"schema_version", "control_uid", "control_gid", "runner_uid", "runner_gid", "candidate_sha",
                   "driver_sha", "expected_client_sha256", "tool_sha256", "artifacts", "variant"}
-        model.require(set(value) == fields and value["schema_version"] == 1 and value["variant"] == "baseline",
+        model.require(set(value) == fields and value["schema_version"] == 1 and value["variant"] in ("baseline", "named-target"),
                       "native-policy-invalid")
         validate_enrollment({key: item for key, item in value.items() if key not in ("artifacts", "variant")}, _policy=True)
         model.require(isinstance(value["artifacts"], dict) and set(value["artifacts"]) == set(artifact_paths())
@@ -189,7 +189,7 @@ def artifact_paths():
 
 
 def validate_enrollment(value, *, _policy=False):
-    model.require(isinstance(value, dict) and set(value) == {"schema_version", "control_uid", "control_gid", "runner_uid",
+    model.require(isinstance(value, dict) and set(value) - {"variant"} == {"schema_version", "control_uid", "control_gid", "runner_uid",
                   "runner_gid", "candidate_sha", "driver_sha", "expected_client_sha256", "tool_sha256"} | (set() if _policy else {"public_key"})
                   and type(value["schema_version"]) is int and value["schema_version"] == 1, "native-enrollment-invalid")
     model.require(all(type(value[k]) is int and 0 < value[k] < (1 << 31)
@@ -200,6 +200,7 @@ def validate_enrollment(value, *, _policy=False):
                   and isinstance(value["tool_sha256"], dict) and set(value["tool_sha256"]) == set(TOOLS)
                   and all(model.proof.matches(model.proof.HASH, item) for item in value["tool_sha256"].values()),
                   "native-enrollment-invalid")
+    model.require(value.get("variant", "baseline") in ("baseline", "named-target"), "native-enrollment-invalid")
     if _policy:
         return
     model.require(model.proof.matches(r"ssh-ed25519 [A-Za-z0-9+/]{68}", value["public_key"]), "native-enrollment-invalid")
@@ -247,7 +248,7 @@ UMask=0077
                      "/etc/ssh/blender-box-proof-authorized_keys":
                          f'restrict,command="/usr/bin/sudo -n {HELPER} dispatch" {value["public_key"]}\n'.encode()})
     policy = {key: item for key, item in value.items() if key != "public_key"}
-    policy.update(variant="baseline", artifacts={path: model.proof.digest(raw) for path, raw in contents.items()})
+    policy.update(variant=value.get("variant", "baseline"), artifacts={path: model.proof.digest(raw) for path, raw in contents.items()})
     policy_raw = model.proof.canonical(policy)
     contents[str(CONFIG / "policy.json")] = policy_raw
     contents[str(CONFIG / "qualification.json")] = model.proof.canonical({"schema_version": 1, "qualified": False,
@@ -650,6 +651,80 @@ class NativeService:
         value = NativeReceipt.parse(model.document(self.files.read(receipt_path(invocation))))
         model.require(value.invocation == invocation, "native-receipt-invalid")
         return value
+
+    def inspect_attempt(self, request, attempt, saved_invocation):
+        identity = {"execution_id": request.execution_id, "attempt": attempt}
+        path = attempt_path(identity, "native")
+        if not self.files.exists(path):
+            return None
+        receipt = NativeReceipt.parse(model.document(self.files.read(path)))
+        inv = receipt.invocation
+        intent_raw = self.files.read(attempt_path(identity, "intent"))
+        intent = parse_intent(intent_raw)
+        model.require((inv.execution_id, inv.attempt, inv.request_digest) ==
+                      (request.execution_id, attempt, request.digest)
+                      and (saved_invocation is None or saved_invocation == inv)
+                      and intent == {"schema_version": 1, **identity, "request_digest": request.digest,
+                                     "mode": "baseline" if attempt == 1 else "recover"}, "native-attempt-invalid")
+        original = model.ProofExecutionRequest.parse(model.document(self.files.read(CONTROL / request.execution_id / "request.json")))
+        model.require(original == request, "native-attempt-invalid")
+        self.policy.admit(model.Command("start", request.execution_id, request))
+        issuer_path = attempt_path(identity, "start-command")
+        if self.files.exists(issuer_path):
+            model.require(model.document(self.files.read(issuer_path)) == {"schema_version": 1,
+                          "intent_sha256": model.proof.digest(intent_raw), "boot_id": inv.boot_id}, "native-attempt-invalid")
+        model.require(not any(self.files.exists(attempt_path(identity, kind)) for kind in
+                              ("unreleased", "startup-failure")), "native-attempt-invalid")
+        authorization = attempt_path(identity, "authorization")
+        result = attempt_path(identity, "result")
+        authorized, completed = self.files.exists(authorization), self.files.exists(result)
+        model.require(saved_invocation is not None or not (authorized or completed), "native-publication-conflict")
+        model.require(not completed or authorized, "native-publication-conflict")
+        if authorized:
+            model.require(model.document(self.files.read(authorization)) == {"schema_version": 1,
+                          "invocation": asdict(inv), "mode": intent["mode"]}, "native-authorization-invalid")
+        if completed:
+            record = model.document(self.files.read(result))
+            model.require(isinstance(record, dict) and set(record) == {"schema_version", "invocation", "mode", "result"}
+                          and record["schema_version"] == 1 and record["invocation"] == asdict(inv)
+                          and record["mode"] == intent["mode"], "proof-result-invalid")
+        boot, unit = self.ops.boot(), self.ops.unit()
+        pending_path = RUNTIME / "pending.json"
+        pending = parse_intent(self.files.read(pending_path)) if self.files.exists(pending_path) else None
+        model.require(pending is None or pending == intent, "fixture-unresolved")
+        model.require(unit.job_id == 0 and unit.invocation_id in ("", inv.invocation_id), "service-identity-changed")
+        empty = self.ops.whole_empty()
+        if empty:
+            model.require(unit.active in ("inactive", "failed") and unit.main_pid == 0
+                          and (boot != inv.boot_id or self.ops.supervisor_gone(receipt)), "local-termination-unknown")
+        else:
+            model.require(boot == inv.boot_id and pending == intent and unit.main_pid == inv.parent_pid
+                          and unit.invocation_id == inv.invocation_id, "service-identity-changed")
+            supervisor = self.ops.process(inv.parent_pid)
+            model.require(supervisor.start == receipt.supervisor_start and supervisor.cgroup == UNIT_CGROUP,
+                          "native-supervisor-changed")
+            try:
+                child = self.ops.process(inv.leader_pid)
+            except FileNotFoundError:
+                pass
+            else:
+                model.require((child.start, child.parent, child.cgroup) == (inv.leader_start_ticks, inv.parent_pid, inv.cgroup),
+                              "native-worker-changed")
+            with self.ops.group(inv.cgroup) as fd:
+                info = os.fstat(fd)
+                model.require((info.st_dev, info.st_ino) == (receipt.cgroup_device, receipt.cgroup_inode), "native-cgroup-changed")
+        if empty and boot == inv.boot_id:
+            try:
+                with self.ops.group(inv.cgroup) as fd:
+                    info = os.fstat(fd)
+                    model.require((info.st_dev, info.st_ino) == (receipt.cgroup_device, receipt.cgroup_inode),
+                                  "native-cgroup-changed")
+            except FileNotFoundError:
+                pass
+            model.require(self.ops.whole_empty() and self.ops.unit() == unit, "fixture-unresolved")
+        model.require(self.ops.boot() == boot, "service-identity-changed")
+        return model.BoundAttempt(inv, intent["mode"], "gone" if empty else "live",
+                                  "result" if completed else "uncertain" if authorized else "withheld")
 
     def observe(self):
         boot = self.ops.boot()

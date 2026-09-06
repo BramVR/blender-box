@@ -751,7 +751,7 @@ class WindowsProofHost:
         return {"daemon_capabilities": list(CAPABILITIES), "blender_version": operator.expected["blender_version"]}
 
 
-def baseline(request, commands_factory=Commands, host=None):
+def baseline(request, commands_factory=Commands, host=None, *, native_authority=None):
     host = host or WindowsProofHost()
     request.output.mkdir(mode=0o700, parents=False, exist_ok=False)
     private, public = request.output / "private", request.output / "public"
@@ -784,7 +784,11 @@ def baseline(request, commands_factory=Commands, host=None):
                 and request.proof in host.proofs, "candidate-invalid")
         if request.execution == "hosted":
             require(matches(SHA, request.driver_sha) and os.environ.get("GITHUB_RUN_ATTEMPT") == "1", "hosted-authorization-invalid")
-            raise ProofError("hosted-recovery-retention-unavailable")
+            require(native_authority is not None, "hosted-recovery-retention-unavailable")
+            from proof_controller_worker import NativeAdmission
+            require(type(host) is WindowsProofHost and type(native_authority) is NativeAdmission,
+                    "hosted-authorization-invalid")
+            NativeAdmission.require_proof(native_authority, request)
         operator = host.load_operator(request.operator_config, request.candidate_sha)
         require(commands.run(["git", "rev-parse", "HEAD"], timeout=30).decode().strip() == request.candidate_sha,
                 "candidate-mismatch")

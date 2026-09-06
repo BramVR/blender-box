@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Recover exact native proof-controller receipts after helper interruption and bind baseline or named-target Windows proof to one-use native worker authority; direct hosted execution remains guarded and native qualification remains required.
 - Add fixed Linux proof-controller helper, worker, private file access, and enrollment artifacts; runtime dispatch requires matching native qualification.
 - Add a local persistent proof-controller bootstrap preview and tested admission/recovery model; native dispatch remains unqualified.
 - Keep Linux daemon and Blender temporary files under each private Run root, with prelaunch validation and exact settlement cleanup.

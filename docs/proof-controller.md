@@ -24,6 +24,7 @@ To produce concrete enrollment files, prepare a private JSON specification with 
 - `control_uid`, `control_gid`, `runner_uid`, and `runner_gid` as positive integers for the dedicated accounts. Control and runner UIDs must differ.
 - `candidate_sha` and `driver_sha` as full Git commit hashes.
 - `expected_client_sha256` for the approved client binary.
+- Optional `variant` set to `baseline` or `named-target`. Omission selects `baseline`. Each enrollment admits only its selected variant.
 - `public_key` containing the existing controller dispatch public key as `ssh-ed25519 BASE64`, without a trailing comment.
 - `tool_sha256` mapping `/usr/bin/python3`, `/usr/bin/git`, `/usr/bin/ssh`, `/usr/bin/scp`, `/usr/bin/systemctl`, and `/usr/local/go/bin/go` to their approved SHA-256 hashes.
 
@@ -74,7 +75,11 @@ Keep unresolved jobs. This controller adds no deletion or historical ownership-r
 
 A supervisor failure before worker release has a separate recovery path. It requires an exact, root-owned failure receipt after owned child cleanup, a completed start-command receipt, no release authorization or native receipt, and fresh proof that the unit has no queued job or remaining processes. Missing files alone never prove that a launch failed. The helper records this decision under the fixture lock, and later startup or release for that attempt must refuse it.
 
-A proven failure of the first baseline attempt settles as failure because no Windows operation was admitted. A failed recovery attempt keeps the original Run, target, client, and journal; Windows cleanup remains unresolved until an explicit recovery succeeds. Unknown starts and uncertain cleanup stay fenced. Adopting a real native receipt after a crash before the helper saves its Invocation remains an outstanding recovery case.
+A proven failure of the first baseline attempt settles as failure because no Windows operation was admitted. A failed recovery attempt keeps the original Run, target, client, and journal; Windows cleanup remains unresolved until an explicit recovery succeeds. Unknown starts and uncertain cleanup stay fenced.
+
+If the supervisor published a native receipt before the helper saved its Invocation, use `status` to reconcile that exact attempt. Adoption requires the original accepted request, intent, input binding, and matching process evidence. Conflicting authorization, results, pending work, or replacement identities refuse adoption. The helper saves the receipt's exact Invocation with admission closed before any stop. Repeated reconciliation checks the same evidence after a crash.
+
+Adoption never releases the worker or replays the Scenario. `status` observes. `stop` can stop the exact adopted attempt. Once fresh evidence proves the original processes are gone and no worker release was authorized, a first attempt settles as failure. A recovery attempt retains the original Windows Run for explicit recovery. After a controller reboot, reconciliation proves service quiescence without reading or signaling old PIDs.
 
 ## Run the local checks
 
@@ -93,6 +98,8 @@ After exact enrollment approval, verify the installed artifacts and distinct acc
 
 The qualification receipt must bind the exact installed policy and artifact hashes. Preserve its real evidence. Bootstrap always renders an unqualified receipt and provides no command to manufacture qualification.
 
-Coordinate the target-driver integration before hosted proof. Its `ProofRequest.proof` selects `baseline` or `named-target`; the original target and config directory must remain unchanged. The existing `hosted-recovery-retention-unavailable` guard stays until qualified controller authority replaces it. Never run a hosted request as local to bypass the guard.
+Verify the selected policy variant before hosted proof. The native worker projects it into `ProofRequest.proof` while retaining hosted execution and the original target and config directory. The protected driver consumes one authenticated inherited socket authorization before candidate commands. The authorization binds the root supervisor, worker process, native receipt, request, and retained inputs.
+
+Direct hosted calls still refuse with `hosted-recovery-retention-unavailable` before host activity. The native authorization admits only the Windows proof host. It does not authorize the Linux proof runner. An environment variable, flag, or caller-created Python object cannot replace native authority.
 
 Required hosted `Windows onboarding proof / baseline` and `named-target` results remain outstanding until those jobs actually pass. Missing, skipped, fake-only, or merely local checks do not satisfy them.
