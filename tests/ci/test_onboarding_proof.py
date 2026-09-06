@@ -425,6 +425,104 @@ class SubprocessTests(unittest.TestCase):
         self.root = Path(self.temp.name)
         self.commands = proof.Commands(self.root, self.root)
 
+    def test_post_spawn_failure(self):
+        for fault in ("receipt", "reader-start", "observation"):
+            with self.subTest(fault=fault), socket.socket() as server:
+                private = self.root / fault
+                private.mkdir()
+                commands = proof.Commands(private, self.root)
+                server.bind(("127.0.0.1", 0))
+                server.listen(1)
+                server.settimeout(5)
+                port = server.getsockname()[1]
+                child_source = 'import sys; print("ready",flush=True); assert sys.stdin.buffer.readline() == b"stop\\n"'
+                source = f'''import json,signal,socket,subprocess,sys
+child=subprocess.Popen([sys.executable,"-c",{child_source!r}],stdin=subprocess.PIPE,stdout=subprocess.PIPE)
+assert child.stdout.readline()==b"ready\\n"
+with socket.create_connection(("127.0.0.1",{port})) as connection:
+    def settle(number):
+        child.communicate(b"stop\\n",timeout=3)
+        connection.sendall((json.dumps({{"signal":number,"child_exit":child.returncode}})+"\\n").encode())
+    def interrupted(number,frame):
+        settle(number)
+        raise SystemExit(0)
+    signal.signal(signal.SIGINT,interrupted)
+    print("RUN_ID={RUN}",file=sys.stderr,flush=True)
+    connection.sendall(b"ready\\n")
+    connection.recv(1)
+    settle(None)
+'''
+                connections, leaders = [], []
+                original_write = Path.write_bytes
+                original_spawn = proof.subprocess.Popen
+                original_start = threading.Thread.start
+                original_observe = os.waitid
+                starts = 0
+                observed = False
+
+                def ready():
+                    connection, _ = server.accept()
+                    connection.settimeout(2)
+                    stream = connection.makefile("rb")
+                    connections.append((connection, stream))
+                    self.assertEqual(stream.readline(), b"ready\n")
+
+                def write(path, content):
+                    if fault == "receipt" and path.name.endswith(".process.json"):
+                        ready()
+                        raise OSError("injected-receipt")
+                    return original_write(path, content)
+
+                def spawn(*args, **kwargs):
+                    process = original_spawn(*args, **kwargs)
+                    if not leaders:
+                        leaders.append(process)
+                    return process
+
+                def start(thread):
+                    nonlocal starts
+                    starts += 1
+                    if fault == "reader-start" and starts == 2:
+                        ready()
+                        raise RuntimeError("injected-reader-start")
+                    return original_start(thread)
+
+                def observe(*args):
+                    nonlocal observed
+                    if fault == "observation" and not observed:
+                        observed = True
+                        ready()
+                        raise OSError("injected-observation")
+                    return original_observe(*args)
+
+                try:
+                    with mock.patch.object(Path, "write_bytes", write), mock.patch.object(proof.subprocess, "Popen", spawn), \
+                            mock.patch.object(threading.Thread, "start", start), mock.patch.object(os, "waitid", observe):
+                        with self.assertRaisesRegex((OSError, RuntimeError), "injected-" + fault):
+                            commands.run([sys.executable, "-c", source], marker=True)
+                    connection, stream = connections[0]
+                    receipt = json.loads(stream.readline())
+                    self.assertEqual(receipt, {"signal": proof.signal.SIGINT, "child_exit": 0})
+                    self.assertEqual(stream.read(), b"")
+                    self.assertTrue(commands.group_cleanup_known)
+                    self.assertEqual(commands.process_identity["pid"], leaders[0].pid)
+                    self.assertEqual(commands.process_identity["process_group"], leaders[0].pid)
+                    self.assertEqual(leaders[0].returncode, 0)
+                    self.assertEqual(commands.run_id, RUN)
+                finally:
+                    for connection, stream in connections:
+                        try:
+                            connection.sendall(b"x")
+                        except OSError:
+                            pass
+                        stream.close()
+                        connection.close()
+                    for process in leaders:
+                        process.wait(timeout=5)
+                        for pipe in (process.stdout, process.stderr):
+                            if pipe is not None and not pipe.closed:
+                                pipe.close()
+
     def test_real_subprocess_json_and_private_stderr(self):
         raw = self.commands.run([sys.executable, "-c", 'import sys; print(\'{"schema_version":1}\'); print("PRIVATE_SENTINEL",file=sys.stderr)'])
         self.assertEqual(proof.document(raw), {"schema_version": 1})
