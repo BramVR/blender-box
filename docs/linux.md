@@ -111,6 +111,8 @@ The static user service owns the host entry point's lifetime. The daemon owns Bl
 
 Each Linux Run stages a private `tmp` directory and passes it as `TMPDIR` to the daemon and Blender descendants. Launch refuses a missing or unsafe temporary directory. Exact settlement removes its temporary files with the owned Run root; recovery and stop remain available if the directory is missing. Operator temporary-directory variables are not inherited.
 
+Each Linux Run also stages a private `home` directory and passes it as `HOME` to the daemon, Blender, and Scenario descendants. HOME-based caches stay under that Run root and are removed by exact settlement. Launch refuses a missing or unsafe Run HOME; recovery and stop remain available if it is missing. The configured operator home still controls desktop checks and systemd unit placement.
+
 ## Recover after interruption
 
 Use `status` and exact `stop` after SSH loss or desktop logout. These commands do not require a currently active desktop. Preserve the original target and private controller authority. A changed target or replacement Session is never adopted.

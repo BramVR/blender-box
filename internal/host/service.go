@@ -322,7 +322,7 @@ func (service *Service) Stage(ctx context.Context, root string, request StageReq
 	}
 	directories := []string{"daemon", "blender-resources", "blender-config", "blender-scripts", "blender-data", "blender-extensions", "evidence"}
 	if service.platform == "linux" {
-		directories = append(directories, "tmp")
+		directories = append(directories, "tmp", "home")
 	}
 	for _, name := range directories {
 		if err := os.Mkdir(filepath.Join(temporary, name), 0o700); err != nil {
@@ -525,6 +525,9 @@ func (service *Service) ExecutePending(ctx context.Context, root string) error {
 	if data := request.Body.Linux; data != nil {
 		if err := validateRoot(environment["TMPDIR"]); err != nil {
 			return service.failExecutionWithCause(root, request, "Run temporary directory is unavailable", err)
+		}
+		if err := validateRoot(environment["HOME"]); err != nil {
+			return service.failExecutionWithCause(root, request, "Run HOME directory is unavailable", err)
 		}
 		for key, value := range linuxtarget.DesktopEnvironment(data.UID, data.Desktop) {
 			environment[key] = value
@@ -1541,6 +1544,7 @@ func (service *Service) runEnvironment(root string, runID orchestrator.RunID) ma
 	}
 	if service.platform == "linux" {
 		environment["TMPDIR"] = filepath.Join(runRoot, "tmp")
+		environment["HOME"] = filepath.Join(runRoot, "home")
 	}
 	return environment
 }
