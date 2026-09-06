@@ -14,6 +14,9 @@ import stat
 import sys
 import uuid
 
+if __name__ == "__main__":
+    sys.modules["proof_controller"] = sys.modules[__name__]
+
 try:
     import fcntl
 except ImportError:
@@ -194,6 +197,30 @@ class Invocation:
 
 
 @dataclass(frozen=True)
+class UnreleasedProof:
+    execution_id: str
+    attempt: int
+    request_digest: str
+    mode: str
+    intent_sha256: str
+    failure_sha256: str
+    observed_boot: str
+    schema_version: int = 1
+
+    @classmethod
+    def parse(cls, value):
+        require(isinstance(value, dict) and set(value) == set(cls.__dataclass_fields__)
+                and type(value["schema_version"]) is int and value["schema_version"] == 1
+                and proof.matches(EXECUTION_ID, value["execution_id"])
+                and type(value["attempt"]) is int and 0 < value["attempt"] <= 9999
+                and value["mode"] in ("baseline", "recover")
+                and all(proof.matches(proof.HASH, value[key]) for key in
+                        ("request_digest", "intent_sha256", "failure_sha256"))
+                and proof.matches(r"[a-f0-9]{32}", value["observed_boot"]), "unreleased-proof-invalid")
+        return cls(**value)
+
+
+@dataclass(frozen=True)
 class ServiceObservation:
     boot_id: str
     invocation: Invocation | None
@@ -269,41 +296,43 @@ def normalized_ssh(connection, root):
     return "".join(f'{key} "{value}"\n' for key, value in fixed.items()).encode()
 
 
-def snapshot_inputs(control, job, policy):
-    original = read_private(policy.operator_config, 64 << 10)
+def snapshot_inputs(control, job, policy, files=None):
+    files = files or local_files()
+    original = files.read(policy.operator_config, 64 << 10)
     value = document(original)
     inputs = control / "inputs"
-    private_directory(inputs, create=True)
-    publish(inputs / "original-operator.json", original)
+    files.directory(inputs, create=True)
+    files.publish(inputs / "original-operator.json", original)
     operator = proof.Operator.load(inputs / "original-operator.json", job.request.candidate_sha)
     require(operator.ssh_config is not None, "ssh-config-not-self-contained")
-    source = read_private(operator.ssh_config, 64 << 10)
+    source = files.read(operator.ssh_config, 64 << 10)
     connection = ssh_connection(source, operator.target["ssh_alias"])
-    private_directory(job.root / "inputs", create=True)
+    files.directory(job.root / "inputs", create=True)
     normalized = normalized_ssh(connection, job.root / "inputs")
     value["ssh_config"] = str(job.root / "inputs/ssh-config")
-    files = {"original-operator.json": original, "original-ssh-config": source,
+    contents = {"original-operator.json": original, "original-ssh-config": source,
              "operator.json": proof.canonical(value), "target.json": proof.canonical(operator.target),
-             "ssh-config": normalized, "key": read_private(Path(connection["identityfile"]), 64 << 10),
-             "known_hosts": read_private(Path(connection["userknownhostsfile"]), 64 << 10)}
-    manifest = {"schema_version": 1, "files": {name: proof.digest(content) for name, content in files.items()},
+             "ssh-config": normalized, "key": files.read(Path(connection["identityfile"]), 64 << 10),
+             "known_hosts": files.read(Path(connection["userknownhostsfile"]), 64 << 10)}
+    manifest = {"schema_version": 1, "files": {name: proof.digest(content) for name, content in contents.items()},
                 "candidate_checkout": str(policy.candidate_checkout), "config": str(job.config),
                 "expected_client_sha256": policy.expected_client_sha256}
-    for name, content in files.items():
+    for name, content in contents.items():
         if name != "original-operator.json":
-            publish(inputs / name, content)
-        publish(job.root / "inputs" / name, content)
+            files.publish(inputs / name, content)
+        files.publish(job.root / "inputs" / name, content)
     raw = proof.canonical(manifest)
-    publish(control / "inputs.json", raw)
-    publish(job.root / "inputs.json", raw)
+    files.publish(control / "inputs.json", raw)
+    files.publish(job.root / "inputs.json", raw)
     return proof.digest(raw)
 
 
-def verify_inputs(control, job, expected):
+def verify_inputs(control, job, expected, files=None):
+    files = files or local_files()
     try:
-        raw = read_private(control / "inputs.json")
+        raw = files.read(control / "inputs.json")
         require(proof.digest(raw) == expected, "original-inputs-unavailable")
-        require(read_private(job.root / "inputs.json") == raw, "original-inputs-unavailable")
+        require(files.read(job.root / "inputs.json") == raw, "original-inputs-unavailable")
         manifest = document(raw)
         require(set(manifest) == {"schema_version", "files", "candidate_checkout", "config", "expected_client_sha256"}
                 and manifest["candidate_checkout"] == str(job.candidate_checkout)
@@ -313,26 +342,52 @@ def verify_inputs(control, job, expected):
                                                "target.json", "ssh-config", "key", "known_hosts"},
                 "original-inputs-unavailable")
         for name, expected_hash in manifest["files"].items():
-            require(proof.digest(read_private(control / "inputs" / name)) == expected_hash
-                    and proof.digest(read_private(job.root / "inputs" / name)) == expected_hash,
+            require(proof.digest(files.read(control / "inputs" / name)) == expected_hash
+                    and proof.digest(files.read(job.root / "inputs" / name)) == expected_hash,
                     "original-inputs-unavailable")
     except (OSError, ControllerError, TypeError, KeyError) as error:
         raise ControllerError("original-inputs-unavailable") from error
 
 
-def verify_worker_inputs(job):
+def verify_worker_inputs(job, files=None):
+    files = files or local_files()
     try:
-        raw = read_private(job.root / "inputs.json")
+        raw = files.read(job.root / "inputs.json")
         require(proof.digest(raw) == job.inputs_digest, "original-inputs-unavailable")
         manifest = document(raw)
         for name, expected in manifest["files"].items():
-            require(proof.digest(read_private(job.root / "inputs" / name)) == expected, "original-inputs-unavailable")
+            require(proof.digest(files.read(job.root / "inputs" / name)) == expected, "original-inputs-unavailable")
     except (OSError, ControllerError, KeyError, TypeError) as error:
         raise ControllerError("original-inputs-unavailable") from error
 
 
+def local_files():
+    from proof_controller_store import LocalFiles
+    return LocalFiles()
+
+
+def recovery_inputs(job, files=None):
+    files = files or local_files()
+    verify_worker_inputs(job, files)
+    marker = document(files.read(job.output / "private/run-journal.json", 4096))
+    require(set(marker) == {"schema_version", "run_id"} and proof.matches(proof.RUN_ID, marker["run_id"]),
+            "run-locator-unavailable")
+    journal = job.config / "runs" / (marker["run_id"] + ".json")
+    files.read(journal, 16 << 10)
+    session = journal.with_suffix(".session.json")
+    if files.exists(session):
+        files.read(session, 16 << 10)
+    client = files.read(job.output / "private/blender-box", 128 << 20)
+    target = files.read(job.output / "private/target.json", 64 << 10)
+    require(target == files.read(job.root / "inputs/target.json", 64 << 10), "original-inputs-unavailable")
+    require(proof.digest(client) == job.expected_client_sha256, "client-artifact-mismatch")
+    return {"schema_version": 1, "run_id": marker["run_id"], "client_sha256": proof.digest(client),
+            "target_sha256": proof.digest(target), "journal": str(journal)}
+
+
 class ProofWorker:
-    def __init__(self, commands_factory=proof.Commands, clock=None):
+    def __init__(self, commands_factory=proof.Commands, clock=None, files=None):
+        self.files = files
         self.commands_factory = commands_factory
         self.clock = clock or (lambda: datetime.now(timezone.utc))
 
@@ -365,21 +420,7 @@ class ProofWorker:
             os.umask(previous)
 
     def recovery_inputs(self, job):
-        verify_worker_inputs(job)
-        marker = document(read_private(job.output / "private/run-journal.json", 4096))
-        require(set(marker) == {"schema_version", "run_id"} and proof.matches(proof.RUN_ID, marker["run_id"]),
-                "run-locator-unavailable")
-        journal = job.config / "runs" / (marker["run_id"] + ".json")
-        read_private(journal, 16 << 10)
-        session = journal.with_suffix(".session.json")
-        if session.exists() or session.is_symlink():
-            read_private(session, 16 << 10)
-        client = read_private(job.output / "private/blender-box", 128 << 20)
-        target = read_private(job.output / "private/target.json", 64 << 10)
-        require(target == read_private(job.root / "inputs/target.json", 64 << 10), "original-inputs-unavailable")
-        require(proof.digest(client) == job.expected_client_sha256, "client-artifact-mismatch")
-        return {"schema_version": 1, "run_id": marker["run_id"], "client_sha256": proof.digest(client),
-                "target_sha256": proof.digest(target), "journal": str(journal)}
+        return recovery_inputs(job, self.files)
 
     def recover(self, job, retained):
         current = self.recovery_inputs(job)
@@ -403,44 +444,37 @@ class ProofWorker:
 
 
 class Controller:
-    def __init__(self, control_root, jobs_root, policy, service, worker=None, clock=None):
+    def __init__(self, control_root, jobs_root, policy, service, worker=None, clock=None, files=None, admission=None):
         self.control_root, self.jobs_root = control_root, jobs_root
         self.policy, self.service = policy, service
-        self.worker = worker or ProofWorker()
+        self.files = files or local_files()
+        self.worker = worker or ProofWorker(files=self.files)
+        self.admission = admission
         self.clock = clock or (lambda: datetime.now(timezone.utc))
 
     @contextmanager
     def locked(self):
         require(fcntl is not None, "controller-platform-unsupported")
-        private_directory(self.control_root)
-        private_directory(self.jobs_root)
-        lock = self.control_root / "fixture.lock"
-        fd = os.open(lock, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_NONBLOCK, 0o600)
-        try:
-            info = os.fstat(fd)
-            require(stat.S_ISREG(info.st_mode) and info.st_uid == os.getuid()
-                    and info.st_mode & 0o077 == 0 and info.st_nlink == 1, "private-file-invalid")
-            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        self.files.directory(self.jobs_root)
+        with self.files.locked(self.control_root):
             yield
-        except BlockingIOError as error:
-            raise ControllerError("fixture-busy") from error
-        finally:
-            os.close(fd)
 
     def dispatch(self, command):
         require(isinstance(command, Command) and proof.matches(EXECUTION_ID, command.execution_id)
                 and command.operation in ("start", "status", "stop", "recover"), "invalid-command")
+        if self.admission is not None:
+            self.admission(command)
         with self.locked():
             control = self.control_root / command.execution_id
             if command.operation == "start":
                 require(command.request is not None and command.request.execution_id == command.execution_id,
                         "invalid-command")
-                if control.exists():
-                    request = ProofExecutionRequest.parse(document(read_private(control / "request.json", MAX_WIRE)))
+                if self.files.exists(control):
+                    request = ProofExecutionRequest.parse(document(self.files.read(control / "request.json", MAX_WIRE)))
                     require(request == command.request, "execution-conflict")
                     return self.receipt(self.load(control))
                 return self.start(control, command.request)
-            require(control.exists(), "execution-not-found")
+            require(self.files.exists(control), "execution-not-found")
             state = self.load(control)
             if command.operation in ("recover", "stop") and state["phase"] != "settled":
                 state = self.recover(control, state)
@@ -454,7 +488,7 @@ class Controller:
 
     def load(self, control):
         try:
-            state = document(read_private(control / "execution.json"))
+            state = document(self.files.read(control / "execution.json"))
             require(set(state) == {"schema_version", *PUBLIC_FIELDS, "request_digest", "inputs_digest", "invocation",
                                   "candidate_checkout", "expected_client_sha256", "recovery_inputs"}
                     and state["phase"] in PHASES and type(state["closed"]) is bool
@@ -468,19 +502,32 @@ class Controller:
                     and Path(state["candidate_checkout"]).is_absolute()
                     and (state["inputs_digest"] is None or proof.matches(proof.HASH, state["inputs_digest"])),
                     "execution-state-invalid")
-            request = ProofExecutionRequest.parse(document(read_private(control / "request.json", MAX_WIRE)))
+            request = ProofExecutionRequest.parse(document(self.files.read(control / "request.json", MAX_WIRE)))
             require(request.digest == state["request_digest"] and request.execution_id == control.name,
                     "execution-state-invalid")
+            unreleased = None
+            if state["invocation"] is None and state["local_termination"] == "proven":
+                unreleased = self.unreleased(control, state)
+                require(unreleased is not None and state["closed"] and state["inputs_digest"] is not None,
+                        "execution-state-invalid")
+                if unreleased.mode == "baseline":
+                    require(state["attempt"] == 1 and state["phase"] == "settled" and state["proof_result"] == "fail"
+                            and state["windows_cleanup"] == "proven" and state["recovery_inputs"] is None,
+                            "execution-state-invalid")
+                else:
+                    require(state["attempt"] > 1 and state["phase"] == "unresolved"
+                            and state["recovery_inputs"] is not None, "execution-state-invalid")
             require(state["phase"] != "settled" or (state["closed"] and state["local_termination"] == "proven"
                     and state["windows_cleanup"] == "proven" and state["proof_result"] != "not-run"
-                    and state["invocation"] is not None and state["inputs_digest"] is not None), "execution-state-invalid")
+                    and (state["invocation"] is not None or unreleased is not None)
+                    and state["inputs_digest"] is not None), "execution-state-invalid")
             require(state["phase"] not in ("running", "recovering") or state["invocation"] is not None,
                     "execution-state-invalid")
             require(state["phase"] != "accepted" or (state["attempt"] == 0 and state["invocation"] is None),
                     "execution-state-invalid")
             require(state["phase"] != "starting" or (state["attempt"] > 0 and state["invocation"] is None
                     and state["inputs_digest"] is not None), "execution-state-invalid")
-            require(state["local_termination"] != "proven" or state["invocation"] is not None,
+            require(state["local_termination"] != "proven" or state["invocation"] is not None or unreleased is not None,
                     "execution-state-invalid")
             require(state["recovery_inputs"] is None or (isinstance(state["recovery_inputs"], dict)
                     and set(state["recovery_inputs"]) == {"schema_version", "run_id", "client_sha256", "target_sha256", "journal"}
@@ -499,11 +546,23 @@ class Controller:
         except (OSError, ControllerError, TypeError, KeyError) as error:
             raise ControllerError("execution-state-unavailable") from error
 
+    def unreleased(self, control, state, *, fresh=False, publish=False):
+        operation = getattr(self.service, "unreleased", None)
+        if operation is None or state["attempt"] == 0:
+            return None
+        request = ProofExecutionRequest.parse(document(self.files.read(control / "request.json", MAX_WIRE)))
+        result = operation(request, state["attempt"], fresh=fresh, publish=publish)
+        if result is not None:
+            result = UnreleasedProof.parse(asdict(result))
+            require((result.execution_id, result.attempt, result.request_digest) ==
+                    (request.execution_id, state["attempt"], request.digest), "unreleased-proof-invalid")
+        return result
+
     def save(self, control, state):
-        publish(control / "execution.json", proof.canonical(state), exclusive=False)
+        self.files.publish(control / "execution.json", proof.canonical(state), exclusive=False)
 
     def job(self, control, state):
-        request = ProofExecutionRequest.parse(document(read_private(control / "request.json", MAX_WIRE)))
+        request = ProofExecutionRequest.parse(document(self.files.read(control / "request.json", MAX_WIRE)))
         return Job(request, self.jobs_root / request.execution_id, Path(state["candidate_checkout"]),
                    state["expected_client_sha256"], state["attempt"], state["inputs_digest"])
 
@@ -514,17 +573,19 @@ class Controller:
         require(proof.matches(proof.HASH, self.policy.expected_client_sha256), "client-artifact-unavailable")
         no_links(self.policy.candidate_checkout)
         require(self.clock() < utc(request.expires_at) <= self.clock() + timedelta(hours=2), "execution-expired")
-        require(os.environ.get("GITHUB_RUN_ATTEMPT") == "1", "hosted-authorization-invalid")
-        for entry in self.control_root.iterdir():
+        if self.admission is None:
+            require(os.environ.get("GITHUB_RUN_ATTEMPT") == "1", "hosted-authorization-invalid")
+        for entry in self.files.entries(self.control_root):
             if entry.name == "fixture.lock":
                 continue
-            require(entry.is_dir() and not entry.is_symlink() and proof.matches(EXECUTION_ID, entry.name),
+            self.files.directory(entry)
+            require(proof.matches(EXECUTION_ID, entry.name),
                     "fixture-unresolved")
             require(self.load(entry)["phase"] == "settled", "fixture-unresolved")
         observation = self.observe()
         require(observation.empty, "fixture-unresolved")
-        private_directory(control, create=True)
-        publish(control / "request.json", proof.canonical(asdict(request)))
+        self.files.directory(control, create=True)
+        self.files.publish(control / "request.json", proof.canonical(asdict(request)))
         state = {"schema_version": 1, "execution_id": request.execution_id, "phase": "accepted", "closed": False,
                  "attempt": 0, "request_digest": request.digest, "inputs_digest": None, "invocation": None,
                  "candidate_checkout": str(self.policy.candidate_checkout), "local_termination": "unknown",
@@ -533,9 +594,9 @@ class Controller:
         self.save(control, state)
         try:
             job = self.job(control, state)
-            private_directory(job.root, create=True)
-            private_directory(job.root / "attempts", create=True)
-            state["inputs_digest"] = snapshot_inputs(control, job, self.policy)
+            self.files.directory(job.root, create=True)
+            self.files.directory(job.root / "attempts", create=True)
+            state["inputs_digest"] = snapshot_inputs(control, job, self.policy, self.files)
             self.save(control, state)
             return self.receipt(self.launch(control, state, "baseline"))
         except Exception:
@@ -554,7 +615,11 @@ class Controller:
         return observed
 
     def terminate(self, state):
-        require(state["invocation"] is not None, "service-identity-unavailable")
+        if state["invocation"] is None:
+            require(self.unreleased(self.control_root / state["execution_id"], state, fresh=True, publish=True) is not None,
+                    "service-identity-unavailable")
+            state["local_termination"] = "proven"
+            return
         expected = Invocation.parse(state["invocation"])
         observed = self.observe()
         if observed.boot_id != expected.boot_id:
@@ -569,6 +634,10 @@ class Controller:
         state["local_termination"] = "proven"
 
     def recover(self, control, state):
+        if state["invocation"] is None:
+            state = self.reconcile(control, state)
+            if state["phase"] == "settled":
+                return state
         if state["phase"] == "recovering":
             state = self.reconcile(control, state)
             if state["phase"] in ("recovering", "settled"):
@@ -579,7 +648,7 @@ class Controller:
             self.terminate(state)
             self.save(control, state)
             job = self.job(control, state)
-            verify_inputs(control, job, state["inputs_digest"])
+            verify_inputs(control, job, state["inputs_digest"], self.files)
             state = self.reconcile(control, state)
             if state["phase"] == "settled":
                 return state
@@ -597,17 +666,17 @@ class Controller:
 
     def launch(self, control, state, mode):
         job = self.job(control, state)
-        verify_inputs(control, job, state["inputs_digest"])
+        verify_inputs(control, job, state["inputs_digest"], self.files)
         if mode == "baseline":
             require(not state["closed"] and self.clock() < utc(job.request.expires_at), "execution-expired")
         require(state["attempt"] < 9999, "attempt-limit")
         state.update(attempt=state["attempt"] + 1, phase="starting", invocation=None, local_termination="unknown")
         self.save(control, state)
         job = replace(job, attempt=state["attempt"])
-        private_directory(job.attempt_root, create=True)
+        self.files.directory(job.attempt_root, create=True)
         intent = {"schema_version": 1, "execution_id": job.request.execution_id, "attempt": job.attempt,
                   "request_digest": job.request.digest, "mode": mode}
-        publish(control / f"intent-{job.attempt:04d}.json", proof.canonical(intent))
+        self.files.publish(control / f"intent-{job.attempt:04d}.json", proof.canonical(intent))
         invocation = self.service.start(job.request, job.attempt)
         invocation = Invocation.parse(asdict(invocation))
         require(invocation.execution_id == job.request.execution_id and invocation.attempt == job.attempt
@@ -618,14 +687,24 @@ class Controller:
             require(self.clock() < utc(job.request.expires_at), "execution-expired")
         authorization = {"schema_version": 1, "invocation": asdict(invocation), "mode": mode}
         authorization_path = control / f"authorization-{job.attempt:04d}.json"
-        publish(authorization_path, proof.canonical(authorization))
-        verify_inputs(control, job, state["inputs_digest"])
+        self.files.publish(authorization_path, proof.canonical(authorization))
+        verify_inputs(control, job, state["inputs_digest"], self.files)
         require(self.service.release(invocation, authorization_path, job, mode, state["recovery_inputs"]) is True,
                 "service-release-unconfirmed")
         return state
 
     def reconcile(self, control, state):
         if state["invocation"] is None:
+            proof_record = self.unreleased(control, state, fresh=True, publish=True)
+            if proof_record is not None:
+                verify_inputs(control, self.job(control, state), state["inputs_digest"], self.files)
+                state.update(closed=True, local_termination="proven", phase="unresolved")
+                if proof_record.mode == "baseline":
+                    require(state["attempt"] == 1 and state["recovery_inputs"] is None, "unreleased-proof-invalid")
+                    state.update(phase="settled", windows_cleanup="proven", proof_result="fail")
+                else:
+                    require(state["attempt"] > 1 and state["recovery_inputs"] is not None, "unreleased-proof-invalid")
+                self.save(control, state)
             return state
         invocation = Invocation.parse(state["invocation"])
         observed = self.observe()
@@ -636,7 +715,7 @@ class Controller:
         if not observed.empty:
             return state
         job = self.job(control, state)
-        verify_inputs(control, job, state["inputs_digest"])
+        verify_inputs(control, job, state["inputs_digest"], self.files)
         state["local_termination"] = "proven"
         state["closed"] = True
         completed = self.service.result(invocation)
@@ -687,7 +766,7 @@ Description=Blender Box proof controller proposal
 ConditionPathExists=/nonexistent/blender-box-proof-qualification
 [Service]
 Type=exec
-User=blender-box-proof-runner
+User=root
 ExecStart=/usr/bin/false
 Restart=no
 KillMode=control-group
@@ -701,7 +780,8 @@ ReadWritePaths=/var/lib/blender-box-proof/jobs
 """
     forced = 'restrict,command="/usr/bin/false" ssh-ed25519 REPLACE_ONLY_AFTER_QUALIFICATION\n'
     policy = {"schema_version": 1, "qualified": False, "control_uid": None, "runner_uid": None,
-              "native_helper": None, "native_worker": None, "candidate_sha": None, "driver_sha": None,
+              "native_helper": "/usr/local/libexec/blender-box-proof-helper",
+              "native_worker": "/usr/local/libexec/blender-box-proof-worker", "candidate_sha": None, "driver_sha": None,
               "expected_client_sha256": None,
               "proposed_privilege_rule": {"helper": "/usr/local/libexec/blender-box-proof-helper",
                                            "service": "blender-box-proof.service",
@@ -710,15 +790,17 @@ ReadWritePaths=/var/lib/blender-box-proof/jobs
     return {"schema_version": 1, "status": "unqualified", "installable": False,
             "resources": [{"kind": "account", "name": "blender-box-proof-control", "uid": None, "password_login": "disabled"},
                           {"kind": "account", "name": "blender-box-proof-runner", "uid": None, "password_login": "disabled"},
-                          {"path": "/var/lib/blender-box-proof/control", "mode": "0700", "owner": "blender-box-proof-control", "uid": None},
+                          {"path": "/var/lib/blender-box-proof/control", "mode": "0700", "owner": "root", "uid": 0},
                           {"path": "/var/lib/blender-box-proof/jobs", "mode": "0700", "owner": "blender-box-proof-runner", "uid": None},
+                          {"path": "/run/blender-box-proof", "mode": "0700", "owner": "root", "uid": 0},
+                          {"path": "/etc/tmpfiles.d/blender-box-proof.conf", "mode": "0644", "owner": "root", "uid": 0},
                           {"path": "/etc/systemd/system/blender-box-proof.service", "mode": "0644", "owner": "root", "uid": 0},
-                          {"path": "/etc/blender-box-proof", "mode": "0700", "owner": "blender-box-proof-control", "uid": None},
-                          {"path": "/etc/blender-box-proof/policy.json", "mode": "0600", "owner": "blender-box-proof-control", "uid": None},
-                          {"path": "/etc/blender-box-proof/operator.json", "mode": "0600", "owner": "blender-box-proof-control", "uid": None},
-                          {"path": "/etc/ssh/blender-box-proof-authorized_keys", "mode": "0600", "owner": "root", "uid": 0},
-                          {"path": "/usr/local/libexec/blender-box-proof-helper", "mode": "0755", "owner": "root", "uid": 0, "available": False},
-                          {"path": "/usr/local/libexec/blender-box-proof-worker", "mode": "0755", "owner": "root", "uid": 0, "available": False}],
+                          {"path": "/etc/blender-box-proof", "mode": "0700", "owner": "root", "uid": 0},
+                          {"path": "/etc/blender-box-proof/policy.json", "mode": "0600", "owner": "root", "uid": 0},
+                          {"path": "/etc/blender-box-proof/operator.json", "mode": "0600", "owner": "root", "uid": 0},
+                          {"path": "/etc/ssh/blender-box-proof-authorized_keys", "mode": "0644", "owner": "root", "uid": 0},
+                          {"path": "/usr/local/libexec/blender-box-proof-helper", "mode": "0755", "owner": "root", "uid": 0, "available": True},
+                          {"path": "/usr/local/libexec/blender-box-proof-worker", "mode": "0755", "owner": "root", "uid": 0, "available": True}],
             "unknown_qualification": ["control-and-runner-uids", "separate-uid-access", "filesystem-fsync-and-flock",
                                       "native-ownership-and-file-access-adapter",
                                       "native-helper-and-worker", "service-startup-gate", "exact-cgroup-termination",
@@ -734,6 +816,7 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
     bootstrap = commands.add_parser("bootstrap", help="render non-installable proposals; never apply")
+    bootstrap.add_argument("--enrollment", type=Path, help="render fixed native resources from a private enrollment spec")
     bootstrap.add_argument("--output", type=Path, help="fresh directory for proposal files")
     commands.add_parser("dispatch", help="validate stdin; native adapter remains unqualified")
     args = parser.parse_args(argv)
@@ -741,6 +824,12 @@ def main(argv=None):
         if args.command == "dispatch":
             parse_command(sys.stdin.buffer.read(MAX_WIRE + 1))
             raise ControllerError("native-adapter-unqualified")
+        if args.enrollment is not None:
+            require(args.output is not None, "native-output-required")
+            from proof_controller_native import render_enrollment
+            preview = render_enrollment(args.enrollment.absolute(), Path(__file__).resolve().parents[1], args.output.absolute())
+            print(proof.canonical(preview).decode())
+            return 0
         preview = bootstrap_preview()
         if args.output is not None:
             require(fcntl is not None, "controller-platform-unsupported")

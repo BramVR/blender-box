@@ -1,80 +1,98 @@
 ---
-summary: Local preview and qualification boundary for a persistent Windows proof controller.
+summary: Prepare exact enrollment artifacts for the persistent proof controller and distinguish local checks from native qualification.
 read_when:
   - Preparing a persistent controller for hosted Windows proof or recovery.
 ---
 
-# Preview the persistent proof controller
+# Prepare persistent controller enrollment
 
-This tooling prepares a local controller milestone for maintainers. It does not install a service, launch a proof, or qualify a hosted job. Production dispatch returns `native-adapter-unqualified` until the native process and storage boundary has an implementation and real proof.
+Use this guide to prepare a controller enrollment review. The tooling renders files and artifact hashes locally. It does not install resources or qualify a host. Runtime dispatch refuses without matching operator qualification.
 
-Generate the resource preview:
+## Inspect the resource proposal
+
+Run the preview from the repository:
 
 ```sh
 python3 scripts/proof_controller.py bootstrap
 ```
 
-The JSON lists proposed resources, file contents, and unresolved qualification facts. `status` remains `unqualified` and `installable` remains `false`. No host inspection or network access occurs.
+The JSON lists proposed resources and missing qualification. Its `installable` field remains `false`. This command performs no host inspection or network access.
 
-To inspect the proposed files together, choose an output directory that does not exist:
+To produce concrete enrollment files, prepare a private JSON specification with these exact fields:
+
+- `schema_version` set to `1`.
+- `control_uid`, `control_gid`, `runner_uid`, and `runner_gid` as positive integers for the dedicated accounts. Control and runner UIDs must differ.
+- `candidate_sha` and `driver_sha` as full Git commit hashes.
+- `expected_client_sha256` for the approved client binary.
+- `public_key` containing the existing controller dispatch public key as `ssh-ed25519 BASE64`, without a trailing comment.
+- `tool_sha256` mapping `/usr/bin/python3`, `/usr/bin/git`, `/usr/bin/ssh`, `/usr/bin/scp`, `/usr/bin/systemctl`, and `/usr/local/go/bin/go` to their approved SHA-256 hashes.
+
+Use measured, approved values. Placeholder UIDs or tool hashes describe a synthetic test, not a host enrollment. Keep private host configuration outside the repository.
+
+Choose an output directory that does not exist:
 
 ```sh
-python3 scripts/proof_controller.py bootstrap --output controller-preview
+python3 scripts/proof_controller.py bootstrap \
+  --enrollment /path/to/private-enrollment.json \
+  --output controller-enrollment
 ```
 
-File output requires POSIX and a path without symlink components. Generated files have a `.proposal` suffix. They are local review material; do not commit or install them as a working controller. The command has no apply operation and creates no accounts, keys, privileged rules, or services.
+File output requires POSIX and a path without symlink components. Review the generated resource list, modes, owners, file contents, and hashes. The enrollment includes the fixed launchers, protected source and Scenario fixture, service, privilege rule, key restriction, policy, and unqualified receipt. A repeated render into the same directory fails.
 
-## Dispatch contract
+The command creates no accounts or keys. It has no apply operation. Preserve the generated files as review material until installation and qualification have separate approval. Changing a qualification flag does not authorize changed policy or executable bytes.
 
-The future forced SSH command accepts one bounded JSON request on standard input. Its operations are `start`, `status`, `recover`, and `stop`. The request binds the fixed repository, exact candidate and trusted driver commits, proof variant, execution ID, and UTC expiry. Callers cannot select a shell command, service, signal, user, environment, or filesystem path.
+## Review the ownership boundary
 
-An identical start request observes the accepted execution. Conflicting content under the same execution ID fails. Expired or closed executions cannot start another Scenario. A different execution cannot use the fixture while local termination or Windows cleanup remains unknown.
+Check the fixed resources against the intended host:
 
-Start returns after the launch identity and authorization are durable. The supervised worker runs outside the dispatcher's fixture lock. Later status calls reconcile the same invocation and its result. A result alone cannot establish local process termination.
+- `/etc/blender-box-proof` holds root-owned policy, qualification, and operator inputs.
+- `/usr/local/libexec/blender-box-proof` holds protected scripts and the matching baseline fixture. The fixed helper and worker launchers use the same prefix outside that directory.
+- `/var/lib/blender-box-proof/control` holds root-owned request and process authority.
+- `/var/lib/blender-box-proof/jobs` holds runner-owned job data and original recovery files.
+- `/var/lib/blender-box-proof/candidate` selects the candidate checkout.
+- `/run/blender-box-proof` holds the root supervisor rendezvous. The generated `/etc/tmpfiles.d/blender-box-proof.conf` recreates it with root ownership and mode `0700` at boot.
 
-The local implementation tests the dispatcher with injected service and proof boundaries. The public command exposes no fake backend or local-execution bypass. `named-target` is reserved for integration with its qualified trusted driver. Parsing the variant does not establish support for it.
+The control account can request the fixed privileged helper operation. The runner account executes candidate work and cannot choose privileged paths, commands, units, identities, or environment. Launchers check protected source ownership before imports. Root loads the protected driver and fixture. Candidate directories cannot supply its Python imports.
 
-## Retained recovery data
+Verify the generated privilege rule allows only the fixed helper invocation. Do not replace it with a general shell, `systemctl`, `systemd-run`, or wildcard sudo grant. Review account and filesystem access, dedicated Windows trust, network reachability, fixture restoration, and candidate authorization before installation.
 
-The proposed native controller gives control records and runner files separate owners. The control owner stores the immutable request, original-input manifest, launch intent, and exact service invocation. The runner must not supply its own process authority. Files and their containing directories must be flushed before their publication permits later effects.
+The installed dispatch public-key file remains root-owned and uses mode `0644` so OpenSSH can read it under the control account's UID. Private keys and operator inputs retain mode `0600`.
 
-The local model uses the current UID for its temporary control and job trees. It does not implement the privileged file-access boundary between two accounts. That adapter and its access tests are required before deployment.
+See [CI architecture](architecture/ci.md#persistent-controller-milestone) for the process and file ownership decisions.
 
-The retained original inputs include the complete target, expected host, authorization, and dedicated SSH connection and trust bytes. SSH configuration cannot depend on another account's agent, profile, key file, or mutable include. Copying only an SSH config file is insufficient when that file refers to keys and known-hosts files elsewhere.
+## Preserve recovery authority
 
-The accepted policy also pins the expected client binary SHA-256 before launch. The worker checks the built client before public `run`, and recovery checks the retained client against that original hash. An interrupted worker cannot supply a newly observed hash as prior authority. Automatic artifact authorization remains part of native qualification.
+Retain the complete original target, expected host, authorization, and dedicated SSH connection and trust bytes. A copied SSH config that still refers to another account's mutable files is insufficient.
 
-The product's live `BLENDER_BOX_CONFIG_DIR` holds the original Run claim and any accepted Session pin. Recovery uses this same directory. A backup cannot replace the live authority directory, and a host reply cannot reconstruct lost authority. Current product builds without durable recovery journals cannot qualify restart recovery.
+The accepted policy pins the client binary hash before launch. Original inputs publish before service start. Exact invocation authorization publishes before worker release. A result alone cannot establish local process termination.
 
-Each recovery attempt gets fresh command logs and uses the retained original target, client, and config directory. It invokes public `status`, `stop`, and `status`, then checks the complete exposed Run authority and all four cleanup facts. Successful cleanup does not turn a failed Scenario into a passing proof.
+Keep the original live `BLENDER_BOX_CONFIG_DIR` at the job's `baseline/private/config` directory. The product's immutable Run claim and separate Session pin remain authority. Do not substitute a backup or reconstruct authority from a host reply.
 
-## Qualify the native boundary before installation
+Recovery uses the retained target, client, and live config with fresh per-attempt command logs. It invokes public `status`, `stop`, and `status`, then checks full Run authority and all cleanup facts. Successful cleanup preserves a failed Scenario result as failure.
 
-The preview proposes two dedicated accounts, private control/job/operator roots, a fixed helper, a static service, and a restricted forced SSH command. Account names and resource paths are proposed setup targets. They are not observations about an existing host.
+Keep unresolved jobs. This controller adds no deletion or historical ownership-rewriting policy.
 
-Before any installation, establish these facts and approve the resulting exact resource diff:
+A supervisor failure before worker release has a separate recovery path. It requires an exact, root-owned failure receipt after owned child cleanup, a completed start-command receipt, no release authorization or native receipt, and fresh proof that the unit has no queued job or remaining processes. Missing files alone never prove that a launch failed. The helper records this decision under the fixture lock, and later startup or release for that attempt must refuse it.
 
-- The owned Linux host, persistent filesystem, capacity, and distinct account UIDs. Preserve existing workloads and operator state.
-- The fixed helper's ownership and allowed privileged operation. No generic shell, `systemctl`, `systemd-run`, or wildcard sudo grant.
-- The service's boot ID, invocation identity, cgroup, PID, start time, and parent/spawn receipt. Persist launch intent before starting; authorize Windows contact only after exact identity is durable.
-- An exact stop that rejects a replacement invocation and proves the recorded task has no processes left. A changed boot ID must never authorize signaling a recycled PID.
-- The dedicated Windows key and pinned trust, controller dispatch key, protected GitHub credential release policy, and required network reachability.
-- An automatic trusted-candidate authorization policy and dedicated Windows fixture restoration. Recurring human dispatch approval does not satisfy AFK operation.
-- A retention policy that preserves unresolved executions. Capacity exhaustion must block new admission; this milestone deletes no execution data.
+A proven failure of the first baseline attempt settles as failure because no Windows operation was admitted. A failed recovery attempt keeps the original Run, target, client, and journal; Windows cleanup remains unresolved until an explicit recovery succeeds. Unknown starts and uncertain cleanup stay fenced. Adopting a real native receipt after a crash before the helper saves its Invocation remains an outstanding recovery case.
 
-The proposed service containment needs native verification. Systemd's `KillMode=control-group` targets processes in the unit's cgroup, but that setting alone does not prove which invocation the controller owns. See the [systemd kill contract](https://raw.githubusercontent.com/systemd/systemd/main/man/systemd.kill.xml).
+## Run the local checks
 
-Bootstrap does not inspect or modify a host. A separately authorized read-only survey can supply facts for a private enrollment preview. Process, disk, reboot, SSH-disconnect, and GitHub-disconnect behavior still need native proof. A service restart cannot substitute for a controller reboot test.
-
-## Verify the local milestone
-
-Run the focused tests and repository gate:
+Run the controller tests and full repository gate:
 
 ```sh
-PYTHONPATH=tests/ci PYTHONDONTWRITEBYTECODE=1 python3 -m unittest test_proof_controller -v
+PYTHONPATH=tests/ci PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests/ci -p 'test_proof_controller*.py' -v
 ./scripts/ci all
 ```
 
-The tests exercise real temporary files and dispatcher restarts with fake service and Windows boundaries. They cover publication ordering, replay/conflict/expiry, unresolved admission, stale invocation rejection, retained-input corruption, separate recovery logs, and public-output privacy. These tests establish local behavior only.
+The tests use temporary files and fake native boundaries. They exercise command and protocol parsing, expected UID selection, publication and release ordering, stale identities, replacement races, recovery, and qualification refusal. They do not establish actual privilege dropping, systemd behavior, cgroup termination, or disk durability.
 
-Keep the hosted `hosted-recovery-retention-unavailable` guard until storage, native task ownership, and original-target recovery qualify. The final integrated candidate still needs actual `Windows onboarding proof / baseline` and `named-target` workflow results. Missing, skipped, fake-only, or merely local proof does not satisfy those jobs.
+## Complete native and hosted qualification
+
+After exact enrollment approval, verify the installed artifacts and distinct account permissions on the owned Linux host. Qualify startup, exact stop, supervisor exit, service emptiness, storage flushes and locks, initiator disconnect, controller restart, and controller reboot. A service restart cannot substitute for a reboot test.
+
+The qualification receipt must bind the exact installed policy and artifact hashes. Preserve its real evidence. Bootstrap always renders an unqualified receipt and provides no command to manufacture qualification.
+
+Coordinate the target-driver integration before hosted proof. Its `ProofRequest.proof` selects `baseline` or `named-target`; the original target and config directory must remain unchanged. The existing `hosted-recovery-retention-unavailable` guard stays until qualified controller authority replaces it. Never run a hosted request as local to bypass the guard.
+
+Required hosted `Windows onboarding proof / baseline` and `named-target` results remain outstanding until those jobs actually pass. Missing, skipped, fake-only, or merely local checks do not satisfy them.

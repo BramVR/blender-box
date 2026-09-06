@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Add fixed Linux proof-controller helper, worker, private file access, and enrollment artifacts; runtime dispatch requires matching native qualification.
 - Add a local persistent proof-controller bootstrap preview and tested admission/recovery model; native dispatch remains unqualified.
 - Preserve owned command cleanup when onboarding proof receipt or process setup fails.
 - Accept Blender's numeric PNG resolution metadata in onboarding proof and preserve verified cleanup when retained evidence fails validation.
