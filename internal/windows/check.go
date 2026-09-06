@@ -10,6 +10,7 @@ import (
 	"unicode/utf16"
 
 	"github.com/BramVR/blender-box/internal/target"
+	"github.com/BramVR/blender-box/internal/windowstarget"
 )
 
 const checkTimeout = 2 * time.Minute
@@ -374,15 +375,23 @@ type CheckEvidence struct {
 }
 
 func Check(ctx context.Context, ssh SSH, selected target.Target) (CheckResult, error) {
+	if err := selected.Validate(); err != nil {
+		return CheckResult{}, err
+	}
+	if ssh == nil {
+		return CheckResult{}, fmt.Errorf("SSH transport is unavailable")
+	}
 	ctx, cancel := context.WithTimeout(ctx, checkTimeout)
 	defer cancel()
 
 	input, err := json.Marshal(struct {
-		target.Target
+		windowstarget.Config
+		SSHAlias              string `json:"ssh_alias"`
+		SchemaVersion         int    `json:"schema_version"`
 		ExpectedTaskArguments string `json:"expected_task_arguments"`
 	}{
-		Target:                selected,
-		ExpectedTaskArguments: fmt.Sprintf(`host run-request --state-root "%s"`, selected.WorkRoot),
+		Config: selected.Windows(), SSHAlias: selected.SSHAlias(), SchemaVersion: 1,
+		ExpectedTaskArguments: fmt.Sprintf(`host run-request --state-root "%s"`, selected.Windows().WorkRoot),
 	})
 	if err != nil {
 		return CheckResult{}, fmt.Errorf("encode target check input: %w", err)
@@ -400,7 +409,7 @@ func Check(ctx context.Context, ssh SSH, selected target.Target) (CheckResult, e
 		"-EncodedCommand",
 		encodePowerShell("[Console]::In.ReadToEnd() | Invoke-Expression"),
 	}
-	output, err := ssh.Run(ctx, selected.SSHAlias, arguments, []byte(scriptInput))
+	output, err := ssh.Run(ctx, selected.SSHAlias(), arguments, []byte(scriptInput))
 	if err != nil {
 		return CheckResult{}, fmt.Errorf("inspect Windows host: %w", err)
 	}
