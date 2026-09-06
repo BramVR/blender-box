@@ -275,3 +275,18 @@ func writeScenario(t *testing.T, root string) {
 		t.Fatal(err)
 	}
 }
+
+func TestLoadSchemaThreeRequiresUIBatch(t *testing.T) {
+	for _, field := range []string{"", `,"ui_actions":null`} {
+		root := t.TempDir()
+		writeScenario(t, root)
+		path := filepath.Join(root, "payload.json")
+		document := `{"schema_version":3,"files":[{"source":"scenario.py","destination":"scenario.py"}],"scenario":{"script":"scenario.py"` + field + `}}`
+		if err := os.WriteFile(path, []byte(document), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := Load(path); err == nil || !strings.Contains(err.Error(), "requires a UI action batch") {
+			t.Fatalf("error=%v", err)
+		}
+	}
+}

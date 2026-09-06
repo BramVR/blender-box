@@ -14,6 +14,7 @@ import (
 
 	"github.com/BramVR/blender-box/internal/capture"
 	"github.com/BramVR/blender-box/internal/safepath"
+	"github.com/BramVR/blender-box/internal/uiaction"
 )
 
 var sha256Pattern = regexp.MustCompile(`^[0-9a-f]{64}$`)
@@ -51,11 +52,12 @@ func (file File) Contents() []byte {
 
 // Scenario declares the Blender script and bounded daemon call behavior.
 type Scenario struct {
-	Script               string `json:"script"`
-	ReadTimeoutSeconds   int    `json:"read_timeout_seconds"`
-	CaptureViewport      bool   `json:"capture_viewport"`
-	CaptureBlenderWindow bool   `json:"capture_blender_window,omitempty"`
-	CaptureDesktop       bool   `json:"capture_desktop,omitempty"`
+	UIActions            *uiaction.Batch `json:"ui_actions,omitempty"`
+	Script               string          `json:"script"`
+	ReadTimeoutSeconds   int             `json:"read_timeout_seconds"`
+	CaptureViewport      bool            `json:"capture_viewport"`
+	CaptureBlenderWindow bool            `json:"capture_blender_window,omitempty"`
+	CaptureDesktop       bool            `json:"capture_desktop,omitempty"`
 }
 
 func (scenario Scenario) Captures() []capture.Kind {
@@ -110,8 +112,11 @@ func Load(path string) (Payload, error) {
 	if err := requireJSONEnd(decoder); err != nil {
 		return Payload{}, err
 	}
-	if declared.SchemaVersion != 1 && declared.SchemaVersion != 2 {
+	if declared.SchemaVersion != 1 && declared.SchemaVersion != 2 && declared.SchemaVersion != 3 {
 		return Payload{}, fmt.Errorf("unsupported payload schema version %d", declared.SchemaVersion)
+	}
+	if declared.SchemaVersion == 3 && declared.Scenario.UIActions == nil {
+		return Payload{}, fmt.Errorf("payload schema version 3 requires a UI action batch")
 	}
 	if declared.SchemaVersion == 1 && (declared.Scenario.CaptureBlenderWindow || declared.Scenario.CaptureDesktop) {
 		return Payload{}, fmt.Errorf("Blender-window and desktop captures require payload schema version 2")
@@ -195,11 +200,22 @@ func (payload Payload) Validate() error {
 
 // ValidateManifest verifies bounded cross-process metadata without local bytes.
 func (payload Payload) ValidateManifest() error {
-	if payload.SchemaVersion != 1 && payload.SchemaVersion != 2 {
+	if payload.SchemaVersion != 1 && payload.SchemaVersion != 2 && payload.SchemaVersion != 3 {
 		return fmt.Errorf("unsupported payload schema version %d", payload.SchemaVersion)
 	}
 	if payload.SchemaVersion == 1 && (payload.Scenario.CaptureBlenderWindow || payload.Scenario.CaptureDesktop) {
 		return fmt.Errorf("Blender-window and desktop captures require payload schema version 2")
+	}
+	if payload.SchemaVersion == 3 && payload.Scenario.UIActions == nil {
+		return fmt.Errorf("payload schema version 3 requires a UI action batch")
+	}
+	if payload.Scenario.UIActions != nil {
+		if payload.SchemaVersion != 3 {
+			return fmt.Errorf("UI actions require payload schema version 3")
+		}
+		if err := payload.Scenario.UIActions.Validate(); err != nil {
+			return err
+		}
 	}
 	if len(payload.Files) == 0 || len(payload.Files) > maxFiles {
 		return fmt.Errorf("payload file count %d is outside 1..%d", len(payload.Files), maxFiles)

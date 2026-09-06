@@ -302,7 +302,15 @@ func runCommand(ctx context.Context, args []string, stdout io.Writer, stderr io.
 	})
 	if err != nil {
 		failure := orchestrator.RunResult{SchemaVersion: 1, RunID: runID, State: orchestrator.StateFailed, Error: err.Error()}
-		if *asJSON && !orchestrator.IsPreflightError(err) {
+		hasUIResult := loaded.Scenario.UIActions != nil && result.RunID != ""
+		if hasUIResult {
+			failure = result
+			if failure.State == orchestrator.StateComplete {
+				failure.State = orchestrator.StateFailed
+			}
+			failure.Error = err.Error()
+		}
+		if *asJSON && !hasUIResult && !orchestrator.IsPreflightError(err) {
 			recoveryCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
 			defer cancel()
 			if status, statusErr := dependencies.Runner.Status(recoveryCtx, selected, runID); statusErr == nil {
@@ -470,5 +478,6 @@ func runResultFromStatus(status orchestrator.StatusResult) orchestrator.RunResul
 		Evidence:      status.Evidence,
 		Cleanup:       status.Cleanup,
 		Error:         status.Error,
+		UIActions:     status.UIActions,
 	}
 }

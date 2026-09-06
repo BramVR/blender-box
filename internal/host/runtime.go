@@ -121,17 +121,22 @@ func (runtime *Runtime) Launch(ctx context.Context, taskName string) error {
 }
 
 func (runtime *Runtime) Start(ctx context.Context, request DaemonStart) (orchestrator.SessionID, error) {
-	output, runErr := runtime.processes.Run(ctx, request.Executable, []string{
+	arguments := []string{
 		"start",
 		"--name", request.Name,
 		"--blender", request.BlenderExecutable,
 		"--json",
-	}, request.Environment)
+	}
+	if request.EnableUIEvents {
+		arguments = append(arguments, "--enable-ui-events")
+	}
+	output, runErr := runtime.processes.Run(ctx, request.Executable, arguments, request.Environment)
 	var result struct {
 		SchemaVersion int    `json:"schema_version"`
 		Status        string `json:"status"`
 		Session       struct {
-			SessionID orchestrator.SessionID `json:"session_id"`
+			SessionID      orchestrator.SessionID `json:"session_id"`
+			EnableUIEvents bool                   `json:"enable_ui_events"`
 		} `json:"session"`
 	}
 	if err := decodeExtensibleJSON(output, &result, maxProcessOutput); err != nil || result.SchemaVersion != 1 || result.Status != "started" {
@@ -142,6 +147,9 @@ func (runtime *Runtime) Start(ctx context.Context, request DaemonStart) (orchest
 	}
 	if err := result.Session.SessionID.Validate(); err != nil {
 		return "", err
+	}
+	if request.EnableUIEvents && !result.Session.EnableUIEvents {
+		return result.Session.SessionID, fmt.Errorf("Session did not confirm UI event launch capability")
 	}
 	return result.Session.SessionID, runErr
 }
@@ -222,15 +230,8 @@ func (runtime *Runtime) WaitReady(ctx context.Context, request DaemonReady) erro
 		if !result.Session.Health.Process.Alive {
 			return fmt.Errorf("blendersessiond Session stopped before readiness")
 		}
-		if runtime.readyPollInterval <= 0 {
-			continue
-		}
-		timer := time.NewTimer(runtime.readyPollInterval)
-		select {
-		case <-readyCtx.Done():
-			timer.Stop()
-			return fmt.Errorf("blendersessiond readiness: %w", readyCtx.Err())
-		case <-timer.C:
+		if err := waitRuntimePoll(readyCtx, runtime.readyPollInterval); err != nil {
+			return fmt.Errorf("blendersessiond readiness: %w", err)
 		}
 	}
 }
@@ -393,4 +394,18 @@ func mergedEnvironment(overrides map[string]string) []string {
 		result = append(result, key+"="+overrides[key])
 	}
 	return result
+}
+
+func waitRuntimePoll(ctx context.Context, interval time.Duration) error {
+	if interval <= 0 {
+		return ctx.Err()
+	}
+	timer := time.NewTimer(interval)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
 }

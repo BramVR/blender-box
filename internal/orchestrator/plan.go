@@ -7,6 +7,7 @@ import (
 	"github.com/BramVR/blender-box/internal/capture"
 	"github.com/BramVR/blender-box/internal/payload"
 	"github.com/BramVR/blender-box/internal/target"
+	"github.com/BramVR/blender-box/internal/uiaction"
 )
 
 type PlanIntent struct {
@@ -21,7 +22,18 @@ type PlannedCapture struct {
 	PrivacySensitive bool               `json:"privacy_sensitive"`
 }
 
+type PlannedUIBatch struct {
+	SchemaVersion  int    `json:"schema_version"`
+	Count          int    `json:"count"`
+	TimeoutSeconds int    `json:"timeout_seconds"`
+	Capability     string `json:"capability"`
+}
+type UIActionSupport struct {
+	Capability string `json:"capability"`
+	Supported  bool   `json:"supported"`
+}
 type PlanResult struct {
+	UIActions            *PlannedUIBatch  `json:"ui_actions,omitempty"`
 	SchemaVersion        int              `json:"schema_version"`
 	Status               string           `json:"status"`
 	PayloadSchemaVersion int              `json:"payload_schema_version"`
@@ -37,12 +49,14 @@ type CaptureSupport struct {
 }
 
 type HostInspection struct {
+	UIActions     *UIActionSupport `json:"ui_actions,omitempty"`
 	SchemaVersion int              `json:"schema_version"`
 	Status        string           `json:"status"`
 	Captures      []CaptureSupport `json:"captures"`
 }
 
 type HostRequirements struct {
+	UIActions            bool
 	PayloadSchemaVersion int
 	Captures             []capture.Kind
 }
@@ -68,6 +82,10 @@ func (runner *Runner) Plan(intent PlanIntent) (PlanResult, error) {
 		FileCount:            len(intent.Payload.Files),
 		ExpectedEvidence:     []EvidenceType{EvidenceScenarioResult},
 	}
+	if batch := intent.Payload.Scenario.UIActions; batch != nil {
+		plan.UIActions = &PlannedUIBatch{SchemaVersion: batch.SchemaVersion, Count: len(batch.Actions), TimeoutSeconds: batch.TimeoutSeconds, Capability: uiaction.Capability}
+		plan.ExpectedEvidence = append(plan.ExpectedEvidence, EvidenceUIActions)
+	}
 	for _, kind := range intent.Payload.Scenario.Captures() {
 		definition, exists := capture.Describe(kind)
 		if !exists {
@@ -79,6 +97,12 @@ func (runner *Runner) Plan(intent PlanIntent) (PlanResult, error) {
 			Capability:       definition.Capability,
 			PrivacySensitive: definition.PrivacySensitive,
 		})
+		if kind == capture.BlenderWindow && plan.UIActions != nil {
+			plan.Captures[len(plan.Captures)-1].Path = uiaction.BeforePath
+			after := plan.Captures[len(plan.Captures)-1]
+			after.Path = uiaction.AfterPath
+			plan.Captures = append(plan.Captures, after)
+		}
 		plan.ExpectedEvidence = append(plan.ExpectedEvidence, EvidenceType(kind))
 	}
 	return plan, nil
@@ -97,7 +121,7 @@ func (runner *Runner) Doctor(ctx context.Context, intent PlanIntent) (DoctorResu
 		return DoctorResult{}, err
 	}
 	status := "fail"
-	if inspectionSupports(inspection, plan.Captures) {
+	if inspectionSupports(inspection, plan.Captures) && uiInspectionSupports(inspection, plan.UIActions != nil) {
 		status = "pass"
 	}
 	return DoctorResult{SchemaVersion: 1, Status: status, Plan: plan, Host: inspection}, nil
@@ -112,7 +136,7 @@ func plannedKinds(plan PlanResult) []capture.Kind {
 }
 
 func hostRequirements(plan PlanResult) HostRequirements {
-	return HostRequirements{PayloadSchemaVersion: plan.PayloadSchemaVersion, Captures: plannedKinds(plan)}
+	return HostRequirements{PayloadSchemaVersion: plan.PayloadSchemaVersion, Captures: plannedKinds(plan), UIActions: plan.UIActions != nil}
 }
 
 func inspectionSupports(inspection HostInspection, planned []PlannedCapture) bool {
@@ -131,4 +155,8 @@ func inspectionSupports(inspection HostInspection, planned []PlannedCapture) boo
 		}
 	}
 	return true
+}
+
+func uiInspectionSupports(inspection HostInspection, required bool) bool {
+	return !required || inspection.UIActions != nil && inspection.UIActions.Capability == uiaction.Capability && inspection.UIActions.Supported
 }
