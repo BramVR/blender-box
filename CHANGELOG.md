@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Add local pairing preparation and trusted-receipt reconciliation, schema-3 targets with pinned SSH identity, shared SSH/SCP credential policy and unchanged legacy fingerprints; native enrollment, revocation, SSH preparation and Windows client credential support remain unfinished.
+
 - Add owned Windows runtime installation with pinned artifact manifests, preview, durable installation receipts, bounded execution status and recovery, generated targets, repeatable removal, and maintenance fencing; refuse legacy setup apply without ownership and prepare separately authorized host-install proof.
 - Fix Windows named-target replacement while readers hold the previous profile open, preserving complete records and permission failures.
 - Recover exact native proof-controller receipts after helper interruption and bind baseline or named-target Windows proof to one-use native worker authority; direct hosted execution remains guarded and native qualification remains required.

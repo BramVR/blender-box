@@ -200,7 +200,7 @@ func (adapter *Adapter) invokeJSON(ctx context.Context, selected target.Target, 
 		"-EncodedCommand",
 		encodePowerShell(script),
 	}
-	response, err := adapter.ssh.Run(ctx, selected.SSHAlias(), arguments, encoded)
+	response, err := adapter.ssh.Run(ctx, selected.Connection(), arguments, encoded)
 	if err != nil {
 		return fmt.Errorf("host %s: %w", operation, err)
 	}

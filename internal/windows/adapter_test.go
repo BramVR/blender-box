@@ -128,7 +128,7 @@ func passingAdapterCheck(t *testing.T) []byte {
 	return mustJSON(t, map[string]any{"schema_version": 1, "status": "pass", "checks": checks})
 }
 
-func (fake *scriptedSSH) Run(ctx context.Context, _ string, arguments []string, input []byte) ([]byte, error) {
+func (fake *scriptedSSH) Run(ctx context.Context, _ target.Connection, arguments []string, input []byte) ([]byte, error) {
 	if fake.runHook != nil {
 		hook := fake.runHook
 		fake.runHook = nil
@@ -147,7 +147,8 @@ func (fake *scriptedSSH) Run(ctx context.Context, _ string, arguments []string, 
 	return output, nil
 }
 
-func (fake *scriptedSSH) Upload(ctx context.Context, host, source, destination string) error {
+func (fake *scriptedSSH) Upload(ctx context.Context, connection target.Connection, source, destination string) error {
+	host := connection.Alias()
 	contents, err := os.ReadFile(source)
 	if err != nil {
 		return err

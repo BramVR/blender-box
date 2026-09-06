@@ -162,7 +162,7 @@ func (adapter *Adapter) invokeJSON(ctx context.Context, selected target.Target, 
 		return fmt.Errorf("encode host %s request: %w", operation, err)
 	}
 	arguments := []string{Quote(selected.Linux().HostExecutable) + " host " + Quote(operation) + " --state-root " + Quote(selected.Linux().WorkRoot)}
-	response, err := adapter.ssh.Run(ctx, selected.SSHAlias(), arguments, encoded)
+	response, err := adapter.ssh.Run(ctx, selected.Connection(), arguments, encoded)
 	if err != nil {
 		return fmt.Errorf("host %s: %w", operation, err)
 	}
