@@ -18,13 +18,15 @@ import (
 )
 
 type fakeMachine struct {
-	inspection Inspection
-	current    taskObservation
-	taskSpec   taskSpec
-	taskCalls  []string
-	probes     int
-	probeErr   error
-	taskHook   func()
+	inspection      Inspection
+	current         taskObservation
+	taskSpec        taskSpec
+	taskCalls       []string
+	probes          int
+	probeErr        error
+	taskHook        func()
+	taskMutationErr error
+	inspectionErr   error
 }
 
 func (m *fakeMachine) inspect(_ context.Context, r Request) (Inspection, error) {
@@ -33,7 +35,7 @@ func (m *fakeMachine) inspect(_ context.Context, r Request) (Inspection, error) 
 	if _, err := os.Lstat(r.StateRoot); err == nil {
 		result.RootIdentity, _ = fileIdentity(r.StateRoot)
 	}
-	return result, nil
+	return result, m.inspectionErr
 }
 func (m *fakeMachine) securePath(_ context.Context, path, _ string, missing bool) error {
 	return checkPath(path, missing)
@@ -58,6 +60,9 @@ func (m *fakeMachine) task(_ context.Context, action string, spec taskSpec) (tas
 			return m.current, fmt.Errorf("task conflict")
 		}
 		m.current = taskObservation{}
+	}
+	if action == "create" || action == "delete" {
+		return m.current, m.taskMutationErr
 	}
 	return m.current, nil
 }

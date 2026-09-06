@@ -8,7 +8,8 @@ Use the public CLI to import a target into isolated user-local configuration, se
 - Import a synthetic flat schema 1 Windows file with `targets import NAME --file PATH --json`. Inspect `targets list --json` and `targets show NAME --json`; the latter contains a schema 2 Windows target.
 - Change or remove the source file and confirm the imported copy is unchanged.
 - Require explicit `--replace` for a collision. Unsafe names, unknown platforms, and both selector flags fail locally.
-- Exercise `windows setup` preview by name. It must make no SSH connection.
+- Exercise `windows setup` preview and `plan` by name. Neither may contact SSH. Check schema 2 capture inventory and schema 3 redacted UI actions in the plan.
+- Exercise named `doctor` through recording fake SSH. Require the requested capture and UI capabilities; a named target must not bypass the file-selected capability checks.
 - Use recording fake SSH for public status/stop mismatch tests. Require the original-target error and zero transport invocations. A nonzero exit alone is insufficient.
 
 These checks do not prove a Windows Scenario, real evidence transfer, or cleanup.

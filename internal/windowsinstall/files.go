@@ -67,7 +67,10 @@ func observeFile(path string, planned File) (File, error) {
 	}
 	return result, nil
 }
-func publishBytes(path string, data []byte, replace bool) error {
+func publishBytes(path, staging string, data []byte, replace bool, checkpoint func(string) error) error {
+	if err := checkPath(staging, false); err != nil {
+		return err
+	}
 	if err := checkPath(filepath.Dir(path), false); err != nil {
 		return err
 	}
@@ -78,7 +81,7 @@ func publishBytes(path string, data []byte, replace bool) error {
 	} else if !os.IsNotExist(err) {
 		return err
 	}
-	file, err := os.CreateTemp(filepath.Dir(path), ".install-pending-")
+	file, err := os.CreateTemp(staging, ".install-pending-")
 	if err != nil {
 		return err
 	}
@@ -95,8 +98,18 @@ func publishBytes(path string, data []byte, replace bool) error {
 	if err = file.Close(); err != nil {
 		return err
 	}
+	if checkpoint != nil {
+		if err := checkpoint("publication-staged:" + path); err != nil {
+			return err
+		}
+	}
 	if err = publishFile(name, path, replace); err != nil {
 		return err
+	}
+	if checkpoint != nil {
+		if err := checkpoint("publication-published:" + path); err != nil {
+			return err
+		}
 	}
 	got, err := privatefile.ReadSource(path, int64(len(data)))
 	if err != nil {
@@ -120,7 +133,7 @@ func saveReceipt(path string, receipt *installationReceipt, replace bool) error 
 	if len(data) > 2<<20 {
 		return fmt.Errorf("receipt exceeds limit")
 	}
-	if err := publishBytes(path, data, replace); err != nil {
+	if err := publishBytes(path, filepath.Dir(path), data, replace, nil); err != nil {
 		return err
 	}
 	*receipt = next

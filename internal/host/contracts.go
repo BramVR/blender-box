@@ -7,6 +7,20 @@ type Acknowledgement struct {
 	Status        string `json:"status"`
 }
 
+type CapabilitiesRequest struct {
+	UIActions               bool   `json:"ui_actions,omitempty"`
+	BlenderExecutable       string `json:"blender_executable,omitempty"`
+	SessionBrokerExecutable string `json:"session_broker_executable,omitempty"`
+	SchemaVersion           int    `json:"schema_version"`
+}
+
+type CapabilitiesResponse struct {
+	UIActions     *orchestrator.UIActionSupport `json:"ui_actions,omitempty"`
+	SchemaVersion int                           `json:"schema_version"`
+	Status        string                        `json:"status"`
+	Captures      []orchestrator.CaptureSupport `json:"captures"`
+}
+
 type AcquireRequest struct {
 	SchemaVersion int                    `json:"schema_version"`
 	Claim         orchestrator.LockClaim `json:"claim"`

@@ -39,11 +39,14 @@ type machine interface {
 type installer struct {
 	machine    machine
 	checkpoint func(string) error
+	claim      *host.SetupClaim
 }
 
-func NewLocal() Executor { return &installer{machine: nativeMachine{}} }
+func NewLocal() Executor { return newOwner(nativeMachine{}) }
 
 type installIntent struct {
+	TargetOut      string             `json:"target_out,omitempty"`
+	SaveTarget     string             `json:"save_target,omitempty"`
 	Root           string             `json:"root"`
 	OwnerSID       string             `json:"owner_sid"`
 	SSHAlias       string             `json:"ssh_alias"`
@@ -173,7 +176,7 @@ func (r installationReceipt) validate() error {
 	return nil
 }
 func (e *installer) Execute(ctx context.Context, request Request) (Result, error) {
-	result := Result{SchemaVersion: 1, InstallationID: request.InstallationID, OperationID: request.OperationID, State: "planned", Completion: "known", Files: []File{}, Retained: []string{}, Problems: []Problem{}, Inspection: Inspection{BlenderCandidates: []Candidate{}}, Plan: Plan{Files: []File{}}}
+	result := Result{TargetPublication: Publication{Status: "not-requested"}, SchemaVersion: 1, InstallationID: request.InstallationID, OperationID: request.OperationID, State: "planned", Completion: "known", Files: []File{}, Retained: []string{}, Problems: []Problem{}, Inspection: Inspection{BlenderCandidates: []Candidate{}}, Plan: Plan{Files: []File{}}}
 	if request.Platform != "windows" {
 		return problem(result, "unsupported-platform", fmt.Errorf("setup implements Windows only"))
 	}
@@ -192,6 +195,12 @@ func (e *installer) Execute(ctx context.Context, request Request) (Result, error
 	if request.Operation == "remove" && request.InstallationID == "" {
 		return problem(result, "invalid-request", fmt.Errorf("remove requires installation ID"))
 	}
+	if err := validatePublication(request); err != nil {
+		return problem(result, "invalid-publication", err)
+	}
+	if request.TargetOut != "" {
+		result.TargetPublication = publication(request, "not-published")
+	}
 	inspection, err := e.machine.inspect(ctx, request)
 	result.Inspection = inspection
 	if err != nil {
@@ -200,7 +209,7 @@ func (e *installer) Execute(ctx context.Context, request Request) (Result, error
 	if err = checkPath(request.StateRoot, true); err != nil {
 		return problem(result, "unsafe-path", err)
 	}
-	if err = host.InspectMaintenance(request.StateRoot); err != nil {
+	if err = host.InspectSetupMaintenance(request.StateRoot, e.claim); err != nil {
 		return problem(result, "host-busy", err)
 	}
 	if request.Operation == "inspect" && request.InstallationID == "" {
@@ -238,7 +247,7 @@ func (e *installer) Execute(ctx context.Context, request Request) (Result, error
 			request.InstallationID = InstallationID(id)
 		}
 		runtime := filepath.Join(request.StateRoot, "installations", string(request.InstallationID), "runtime")
-		intent = installIntent{Root: request.StateRoot, OwnerSID: inspection.OwnerSID, SSHAlias: request.SSHAlias, WindowsUser: request.WindowsUser, Blender: inspection.BlenderCandidates[0], Python: *inspection.Python, ManifestSHA256: bundle.SHA256, Task: taskSpec{Name: request.TaskName, OwnerSID: inspection.OwnerSID, InstallationID: request.InstallationID, Executable: filepath.Join(runtime, "blender-box.exe"), Arguments: `host run-request --state-root "` + request.StateRoot + `"`, Directory: runtime}, Files: inventory(contents)}
+		intent = installIntent{TargetOut: request.TargetOut, SaveTarget: request.SaveTarget, Root: request.StateRoot, OwnerSID: inspection.OwnerSID, SSHAlias: request.SSHAlias, WindowsUser: request.WindowsUser, Blender: inspection.BlenderCandidates[0], Python: *inspection.Python, ManifestSHA256: bundle.SHA256, Task: taskSpec{Name: request.TaskName, OwnerSID: inspection.OwnerSID, InstallationID: request.InstallationID, Executable: filepath.Join(runtime, "blender-box.exe"), Arguments: `host run-request --state-root "` + request.StateRoot + `"`, Directory: runtime}, Files: inventory(contents)}
 	}
 	if request.Operation == "install" {
 		if _, err := validateInventory(intent.Files); err != nil {
@@ -347,7 +356,7 @@ func (e *installer) Execute(ctx context.Context, request Request) (Result, error
 	if err := e.ensureRoot(ctx, request.StateRoot, inspection.OwnerSID); err != nil {
 		return problem(result, "root-creation-failed", err)
 	}
-	err = host.WithMaintenance(ctx, request.StateRoot, func() error {
+	err = host.WithSetupMaintenance(ctx, request.StateRoot, e.claim, func() error {
 		if err := e.machine.securePath(ctx, request.StateRoot, inspection.OwnerSID, false); err != nil {
 			return err
 		}
@@ -643,7 +652,7 @@ func (e *installer) install(ctx context.Context, directory, path string, r *inst
 				if !exists || digest(data) != file.SHA256 {
 					return fmt.Errorf("missing planned runtime bytes")
 				}
-				err = publishBytes(destination, data, false)
+				err = publishBytes(destination, r.Intent.Root, data, false, e.checkpoint)
 			}
 			if err != nil {
 				return err
@@ -691,7 +700,7 @@ func (e *installer) install(ctx context.Context, directory, path string, r *inst
 		if !observed.Exists {
 			observed, err = e.machine.task(ctx, "create", r.Intent.Task)
 			if err != nil {
-				return err
+				return errors.Join(errTaskMutationUnknown, err)
 			}
 		}
 		if err := e.hit("after-create:task"); err != nil {
@@ -758,7 +767,7 @@ func (e *installer) remove(ctx context.Context, directory, path string, r *insta
 		if task.Exists {
 			after, err := e.machine.task(ctx, "delete", r.Intent.Task)
 			if err != nil {
-				return err
+				return errors.Join(errTaskMutationUnknown, err)
 			}
 			if after.Exists {
 				return fmt.Errorf("task removal not confirmed")

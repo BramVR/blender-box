@@ -20,6 +20,8 @@ sys.modules[spec.name] = proof
 spec.loader.exec_module(proof)
 SHA = "a" * 40
 RUN = "bbx_" + "a" * 32
+EXIF_RESOLUTION = (b"MM\x00*" + struct.pack(">IIIIIH", 24, 72, 1, 72, 1, 2)
+                   + struct.pack(">HHIIHHIII", 282, 5, 1, 8, 283, 5, 1, 16, 0))
 
 
 def png(width=2, height=2, *, raw=None, compressed=None, depth=8, color=2, interlace=0, metadata=None):
@@ -29,7 +31,8 @@ def png(width=2, height=2, *, raw=None, compressed=None, depth=8, color=2, inter
         raw = (b"\x00" + (b"\x00\x80\xff" if color == 2 else b"\x00\x80\xff\xff") * width) * height
     if compressed is None:
         compressed = zlib.compress(raw)
-    ancillary = chunk(*metadata) if metadata else b""
+    metadata = metadata if isinstance(metadata, list) else [metadata] if metadata else []
+    ancillary = b"".join(chunk(*item) for item in metadata)
     return (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, depth, color, 0, 0, interlace))
             + ancillary + chunk(b"IDAT", compressed) + chunk(b"IEND", b""))
 
@@ -156,6 +159,30 @@ class AssertionTests(unittest.TestCase):
             with self.subTest(size=len(image)), self.assertRaises(proof.ProofError):
                 proof.verify_png(image, 2, 2)
 
+    def test_png_numeric_resolution(self):
+        content = png(metadata=[(b"eXIf", EXIF_RESOLUTION), (b"oFFs", struct.pack(">iiB", 0, 0, 0))])
+        before = proof.digest(content)
+        proof.verify_png(content, 2, 2)
+        self.assertEqual(proof.digest(content), before)
+
+
+    def test_png_exif_rejects_other_data(self):
+        cases = [EXIF_RESOLUTION + b"PRIVATE_METADATA_SENTINEL", EXIF_RESOLUTION[:-1],
+                 b"II" + EXIF_RESOLUTION[2:], EXIF_RESOLUTION[:4] + struct.pack(">I", 26) + EXIF_RESOLUTION[8:],
+                 EXIF_RESOLUTION[:26] + struct.pack(">H", 315) + EXIF_RESOLUTION[28:],
+                 EXIF_RESOLUTION[:28] + struct.pack(">H", 2) + EXIF_RESOLUTION[30:],
+                 EXIF_RESOLUTION[:30] + struct.pack(">I", 2) + EXIF_RESOLUTION[34:],
+                 EXIF_RESOLUTION[:34] + struct.pack(">I", 16) + EXIF_RESOLUTION[38:],
+                 EXIF_RESOLUTION[:12] + struct.pack(">I", 0) + EXIF_RESOLUTION[16:],
+                 EXIF_RESOLUTION[:50] + struct.pack(">I", 8)]
+        for exif in cases:
+            with self.subTest(exif=exif.hex()), self.assertRaises(proof.ProofError):
+                proof.verify_png(png(metadata=(b"eXIf", exif)), 2, 2)
+        for offsets in (struct.pack(">iiB", 1, 0, 0), struct.pack(">iiB", 0, 0, 1), b"PRIVATE_METADATA_SENTINEL"):
+            with self.subTest(offsets=offsets.hex()), self.assertRaises(proof.ProofError):
+                proof.verify_png(png(metadata=(b"oFFs", offsets)), 2, 2)
+
+
     def test_png_private_metadata(self):
         for kind in (b"tEXt", b"iTXt", b"zTXt", b"eXIf", b"iCCP"):
             content = png(metadata=(kind, b"PRIVATE_METADATA_SENTINEL"))
@@ -213,6 +240,7 @@ class FakeCommands(proof.Commands):
         self.call_options = []
         self.replacements = 0
         self.imports = []
+        self.host_sha256 = "1" * 64 if fault in ("setup-unapproved", "setup-hash", "setup-approved") else proof.digest(b"host")
 
     def run(self, args, **kwargs):
         args = [str(a) for a in args]
@@ -227,10 +255,9 @@ class FakeCommands(proof.Commands):
             return b""
         if args[0] == "ssh":
             observed = observation(self.config)
+            observed["host_sha256"] = self.host_sha256
             if self.fault == "wrong-host":
                 observed["hostname"] = "WRONG-HOST"
-            if self.fault in ("setup-unapproved", "setup-hash"):
-                observed["host_sha256"] = "1" * 64
             if self.fault == "no-desktop":
                 observed["console_sid"] = None
             return proof.canonical(observed)
@@ -281,7 +308,10 @@ class FakeCommands(proof.Commands):
                 raise proof.ProofError("target-does-not-match")
         if operation == "windows":
             if args[2] == "setup":
-                return proof.canonical({"schema_version": 1, "status": "plan", "applied": False,
+                applied = "--apply" in args
+                if applied:
+                    self.host_sha256 = proof.digest(b"host")
+                return proof.canonical({"schema_version": 1, "status": "applied" if applied else "plan", "applied": applied,
                                         "host_sha256": "0" * 64 if self.fault == "setup-hash" else proof.digest(b"host"), "host_size": 4})
             return proof.canonical({"schema_version": 1, "status": "pass", "checks": [
                 {"id": name, "required": True, "passed": True} for name in proof.CHECKS]})
@@ -415,8 +445,11 @@ class BaselineTests(ProofFixture):
                 self.assertEqual(result["status"], "fail")
                 self.assertEqual(result["run"]["run_id"], RUN)
                 self.assertEqual([c[1] for c in self.commands.calls[-3:]], ["status", "stop", "status"])
-                if fault == "run-failed":
+                if fault in ("run-failed", "removed-evidence"):
                     self.assertEqual(result["cleanup"], {key: True for key in proof.CLEANUP})
+                    self.assertEqual(result["outcomes"]["recovery"]["status"], "pass")
+                    if fault == "removed-evidence":
+                        self.assertEqual(result["outcomes"]["evidence"]["status"], "fail")
                 else:
                     self.assertIsNone(result["cleanup"])
 
@@ -496,6 +529,22 @@ class NamedTargetTests(ProofFixture):
         self.assertEqual(self.commands.imports[0]["schema_version"], 1)
         self.assertEqual(self.commands.imports[-1], self.config["target"])
 
+    def test_named_legacy_apply_refusal_preserves_host(self):
+        for version in (1, 2):
+            with self.subTest(version=version):
+                self.request = dataclasses_replace(self.request, output=self.root / f"setup-v{version}")
+                self.config = operator_config()
+                if version == 2:
+                    self.config["target"] = proof.target_document(self.config["target"])
+                self.config["authorization"]["setup"] = {
+                    "candidate_sha": SHA, "target_sha256": proof.digest(proof.canonical(self.config["target"])),
+                    "prior_host_sha256": "1" * 64, "scope": "windows-setup-binary-task-acls"}
+                result = self.execute("setup-approved")
+                self.assertEqual(result["status"], "fail")
+                self.assertEqual(result["outcomes"]["preparation"]["code"], "legacy-setup-unowned")
+                self.assertFalse(any("--apply" in call for call in self.commands.calls))
+                self.assertEqual(self.commands.host_sha256, "1" * 64)
+
     def test_named_false_success_and_interrupt_restore_before_cleanup(self):
         for fault in ("mismatch-succeeded", "mismatch-wrong-error", "mismatch-transport", "mismatch-interrupted"):
             with self.subTest(fault=fault):
@@ -564,8 +613,11 @@ class NamedTargetTests(ProofFixture):
                 recovered = [call[1] for call, opts in zip(self.commands.calls, self.commands.call_options)
                              if opts.get("recovery") and call[1:2] in (["status"], ["stop"])]
                 self.assertEqual(recovered, ["status", "stop", "status"])
-                if fault == "run-failed":
+                if fault in ("run-failed", "removed-evidence"):
                     self.assertEqual(result["cleanup"], {key: True for key in proof.CLEANUP})
+                    self.assertEqual(result["outcomes"]["recovery"]["status"], "pass")
+                    if fault == "removed-evidence":
+                        self.assertEqual(result["outcomes"]["evidence"]["status"], "fail")
                 else:
                     self.assertIsNone(result["cleanup"])
 
@@ -621,6 +673,152 @@ class SubprocessTests(unittest.TestCase):
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
         self.commands = proof.Commands(self.root, self.root)
+
+    def test_post_spawn_failure(self):
+        for fault in ("receipt", "reader-start", "writer-start", "observation"):
+            with self.subTest(fault=fault), socket.socket() as server:
+                private = self.root / fault
+                private.mkdir()
+                commands = proof.Commands(private, self.root)
+                server.bind(("127.0.0.1", 0))
+                server.listen(1)
+                server.settimeout(5)
+                port = server.getsockname()[1]
+                child_source = 'import sys; print("ready",flush=True); assert sys.stdin.buffer.readline() == b"stop\\n"'
+                source = f'''import json,signal,socket,subprocess,sys
+child=subprocess.Popen([sys.executable,"-c",{child_source!r}],stdin=subprocess.PIPE,stdout=subprocess.PIPE)
+assert child.stdout.readline()==b"ready\\n"
+with socket.create_connection(("127.0.0.1",{port})) as connection:
+    def settle(number):
+        child.communicate(b"stop\\n",timeout=3)
+        connection.sendall((json.dumps({{"signal":number,"child_exit":child.returncode}})+"\\n").encode())
+    def interrupted(number,frame):
+        settle(number)
+        raise SystemExit(0)
+    signal.signal(signal.SIGINT,interrupted)
+    print("RUN_ID={RUN}",file=sys.stderr,flush=True)
+    connection.sendall(b"ready\\n")
+    connection.recv(1)
+    settle(None)
+'''
+                connections, leaders = [], []
+                original_write = Path.write_bytes
+                original_spawn = proof.subprocess.Popen
+                original_start = threading.Thread.start
+                original_observe = os.waitid
+                starts = 0
+                observed = False
+
+                def ready():
+                    connection, _ = server.accept()
+                    connection.settimeout(2)
+                    stream = connection.makefile("rb")
+                    connections.append((connection, stream))
+                    self.assertEqual(stream.readline(), b"ready\n")
+
+                def write(path, content):
+                    if fault == "receipt" and path.name.endswith(".process.json"):
+                        ready()
+                        raise OSError("injected-receipt")
+                    return original_write(path, content)
+
+                def spawn(*args, **kwargs):
+                    process = original_spawn(*args, **kwargs)
+                    if not leaders:
+                        leaders.append(process)
+                    return process
+
+                def start(thread):
+                    nonlocal starts
+                    starts += 1
+                    if (fault == "reader-start" and starts == 2) or (fault == "writer-start" and starts == 3):
+                        ready()
+                        raise RuntimeError("injected-" + fault)
+                    return original_start(thread)
+
+                def observe(*args):
+                    nonlocal observed
+                    if fault == "observation" and not observed:
+                        observed = True
+                        ready()
+                        raise OSError("injected-observation")
+                    return original_observe(*args)
+
+                try:
+                    with mock.patch.object(Path, "write_bytes", write), mock.patch.object(proof.subprocess, "Popen", spawn), \
+                            mock.patch.object(threading.Thread, "start", start), mock.patch.object(os, "waitid", observe):
+                        with self.assertRaisesRegex((OSError, RuntimeError), "injected-" + fault):
+                            commands.run([sys.executable, "-c", source], marker=True,
+                                         stdin=b"input" if fault == "writer-start" else None)
+                    connection, stream = connections[0]
+                    receipt = json.loads(stream.readline())
+                    self.assertEqual(receipt, {"signal": proof.signal.SIGINT, "child_exit": 0})
+                    self.assertEqual(stream.read(), b"")
+                    self.assertTrue(commands.group_cleanup_known)
+                    self.assertEqual(commands.process_identity["pid"], leaders[0].pid)
+                    self.assertEqual(commands.process_identity["process_group"], leaders[0].pid)
+                    self.assertEqual(leaders[0].returncode, 0)
+                    self.assertEqual(commands.run_id, RUN)
+                finally:
+                    for connection, stream in connections:
+                        try:
+                            connection.sendall(b"x")
+                        except OSError:
+                            pass
+                        stream.close()
+                        connection.close()
+                    for process in leaders:
+                        process.wait(timeout=5)
+                        for pipe in (process.stdout, process.stderr):
+                            if pipe is not None and not pipe.closed:
+                                pipe.close()
+
+
+    def test_cleanup_grace(self):
+        server = socket.socket()
+        self.addCleanup(server.close)
+        server.bind(("127.0.0.1", 0))
+        server.listen(1)
+        server.settimeout(5)
+        port = server.getsockname()[1]
+        source = f'''import signal,socket
+with socket.create_connection(("127.0.0.1", {port})) as connection:
+    def interrupted(number, frame):
+        connection.sendall(b"interrupted")
+        connection.recv(1)
+        raise SystemExit(0)
+    signal.signal(signal.SIGINT, interrupted)
+    connection.sendall(b"ready")
+    signal.pause()
+'''
+        results = []
+        def run():
+            try:
+                self.commands.json([sys.executable, "-c", source], cleanup_grace=0.05)
+            except proof.ProofError as error:
+                results.append(error.code)
+        thread = threading.Thread(target=run)
+        thread.start()
+        connection, _ = server.accept()
+        with connection:
+            try:
+                connection.settimeout(4)
+                with connection.makefile("rb") as stream:
+                    self.assertEqual(stream.read(5), b"ready")
+                    self.commands.cancelled.set()
+                    self.assertEqual(stream.read(11), b"interrupted")
+                    self.assertEqual(stream.read(1), b"")
+            finally:
+                try:
+                    connection.sendall(b"x")
+                except OSError:
+                    pass
+                self.commands.cancelled.set()
+                thread.join(5)
+        self.assertFalse(thread.is_alive())
+        self.assertEqual(results, ["interrupted"])
+        self.assertTrue(self.commands.group_cleanup_known)
+
 
     def test_real_subprocess_json_and_private_stderr(self):
         raw = self.commands.run([sys.executable, "-c", 'import sys; print(\'{"schema_version":1}\'); print("PRIVATE_SENTINEL",file=sys.stderr)'])
@@ -931,6 +1129,8 @@ class FakeInstallCommands(FakeCommands):
         self.remote = cwd / "remote"
         self.remote.mkdir()
         self.installer_actions = []
+        self.execution_results = {}
+        self.stopped_execution = None
         self.installation_state = "planned"
         self.removal_calls = 0
         for path, content in ((self.operator.bootstrap["path"], b"bootstrap"),
@@ -1012,8 +1212,31 @@ class FakeInstallCommands(FakeCommands):
             operation_id = cli[cli.index("--operation") + 1]
             journal = json.loads((self.private / "installer-operations.json").read_bytes())
             proof.require(journal["installation_id"] == INSTALL_ID
-                          and journal["operations"][operation] == operation_id,
+                          and operation_id in journal["operations"].values(),
                           "installer-operation-changed")
+        if operation in ("status", "stop"):
+            proof.require(operation_id in self.execution_results, "installer-execution-unknown")
+            result = copy.deepcopy(self.execution_results[operation_id])
+            if operation == "stop":
+                token = cli[cli.index("--execution") + 1]
+                proof.require(token == result["execution"]["token"], "installer-execution-changed")
+                self.stopped_execution = token
+                result["execution"]["cancel_requested"] = True
+                result["execution"]["fence_state"] = "released"
+                self.execution_results[operation_id] = copy.deepcopy(result)
+            if self.fault in ("lost-active-response", "lost-stop-response", "execution-token-changed") and self.stopped_execution is None:
+                result["state"] = "running"
+                result["completion"] = "unknown"
+                result["execution"].update(state="running", tree_cleanup="unknown", task_mutation="unknown", fence_state="held")
+            if self.fault == "keeper-lost-response":
+                result["state"] = "unknown"
+                result["completion"] = "unknown"
+                result["execution"].update(state="unknown", tree_cleanup="unknown", task_mutation="unknown", fence_state="held")
+            if self.fault == "lost-stop-response" and operation == "stop":
+                raise proof.ProofError("command-failed")
+            if self.fault == "execution-token-changed" and self.stopped_execution:
+                result["execution"]["token"] = "bbxe_" + "e" * 32
+            return proof.canonical({"schema_version": 1, "exit_code": 0, "output": json.dumps(result)})
         if operation == "install" and apply:
             self.receipt.parent.mkdir(exist_ok=True)
             self.receipt.write_bytes(b"owned receipt")
@@ -1037,7 +1260,7 @@ class FakeInstallCommands(FakeCommands):
         if self.fault == "target-result":
             target["ssh_alias"] = "unexpected-host"
         target = proof.target_document(target)
-        if "--target-out" in cli:
+        if "--target-out" in cli and apply:
             path = self.remote_file(cli[cli.index("--target-out") + 1])
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_bytes(proof.canonical(target))
@@ -1057,7 +1280,7 @@ class FakeInstallCommands(FakeCommands):
                   "files": [dict(item, identity="test-volume:" + item["path"]) for item in files] if self.receipt.exists() else [],
                   "retained": [], "problems": [], "target_publication": {"status": "not-requested"}}
         if "--target-out" in cli:
-            result["target_publication"] = {"status": "published", "path": self.operator.installation["target_out"]}
+            result["target_publication"] = {"status": "published" if apply else "not-published", "path": self.operator.installation["target_out"]}
         if "--installation" not in cli:
             result.pop("installation_id")
         if apply:
@@ -1088,14 +1311,293 @@ class FakeInstallCommands(FakeCommands):
             result["plan"]["plan_sha256"] = "9" * 64
         if self.fault == "cancel-after-install" and apply and operation == "install":
             self.cancelled.set()
+        if apply:
+            result["execution"] = {"token": "bbxe_" + ("b" if operation == "install" else "c") * 32,
+                                   "request_sha256": "d" * 64, "deadline": "2026-09-06T12:00:00Z",
+                                   "state": "terminal", "process_state": "started", "fence_state": "released", "tree_cleanup": "known", "task_mutation": "settled",
+                                   "cancel_requested": False, "keeper": {"pid": 101, "created_filetime": "1001"},
+                                   "worker": {"pid": 102, "created_filetime": "1002"}}
+            self.execution_results[operation_id] = copy.deepcopy(result)
         if self.fault == "apply-partial" and apply and operation == "install":
             result["state"] = "partial"
             result["problems"] = [{"code": "interrupted", "message": "PRIVATE FAILURE"}]
+            self.execution_results[operation_id] = copy.deepcopy(result)
             return proof.canonical({"schema_version": 1, "exit_code": 1, "output": json.dumps(result)})
-        if self.fault == "publication-failed" and "--target-out" in cli:
+        if self.fault in ("lost-apply-response", "lost-active-response", "keeper-lost-response", "execution-token-changed", "lost-stop-response") and operation == "install" and apply:
+            raise proof.ProofError("command-failed")
+        if self.fault == "lost-remove-response" and operation == "remove" and apply and self.removal_calls == 1:
+            raise proof.ProofError("command-failed")
+        if self.fault == "publication-failed" and "--target-out" in cli and apply:
             result["target_publication"].update(status="failed", error="PRIVATE target export failure")
+            self.execution_results[operation_id] = copy.deepcopy(result)
             return proof.canonical({"schema_version": 1, "exit_code": 1, "output": json.dumps(result)})
         return proof.canonical({"schema_version": 1, "exit_code": 0, "output": json.dumps(result)})
+
+
+class InstallerRecoveryTests(unittest.TestCase):
+    def observation(self, state="terminal", *, process_state=None, fence="released", **changes):
+        process_state = process_state or ("unknown" if state == "unknown" else "started")
+        execution = {"token": "bbxe_" + "b" * 32, "request_sha256": "d" * 64,
+                     "deadline": "2026-09-06T12:00:00Z", "state": state, "process_state": process_state,
+                     "fence_state": fence, "tree_cleanup": "known" if state == "terminal" else "unknown",
+                     "task_mutation": "settled" if state == "terminal" else "unknown", "cancel_requested": False}
+        if process_state != "unknown":
+            execution["keeper"] = {"pid": 101, "created_filetime": "1001"}
+        if process_state == "started":
+            execution["worker"] = {"pid": 102, "created_filetime": "1002"}
+        execution.update(changes)
+        return {"state": "partial" if process_state == "not-started" else "installed" if state == "terminal" else state,
+                "completion": "known" if state == "terminal" else "unknown", "execution": execution}
+
+    def recover(self, responses, *, error=None, tick=0.1):
+        pending = list(responses)
+        now = [0.0]
+        def wait(seconds):
+            self.assertEqual(seconds, 0.1)
+            now[0] += tick
+        def call(commands, operator, operation, **kwargs):
+            expected_operation, response = pending.pop(0)
+            self.assertEqual(operation, expected_operation)
+            self.assertEqual(kwargs["operation_id"], "bbxo_" + "a" * 32)
+            self.assertTrue(kwargs["recovery"])
+            self.assertTrue(kwargs["target_out"])
+            if operation == "stop":
+                self.assertTrue(kwargs["apply"])
+                self.assertEqual(kwargs["execution_token"], "bbxe_" + "b" * 32)
+            else:
+                self.assertEqual(operation, "status")
+                self.assertNotIn("apply", kwargs)
+                self.assertEqual(kwargs["expected_plan"], "4" * 64)
+            if isinstance(response, Exception):
+                raise response
+            return copy.deepcopy(response)
+        with mock.patch.object(proof, "installer_call", side_effect=call), \
+                mock.patch.object(proof.time, "monotonic", side_effect=lambda: now[0]), \
+                mock.patch.object(proof.threading.Event, "wait", side_effect=wait):
+            if error:
+                with self.assertRaisesRegex(proof.ProofError, error):
+                    proof.recover_installer(None, None, "bbxo_" + "a" * 32, "4" * 64, target_out=True)
+                result = None
+            else:
+                result = proof.recover_installer(None, None, "bbxo_" + "a" * 32, "4" * 64, target_out=True)
+        self.assertEqual(pending, [])
+        return result
+
+    def test_admission_unknown_can_publish_first_process_identities_and_settle(self):
+        pending = self.observation("unknown", fence="held")
+        terminal = self.observation()
+        result = self.recover([("status", pending), ("stop", pending), ("status", terminal)])
+        self.assertEqual(result, terminal)
+
+    def test_admission_unknown_can_run_before_settling(self):
+        pending = self.observation("unknown", fence="held")
+        running = self.observation("running", fence="held", cancel_requested=True)
+        terminal = self.observation()
+        result = self.recover([("status", pending), ("stop", pending), ("status", running), ("status", terminal)])
+        self.assertEqual(result, terminal)
+
+    def test_first_observed_identity_is_pinned_for_later_status(self):
+        pending = self.observation("unknown", fence="held")
+        known = self.observation("running", fence="held")
+        for role in ("keeper", "worker"):
+            for change in ("replacement", "disappearance"):
+                with self.subTest(role=role, change=change):
+                    changed = copy.deepcopy(known)
+                    if change == "replacement":
+                        changed["execution"][role]["created_filetime"] = "2001"
+                    else:
+                        changed = copy.deepcopy(pending)
+                    self.recover([("status", pending), ("stop", pending), ("status", known), ("status", changed)],
+                                 error="installer-execution-changed")
+
+    def test_known_process_state_cannot_regress_or_switch(self):
+        for process_state in ("unknown", "not-started"):
+            with self.subTest(process_state=process_state):
+                running = self.observation("running", fence="held")
+                changed = self.observation("unknown", process_state="started", fence="held")
+                changed["execution"]["process_state"] = process_state
+                if process_state == "not-started":
+                    changed = self.observation(process_state="not-started")
+                self.recover([("status", running), ("stop", running), ("status", changed)],
+                             error="installer-execution-changed")
+
+    def test_request_identity_and_deadline_cannot_change_during_admission(self):
+        pending = self.observation("unknown", fence="held")
+        for field, value in (("token", "bbxe_" + "e" * 32), ("request_sha256", "e" * 64),
+                             ("deadline", "2026-09-06T12:00:01Z")):
+            with self.subTest(field=field):
+                changed = self.observation(**{field: value})
+                self.recover([("status", pending), ("stop", pending), ("status", changed)],
+                             error="installer-execution-changed")
+
+    def test_process_state_is_pinned_when_it_first_becomes_known(self):
+        pending = self.observation("unknown", fence="held")
+        running = self.observation("running", fence="held")
+        regressed = self.observation("unknown", process_state="started", fence="held")
+        regressed["execution"]["process_state"] = "unknown"
+        self.recover([("status", pending), ("stop", pending), ("status", running), ("status", regressed)],
+                     error="installer-execution-changed")
+
+    def test_terminal_held_after_cancellation_requires_fresh_stop_reconciliation(self):
+        pending = self.observation("unknown", fence="held")
+        held = self.observation(fence="held", cancel_requested=True)
+        terminal = self.observation(cancel_requested=True)
+        result = self.recover([("status", pending), ("stop", pending), ("status", held),
+                               ("stop", terminal), ("status", terminal)])
+        self.assertEqual(result, terminal)
+
+    def test_lost_stop_replies_require_status_after_both_cancellation_and_reconciliation(self):
+        pending = self.observation("unknown", fence="held")
+        held = self.observation(fence="held", cancel_requested=True)
+        terminal = self.observation(cancel_requested=True)
+        lost = proof.ProofError("command-failed")
+        result = self.recover([("status", pending), ("stop", lost), ("status", held),
+                               ("stop", lost), ("status", terminal)])
+        self.assertEqual(result, terminal)
+
+    def test_no_start_terminal_still_requires_released_fence(self):
+        pending = self.observation("unknown", fence="held")
+        held = self.observation(process_state="not-started", fence="held")
+        terminal = self.observation(process_state="not-started")
+        result = self.recover([("status", pending), ("stop", pending), ("status", held),
+                               ("stop", terminal), ("status", terminal)])
+        self.assertEqual(result, terminal)
+
+    def test_released_terminal_needs_no_stop(self):
+        terminal = self.observation()
+        self.assertEqual(self.recover([("status", terminal)]), terminal)
+
+    def test_unknown_cleanup_or_task_and_keeper_loss_exhaust_budget_without_returning(self):
+        for changes in ({}, {"tree_cleanup": "known"}, {"task_mutation": "settled"}):
+            with self.subTest(changes=changes):
+                unknown = self.observation("unknown", process_state="started", fence="held", **changes)
+                self.recover([("status", unknown), ("stop", unknown), ("status", unknown)],
+                             error="installer-stop-unsettled", tick=15)
+
+    def test_pending_admission_exhausts_budget_without_returning(self):
+        pending = self.observation("unknown", fence="held")
+        self.recover([("status", pending), ("stop", pending), ("status", pending)],
+                     error="installer-stop-unsettled", tick=15)
+
+    def test_terminal_status_arriving_after_budget_cannot_authorize_removal(self):
+        pending = self.observation("unknown", fence="held")
+        terminal = self.observation()
+        with mock.patch.object(proof, "installer_call", side_effect=[pending, pending, terminal]) as call, \
+                mock.patch.object(proof.time, "monotonic", side_effect=[0, 0, 0, 15]), \
+                mock.patch.object(proof.threading.Event, "wait") as wait:
+            with self.assertRaisesRegex(proof.ProofError, "installer-stop-unsettled"):
+                proof.recover_installer(None, None, "bbxo_" + "a" * 32, "4" * 64)
+        self.assertEqual([item.args[2] for item in call.call_args_list], ["status", "stop", "status"])
+        wait.assert_not_called()
+
+
+class InstallerRecoveryDeadlineTests(unittest.TestCase):
+    def setUp(self):
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        self.root = Path(temp.name)
+        config = installer_config(self.root)
+        authorize_installer(config)
+        operator_path = self.root / "operator.json"
+        operator_path.write_bytes(proof.canonical(config))
+        operator_path.chmod(0o600)
+        private = self.root / "private"
+        private.mkdir()
+        self.commands = FakeInstallCommands(private, self.root, config)
+        self.operator = self.commands.operator
+        self.operation_id = "bbxo_" + "a" * 32
+        (private / "installer-operations.json").write_bytes(proof.canonical({
+            "installation_id": INSTALL_ID, "operations": {"install": self.operation_id}}))
+        self.terminal = proof.installer_call(self.commands, self.operator, "install",
+                                             operation_id=self.operation_id, apply=True)
+        self.pending = copy.deepcopy(self.terminal)
+        self.pending.update(state="unknown", completion="unknown")
+        self.pending["execution"].update(state="unknown", process_state="unknown", fence_state="held",
+                                         tree_cleanup="unknown", task_mutation="unknown")
+        for role in ("keeper", "worker"):
+            del self.pending["execution"][role]
+
+    def recover(self, responses, *, error=None):
+        pending = list(responses)
+        now, calls = [100.0], []
+        def run(args, **kwargs):
+            script = kwargs["stdin"].decode()
+            encoded = proof.re.search(r"FromBase64String\('([^']+)'\)", script).group(1)
+            cli = json.loads(proof.base64.b64decode(encoded))["args"]
+            operation, elapsed, response = pending.pop(0)
+            self.assertEqual(args[0], "ssh")
+            self.assertEqual(cli[1], operation)
+            self.assertTrue(kwargs["recovery"])
+            if operation == "stop":
+                self.assertIn("--apply", cli)
+                self.assertEqual(cli[cli.index("--execution") + 1], self.terminal["execution"]["token"])
+            else:
+                self.assertNotIn("--apply", cli)
+            calls.append((operation, kwargs["timeout"]))
+            self.commands.sequence += 1
+            now[0] += elapsed
+            if isinstance(response, Exception):
+                raise response
+            return proof.canonical({"schema_version": 1, "exit_code": 0, "output": json.dumps(response)})
+        def wait(seconds):
+            self.assertEqual(seconds, 0.1)
+            now[0] += seconds
+        with mock.patch.object(self.commands, "run", side_effect=run), \
+                mock.patch.object(proof.time, "monotonic", side_effect=lambda: now[0]), \
+                mock.patch.object(proof.threading.Event, "wait", side_effect=wait):
+            if error:
+                with self.assertRaisesRegex(proof.ProofError, error):
+                    proof.recover_installer(self.commands, self.operator, self.operation_id, "4" * 64)
+            else:
+                result = proof.recover_installer(self.commands, self.operator, self.operation_id, "4" * 64)
+                self.assertEqual(result, self.terminal)
+        self.assertEqual(pending, [])
+        return calls
+
+    def test_slow_initial_status_consumes_shared_recovery_budget(self):
+        calls = self.recover([("status", 12, self.pending), ("stop", 1, self.pending),
+                              ("status", 1, self.terminal)])
+        self.assertEqual(calls, [("status", 15), ("stop", 3), ("status", 2)])
+
+    def test_initial_terminal_status_at_deadline_is_refused(self):
+        calls = self.recover([("status", 15, self.terminal)], error="installer-stop-unsettled")
+        self.assertEqual(calls, [("status", 15)])
+
+    def test_lost_stop_reply_does_not_reset_next_status_timeout(self):
+        calls = self.recover([("status", 2, self.pending), ("stop", 6, proof.ProofError("command-failed")),
+                              ("status", 4, self.terminal)])
+        self.assertEqual(calls, [("status", 15), ("stop", 13), ("status", 7)])
+
+    def test_stop_exhausting_budget_does_not_spawn_another_status(self):
+        calls = self.recover([("status", 14, self.pending), ("stop", 1, proof.ProofError("command-timeout"))],
+                             error="installer-stop-unsettled")
+        self.assertEqual(calls, [("status", 15), ("stop", 1)])
+
+    def test_local_request_preparation_cannot_extend_or_restart_deadline(self):
+        now = [100.0]
+        canonical = proof.canonical
+        def prepare(value):
+            now[0] = 115.0
+            return canonical(value)
+        with mock.patch.object(proof, "canonical", side_effect=prepare), \
+                mock.patch.object(proof.time, "monotonic", side_effect=lambda: now[0]), \
+                mock.patch.object(self.commands, "run") as run:
+            with self.assertRaisesRegex(proof.ProofError, "installer-stop-unsettled"):
+                proof.installer_call(self.commands, self.operator, "status", operation_id=self.operation_id,
+                                     recovery=True, recovery_deadline=115)
+        run.assert_not_called()
+
+    def test_nonrecovery_and_unbudgeted_call_timeouts_stay_unchanged(self):
+        for recovery in (False, True):
+            for operation in ("status", "stop", "inspect", "install", "remove"):
+                with self.subTest(operation=operation, recovery=recovery), \
+                        mock.patch.object(self.commands, "run", side_effect=proof.ProofError("command-timeout")) as run:
+                    with self.assertRaisesRegex(proof.ProofError, "command-timeout"):
+                        proof.installer_call(self.commands, self.operator, operation, operation_id=self.operation_id,
+                                             apply=operation == "stop", recovery=recovery,
+                                             execution_token=self.terminal["execution"]["token"] if operation == "stop" else None)
+                    self.assertEqual(run.call_args.kwargs["timeout"], 45 if operation in ("status", "stop") else 360)
+                    self.assertEqual(run.call_args.kwargs["recovery"], recovery)
 
 
 class HostInstallTests(unittest.TestCase):
@@ -1121,8 +1623,8 @@ class HostInstallTests(unittest.TestCase):
         self.assertEqual(result["status"], "pass", result)
         self.assertEqual(set(result["outcomes"]), set(proof.REQUIRED + proof.INSTALL_REQUIRED))
         self.assertEqual(self.commands.installer_actions, [("inspect", False, False), ("install", False, False),
-                         ("install", True, False), ("install", True, True), ("remove", False, True),
-                         ("inspect", False, True), ("remove", True, True), ("remove", True, True)])
+                         ("install", True, False), ("status", False, True), ("status", False, True), ("install", True, True), ("remove", False, True),
+                         ("inspect", False, True), ("remove", True, True), ("status", False, True), ("remove", True, True)])
         self.assertEqual(result["installation"], {"installation_id": INSTALL_ID, "state": "removed"})
         operations = json.loads((self.commands.private / "installer-operations.json").read_bytes())["operations"]
         self.assertNotEqual(operations["install"], operations["remove"])
@@ -1144,6 +1646,54 @@ class HostInstallTests(unittest.TestCase):
         for private in ("TestFixture", "TEST-HOST", "test-user", "ExistingFixture", str(self.root)):
             self.assertNotIn(private, public)
         self.assertIn("installer-interruption", result["not_exercised"])
+
+    def test_lost_apply_response_uses_fresh_status_before_removal(self):
+        result = self.execute("lost-apply-response")
+        self.assertIn(("status", False, True), self.commands.installer_actions)
+        self.assertEqual(result["installation"]["state"], "removed", result)
+        self.assertFalse(self.commands.owned_runtime.exists())
+
+    def test_lost_active_response_stops_only_observed_execution(self):
+        result = self.execute("lost-active-response")
+        self.assertEqual(result["installation"]["state"], "removed", result)
+        actions = self.commands.installer_actions
+        stopped = actions.index(("stop", True, True))
+        self.assertEqual(actions[stopped - 1], ("status", False, True))
+        self.assertEqual(actions[stopped + 1], ("status", False, True))
+        self.assertEqual(self.commands.stopped_execution, "bbxe_" + "b" * 32)
+
+    def test_keeper_loss_retains_installation_and_never_replays_apply(self):
+        with mock.patch.object(proof.time, "monotonic", side_effect=[0, 0, 16]), \
+                mock.patch.object(proof.threading.Event, "wait"):
+            result = self.execute("keeper-lost-response")
+        self.assertEqual(result["installation"]["state"], "unknown")
+        self.assertEqual(self.commands.removal_calls, 0)
+        self.assertTrue(self.commands.owned_runtime.exists())
+        self.assertEqual(self.commands.installer_actions.count(("install", True, False)), 1)
+        self.assertNotIn(("install", True, True), self.commands.installer_actions)
+        self.assertIn(("status", False, True), self.commands.installer_actions)
+
+    def test_lost_remove_response_reobserves_cleanup_and_preserves_failure(self):
+        result = self.execute("lost-remove-response")
+        self.assertEqual(result["installation"]["state"], "removed", result)
+        self.assertEqual(result["outcomes"]["remove-apply"], {"status": "fail", "code": "command-failed"})
+        self.assertFalse(self.commands.owned_runtime.exists())
+        actions = self.commands.installer_actions
+        removal = actions.index(("remove", True, True))
+        self.assertEqual(actions[removal + 1], ("status", False, True))
+
+    def test_lost_stop_response_still_reobserves_exact_execution(self):
+        result = self.execute("lost-stop-response")
+        self.assertEqual(result["installation"]["state"], "removed", result)
+        actions = self.commands.installer_actions
+        stopped = actions.index(("stop", True, True))
+        self.assertEqual(actions[stopped + 1], ("status", False, True))
+
+    def test_changed_execution_after_stop_preserves_installation(self):
+        result = self.execute("execution-token-changed")
+        self.assertEqual(result["installation"]["state"], "unknown", result)
+        self.assertEqual(self.commands.removal_calls, 0)
+        self.assertTrue(self.commands.owned_runtime.exists())
 
     def test_manifest_hash_matches_actual_go_runtime_manifest_encoding(self):
         self.path.write_bytes(proof.canonical(self.config))
@@ -1183,6 +1733,7 @@ class HostInstallTests(unittest.TestCase):
 
     def test_configuration_scope_and_manifest_rejected_offline(self):
         for fault in ("shared-fixture", "existing-fixture-id", "platform", "bootstrap-inside", "preserved-inside",
+                      "target-equals-root", "target-under-root", "target-other-installation",
                       "unsafe-path", "manifest-hash", "manifest-role", "manifest-source", "extra-key"):
             with self.subTest(fault=fault):
                 config = copy.deepcopy(self.config)
@@ -1198,6 +1749,13 @@ class HostInstallTests(unittest.TestCase):
                         config["bootstrap"]["path"] = path
                     else:
                         config["before_state"]["unrelated_files"][0]["path"] = path
+                elif fault in ("target-equals-root", "target-under-root", "target-other-installation"):
+                    destination = proof.windows_path(config["installation"]["state_root"].swapcase())
+                    if fault == "target-under-root":
+                        destination /= "exported-target.json"
+                    elif fault == "target-other-installation":
+                        destination = destination / "installations" / ("bbxi_" + "b" * 32) / "target.json"
+                    config["installation"]["target_out"] = str(destination)
                 elif fault == "unsafe-path":
                     config["installation"]["state_root"] = r"C:\safe\..\other"
                 elif fault == "manifest-hash":

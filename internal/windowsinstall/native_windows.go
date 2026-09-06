@@ -92,7 +92,7 @@ if ($sid -match '-500$' -or (Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows\
 			return inspection, err
 		}
 	}
-	if r.Operation == "remove" {
+	if r.Operation == "remove" || r.Operation == "status" {
 		return inspection, nil
 	}
 	if r.BlenderPath != "" {

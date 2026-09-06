@@ -4,10 +4,54 @@ package windowsinstall
 
 import (
 	"context"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/BramVR/blender-box/internal/strictjson"
 )
+
+func TestNativeInspectionStatusAndRemovalWithoutPrerequisites(t *testing.T) {
+	if os.Getenv("BLENDER_BOX_NATIVE_INSPECT_TEST") != "1" {
+		t.Skip("set BLENDER_BOX_NATIVE_INSPECT_TEST=1 on Windows with the current account logged into the desktop and UAC enabled")
+	}
+	ctx := context.Background()
+	machine := nativeMachine{}
+	request := Request{Operation: "remove", StateRoot: filepath.Join(t.TempDir(), "state")}
+	initial, err := machine.inspect(ctx, request)
+	if err != nil {
+		t.Fatalf("native account and root preconditions: %v", err)
+	}
+	if err := machine.createDirectory(ctx, request.StateRoot, initial.OwnerSID); err != nil {
+		t.Fatal(err)
+	}
+	rootIdentity, err := fileIdentity(request.StateRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.BlenderPath = filepath.Join(request.StateRoot, "missing-blender.exe")
+	request.PythonPath = filepath.Join(request.StateRoot, "missing-python.exe")
+	for _, operation := range []string{"status", "remove", "install", "inspect"} {
+		t.Run(operation, func(t *testing.T) {
+			request.Operation = operation
+			inspection, err := machine.inspect(ctx, request)
+			if inspection.OwnerSID != initial.OwnerSID || inspection.RootIdentity != rootIdentity {
+				t.Fatalf("account or root inspection missing: %+v", inspection)
+			}
+			if operation == "status" || operation == "remove" {
+				if err != nil {
+					t.Fatalf("observation requires missing prerequisites: %v", err)
+				}
+				if len(inspection.BlenderCandidates) != 0 || inspection.Python != nil {
+					t.Fatalf("unexpected prerequisite inspection: %+v", inspection)
+				}
+			} else if err == nil || !strings.Contains(err.Error(), "Required path missing") {
+				t.Fatalf("missing prerequisite must fail inspection: %v", err)
+			}
+		})
+	}
+}
 
 func TestNativeTaskNormalizationRejectsChangedValues(t *testing.T) {
 	output, err := powerShell(context.Background(), `$first='<Task><Settings><Enabled>true</Enabled><ExecutionTimeLimit>PT0S</ExecutionTimeLimit></Settings></Task>'

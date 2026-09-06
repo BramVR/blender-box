@@ -20,9 +20,12 @@ type setupExecutor struct {
 	requests []windowsinstall.Request
 }
 
-func (e *setupExecutor) Execute(_ context.Context, r windowsinstall.Request) (windowsinstall.Result, error) {
+func (e *setupExecutor) Execute(ctx context.Context, r windowsinstall.Request) (windowsinstall.Result, error) {
 	e.requests = append(e.requests, r)
-	return e.result, e.err
+	if e.err != nil {
+		return e.result, e.err
+	}
+	return windowsinstall.PublishTarget(ctx, r, e.result)
 }
 func TestSetupHelpAndUnsupportedPlatform(t *testing.T) {
 	for _, args := range [][]string{{"setup", "--help"}, {"setup", "-h"}, {"setup", "install", "--help"}, {"setup", "remove", "--help"}, {"setup", "manifest", "--help"}} {
@@ -136,5 +139,43 @@ func TestSetupRefusesTargetPublicationThroughStateRootAlias(t *testing.T) {
 	code := Run(context.Background(), []string{"setup", "install", "--platform", "windows", "--state-root", root, "--apply", "--target-out", filepath.Join(alias, "new", "target.json"), "--json"}, strings.NewReader(""), &out, &stderr, Dependencies{Setup: executor})
 	if code != 1 || len(executor.requests) != 0 || !strings.Contains(stderr.String(), "outside the setup state root") {
 		t.Fatalf("code=%d calls=%d error=%s", code, len(executor.requests), stderr.String())
+	}
+}
+
+func TestSetupStatusAndStopRouteExactExecution(t *testing.T) {
+	executor := &setupExecutor{result: windowsinstall.Result{SchemaVersion: 1, State: "running", Completion: "unknown", Execution: &windowsinstall.Execution{Token: "bbxe_" + strings.Repeat("c", 32), State: "running", TreeCleanup: "unknown"}}}
+	for _, operation := range []string{"status", "stop"} {
+		args := []string{"setup", operation, "--platform", "windows", "--state-root", `C:\Fixture`, "--installation", "bbxi_" + strings.Repeat("a", 32), "--operation", "bbxo_" + strings.Repeat("b", 32), "--json"}
+		if operation == "stop" {
+			args = append(args, "--apply", "--execution", executor.result.Execution.Token)
+		}
+		var out, stderr bytes.Buffer
+		if code := Run(context.Background(), args, strings.NewReader(""), &out, &stderr, Dependencies{Setup: executor}); code != 0 {
+			t.Fatalf("%s code=%d err=%s", operation, code, stderr.String())
+		}
+		var decoded map[string]json.RawMessage
+		if err := json.Unmarshal(out.Bytes(), &decoded); err != nil || !bytes.Contains(decoded["execution"], []byte(executor.result.Execution.Token)) {
+			t.Fatal("execution identity missing from public JSON")
+		}
+		got := executor.requests[len(executor.requests)-1]
+		if got.Operation != operation || got.Apply != (operation == "stop") || operation == "stop" && got.ExecutionToken != executor.result.Execution.Token {
+			t.Fatalf("wrong execution request: %+v", got)
+		}
+	}
+}
+func TestSetupPublicationPreviewIsReadOnlyAndBindsDestination(t *testing.T) {
+	root := t.TempDir()
+	executor := &setupExecutor{result: windowsinstall.Result{SchemaVersion: 1, State: "planned", Completion: "known"}}
+	destination := filepath.Join(root, "target.json")
+	var out, stderr bytes.Buffer
+	args := []string{"setup", "install", "--platform", "windows", "--state-root", filepath.Join(root, "state"), "--target-out", destination, "--json"}
+	if code := Run(context.Background(), args, strings.NewReader(""), &out, &stderr, Dependencies{Setup: executor}); code != 0 {
+		t.Fatalf("preview code=%d err=%s", code, stderr.String())
+	}
+	if executor.requests[0].Apply || executor.requests[0].TargetOut != destination {
+		t.Fatal("preview destination was dropped")
+	}
+	if _, err := os.Stat(destination); !os.IsNotExist(err) {
+		t.Fatal("preview published target")
 	}
 }

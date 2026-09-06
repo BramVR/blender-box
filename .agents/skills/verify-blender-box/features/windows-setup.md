@@ -1,6 +1,6 @@
 # Owned Windows setup
 
-Use the public host-local `setup inspect`, `setup install`, and `setup remove` commands. Read `docs/windows-installation.md` and `docs/architecture/0004-windows-installation-ownership.md` before proof.
+Use the public host-local `setup inspect`, `setup install`, `setup status`, `setup stop`, and `setup remove` commands. Read `docs/windows-installation.md` and `docs/architecture/0006-windows-installation-ownership.md` before proof.
 
 ## Preconditions
 
@@ -17,6 +17,10 @@ Use the public host-local `setup inspect`, `setup install`, and `setup remove` c
 - Export or save failure remains distinct from installed state. Existing output files or names remain unchanged.
 - Read-only `windows check` passes using the generated target. A real baseline Scenario returns verified viewport evidence, then fresh status/stop/status agree with original Run and exact Session authority.
 - Repeated installation retains the same ownership and task. Interrupted publication either converges from its receipt or reports exact partial/conflicting state.
+- Lost apply response triggers fresh setup status. Exact execution stop requires its recorded token, and cancellation requested does not count as tree-exit proof. A retry receives a new execution token; stale stop must not reach it.
+- Unknown keeper or Task Scheduler mutation state preserves the pending setup fence and installation. No new Run or unrelated maintenance bypasses that fence. Worker exit alone is not known cleanup; the keeper must also prove every Job descendant exited.
+- A native startup failure before process creation records explicit `not-started` proof and permits a fresh attempt. Missing worker identity without that proof remains unknown.
+- A crash after terminal proof but before fence release reports a held fence. Exact stop reconciles only that settled fence; fresh status confirms release before new work.
 - Active Run or launch state refuses removal without stopping anything. Recover only through the original public Run/Session authority.
 - Removal preview changes nothing. Applied removal verifies recorded task and file identities/hashes, removes owned task before runtime, and preserves modified files, unknown descendants, unrelated fixtures, Blender, Python, and settings.
 - Repeated removal confirms absence. Shared root, authority directories, lock files, receipts, and tombstones remain. Replacements at old paths are not owned.

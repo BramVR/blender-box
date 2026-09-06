@@ -190,7 +190,7 @@ def verify_png(content, width, height):
         data = content[offset + 8: end - 4]
         require(zlib.crc32(kind + data) == struct.unpack(">I", content[end - 4:end])[0],
                 "invalid-png")
-        require(kind in (b"IHDR", b"IDAT", b"IEND", b"sRGB", b"gAMA", b"cHRM", b"pHYs"),
+        require(kind in (b"IHDR", b"IDAT", b"IEND", b"sRGB", b"gAMA", b"cHRM", b"pHYs", b"eXIf", b"oFFs"),
                 "png-metadata-not-allowed")
         if not kinds:
             require(kind == b"IHDR" and size == 13, "invalid-png")
@@ -218,6 +218,15 @@ def verify_png(content, width, height):
             elif kind == b"pHYs":
                 require(size == 9 and data[8] in (0, 1), "invalid-png")
                 require(all(0 < value <= 1_000_000 for value in struct.unpack(">II", data[:8])), "invalid-png")
+            elif kind == b"eXIf":
+                require(size == 54 and data[:8] == struct.pack(">2sHI", b"MM", 42, 24)
+                        and data[24:26] == b"\x00\x02", "png-metadata-not-allowed")
+                require(struct.unpack(">HHIIHHIII", data[26:]) == (282, 5, 1, 8, 283, 5, 1, 16, 0),
+                        "png-metadata-not-allowed")
+                require(all(0 < value <= 1_000_000 for value in struct.unpack(">IIII", data[8:24])),
+                        "png-metadata-not-allowed")
+            elif kind == b"oFFs":
+                require(data == b"\x00" * 9, "png-metadata-not-allowed")
         kinds.add(kind)
         offset = end
     require(b"IEND" in kinds, "invalid-png")
@@ -471,6 +480,8 @@ class InstallOperator:
                 and matches(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}", installation.get("task_name")), "installer-config-invalid")
         for key in ("state_root", "blender", "python", "target_out"):
             windows_path(installation[key])
+        state_root, target_out = windows_path(installation["state_root"]), windows_path(installation["target_out"])
+        require(target_out != state_root and state_root not in target_out.parents, "installer-scope-overlap")
         bootstrap = pinned_file(data.get("bootstrap"))
         require(set(runtime) == {"local_manifest", "remote_manifest"}
                 and isinstance(runtime.get("local_manifest"), str), "installer-config-invalid")
@@ -580,7 +591,7 @@ class Commands:
             if self.on_run_id is not None:
                 self.on_run_id(value)
 
-    def run(self, args, timeout=180, stdin=None, marker=False, env=None, recovery=False, limit=24 << 20,
+    def run(self, args, timeout=180, stdin=None, marker=False, env=None, recovery=False, limit=24 << 20, cleanup_grace=5,
             expected_error=None):
         require(os.name == "posix" and os.uname().sysname in ("Darwin", "Linux")
                 and all(hasattr(os, name) for name in ("waitid", "WNOWAIT", "P_PID")),
@@ -592,29 +603,34 @@ class Commands:
         prefix = self.private / f"command-{self.sequence:03d}"
         if stdin is not None:
             Path(str(prefix) + ".stdin").write_bytes(stdin)
-        process = subprocess.Popen([str(a) for a in args], cwd=self.cwd, env=env or self.env,
-                                   stdin=subprocess.PIPE if stdin is not None else subprocess.DEVNULL,
-                                   stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True)
-        Path(str(prefix) + ".process.json").write_bytes(canonical({
-            "pid": process.pid, "process_group": process.pid, "parent_pid": os.getpid(), "started_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
-            "command": [str(a) for a in args], "task": "windows-onboarding-baseline"}))
-        errors, outputs = [], {}
+        identity = {"parent_pid": os.getpid(), "started_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                    "command": [str(a) for a in args], "task": "windows-onboarding-baseline"}
+        errors, outputs, started_threads = [], {}, []
         readers_done = threading.Event()
         tick = threading.Event()
+        failure = None
 
         def leader_exited():
             return os.waitid(os.P_PID, process.pid, os.WEXITED | os.WNOHANG | os.WNOWAIT) is not None
 
         def wait_owned(timeout):
+            nonlocal failure
             deadline = time.monotonic() + timeout
-            while not leader_exited():
+            while True:
+                try:
+                    if leader_exited():
+                        return True
+                except ChildProcessError:
+                    raise
+                except OSError as error:
+                    failure = failure or error
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
                     return False
                 tick.wait(min(0.05, remaining))
-            return True
 
-        def consume(name, pipe, maximum):
+        def consume(name, maximum):
+            pipe = process.stderr if name == "stderr" else process.stdout
             content, pending = bytearray(), b""
             try:
                 with Path(str(prefix) + "." + name).open("xb") as log:
@@ -640,73 +656,102 @@ class Commands:
                 if len(outputs) == 2:
                     readers_done.set()
 
-        threads = [threading.Thread(target=consume, args=(name, pipe, maximum), daemon=True)
-                   for name, pipe, maximum in (("stdout", process.stdout, limit), ("stderr", process.stderr, 64 << 10))]
-        for thread in threads:
-            thread.start()
-        if stdin is not None:
-            def produce():
+        threads = [threading.Thread(target=consume, args=(name, maximum), daemon=True)
+                   for name, maximum in (("stderr", 64 << 10), ("stdout", limit))]
+
+        def produce():
+            try:
+                with process.stdin:
+                    process.stdin.write(stdin)
+            except BrokenPipeError:
+                pass
+            except OSError as error:
+                errors.append(error)
+
+        def settle_process():
+            nonlocal failure
+            try:
                 try:
-                    with process.stdin:
-                        process.stdin.write(stdin)
-                except BrokenPipeError:
-                    pass
+                    exited = leader_exited()
+                except ChildProcessError:
+                    raise
                 except OSError as error:
-                    errors.append(error)
-            writer = threading.Thread(target=produce, daemon=True)
-            threads.append(writer)
-            writer.start()
-        deadline = time.monotonic() + timeout
-        failure = None
-        while not leader_exited():
-            if errors or time.monotonic() >= deadline or (self.cancelled.is_set() and not recovery):
-                failure = errors[0] if errors else ProofError("interrupted" if self.cancelled.is_set() else "command-timeout")
-                try:
+                    failure = failure or error
+                    exited = False
+                if not exited:
                     os.kill(process.pid, signal.SIGINT)
-                except OSError:
-                    failure = ProofError("command-cleanup-unknown")
-                    break
-                # Run may settle twice and recover status, each with a 30-second deadline.
-                wait_owned(95 if marker else 65 if recovery else 5)
-                break
-            tick.wait(0.05)
-        if not readers_done.wait(2):
-            failure = failure or ProofError("command-pipe-timeout")
-        # WNOWAIT retains the task-owned group leader identity until all group signals finish.
-        try:
-            for signum in (signal.SIGTERM, signal.SIGKILL):
-                try:
-                    os.killpg(process.pid, signum)
-                except ProcessLookupError:
-                    pass
-                except PermissionError:
-                    observation = subprocess.run(["/bin/ps", "-axo", "pid=,pgid=,stat="],
-                                                 stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-                                                 timeout=5, check=True)
-                    require(len(observation.stdout) <= 1 << 20, "command-cleanup-unknown")
-                    members = []
-                    for line in observation.stdout.splitlines():
-                        fields = line.split()
-                        require(len(fields) == 3 and fields[0].isdigit() and fields[1].isdigit(),
-                                "command-cleanup-unknown")
-                        if int(fields[1]) == process.pid:
-                            members.append((int(fields[0]), fields[2]))
-                    require(any(pid == process.pid and state.startswith(b"Z") for pid, state in members)
-                            and all(state.startswith(b"Z") for _, state in members), "command-cleanup-unknown")
-                if signum == signal.SIGTERM:
-                    wait_owned(5)
-                    readers_done.wait(2)
-            process.wait(timeout=5)
-        except (OSError, subprocess.SubprocessError, ProofError) as error:
-            self.group_cleanup_known = False
-            if leader_exited():
+                    # Run may settle twice and recover status, each with a 30-second deadline.
+                    wait_owned(95 if marker else 65 if recovery else cleanup_grace)
+                if all(thread.ident is not None for thread in threads) and not readers_done.wait(2):
+                    failure = failure or ProofError("command-pipe-timeout")
+                # WNOWAIT retains the task-owned group leader identity until all group signals finish.
+                for signum in (signal.SIGTERM, signal.SIGKILL):
+                    try:
+                        os.killpg(process.pid, signum)
+                    except ProcessLookupError:
+                        pass
+                    except PermissionError:
+                        observation = subprocess.run(["/bin/ps", "-axo", "pid=,pgid=,stat="],
+                                                     stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                                                     timeout=5, check=True)
+                        require(len(observation.stdout) <= 1 << 20, "command-cleanup-unknown")
+                        members = []
+                        for line in observation.stdout.splitlines():
+                            fields = line.split()
+                            require(len(fields) == 3 and fields[0].isdigit() and fields[1].isdigit(),
+                                    "command-cleanup-unknown")
+                            if int(fields[1]) == process.pid:
+                                members.append((int(fields[0]), fields[2]))
+                        require(any(pid == process.pid and state.startswith(b"Z") for pid, state in members)
+                                and all(state.startswith(b"Z") for _, state in members), "command-cleanup-unknown")
+                    if signum == signal.SIGTERM:
+                        wait_owned(5)
+                        if all(thread.ident is not None for thread in threads):
+                            readers_done.wait(2)
                 process.wait(timeout=5)
-            raise ProofError("command-cleanup-unknown") from error
-        for thread in threads:
-            thread.join(timeout=2)
-        if any(thread.is_alive() for thread in threads):
-            self.group_cleanup_known = False
-            raise ProofError("command-cleanup-unknown")
+            except BaseException as error:
+                self.group_cleanup_known = False
+                self.unsettled_process = process
+                raise ProofError("command-cleanup-unknown") from error
+            finally:
+                for thread in started_threads:
+                    if thread.ident is not None:
+                        thread.join(timeout=2)
+                if any(thread.is_alive() for thread in started_threads):
+                    self.group_cleanup_known = False
+                else:
+                    for pipe in (process.stdin, process.stdout, process.stderr):
+                        if pipe is not None and not pipe.closed:
+                            try:
+                                pipe.close()
+                            except BrokenPipeError:
+                                pass
+            require(self.group_cleanup_known, "command-cleanup-unknown")
+
+        process = subprocess.Popen(identity["command"], cwd=self.cwd, env=env or self.env,
+                                   stdin=subprocess.PIPE if stdin is not None else subprocess.DEVNULL,
+                                   stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True)
+        try:
+            identity.update(pid=process.pid, process_group=process.pid)
+            self.process_identity = identity
+            for thread in threads:
+                started_threads.append(thread)
+                thread.start()
+            Path(str(prefix) + ".process.json").write_bytes(canonical(identity))
+            if stdin is not None:
+                writer = threading.Thread(target=produce, daemon=True)
+                started_threads.append(writer)
+                writer.start()
+            deadline = time.monotonic() + timeout
+            while not leader_exited():
+                if errors or time.monotonic() >= deadline or (self.cancelled.is_set() and not recovery):
+                    failure = errors[0] if errors else ProofError("interrupted" if self.cancelled.is_set() else "command-timeout")
+                    break
+                tick.wait(0.05)
+        except BaseException as error:
+            failure = error
+        finally:
+            settle_process()
         if failure or errors:
             raise failure or errors[0]
         if expected_error is not None:
@@ -876,7 +921,8 @@ catch { if ($_.CategoryInfo.Category -ne 'ObjectNotFound') { throw }; $task = @(
     return {key: value[key] for key in operator.before}
 
 
-def installer_call(commands, operator, operation, *, operation_id=None, apply=False, expected_plan=None, target_out=False, recovery=False, fresh=False):
+def installer_call(commands, operator, operation, *, operation_id=None, apply=False, expected_plan=None, target_out=False,
+                   recovery=False, fresh=False, execution_token=None, recovery_deadline=None):
     selected = operator.installation
     args = ["setup", operation, "--platform", "windows", "--state-root", selected["state_root"], "--json"]
     if not fresh:
@@ -891,12 +937,17 @@ def installer_call(commands, operator, operation, *, operation_id=None, apply=Fa
         args += ["--operation", operation_id]
     if apply:
         args += ["--apply"]
-    if expected_plan:
+    if expected_plan and operation in ("install", "remove"):
         args += ["--expected-plan", expected_plan]
-    if target_out:
+    if target_out and operation == "install":
         args += ["--target-out", selected["target_out"]]
+    if execution_token is not None:
+        require(operation == "stop" and matches(r"bbxe_[a-f0-9]{32}", execution_token), "installer-execution-invalid")
+        args += ["--execution", execution_token]
     pins = [operator.bootstrap, operator.manifest_pin,
             *[{"path": a["name"], "size": a["size"], "sha256": a["sha256"]} for a in operator.manifest["artifacts"]]]
+    if operation in ("status", "stop"):
+        pins = [operator.bootstrap]
     inputs = {"bootstrap": operator.bootstrap["path"], "pins": pins, "args": args}
     script = INSTALL_SHELL + r"""
 $leases = [Collections.Generic.List[IO.FileStream]]::new()
@@ -910,35 +961,49 @@ try {
     [ordered]@{schema_version=1;exit_code=$code;output=$outputText} | ConvertTo-Json -Depth 2 -Compress
 } finally { foreach ($lease in $leases) { $lease.Dispose() } }
 """
-    response = host_json(commands, operator.connection["ssh_alias"],
-                         script.replace("__INPUT__", base64.b64encode(canonical(inputs)).decode()),
-                         timeout=300, recovery=recovery, limit=2 << 20)
+    script = script.replace("__INPUT__", base64.b64encode(canonical(inputs)).decode())
+    timeout = 45 if operation in ("status", "stop") else 360
+    if recovery_deadline is not None:
+        timeout = min(timeout, recovery_deadline - time.monotonic())
+        require(timeout > 0, "installer-stop-unsettled")
+    response = host_json(commands, operator.connection["ssh_alias"], script,
+                         timeout=timeout, recovery=recovery, limit=3 << 20)
     require(set(response) == {"schema_version", "exit_code", "output"} and type(response["exit_code"]) is int
             and isinstance(response["output"], str), "installer-response-invalid")
     raw = response["output"].encode()
     (commands.private / f"installer-result-{commands.sequence:03d}.json").write_bytes(raw)
     value = document(raw)
     require(set(value) <= {"schema_version", "operation_id", "installation_id", "state", "completion", "plan", "inspection",
-                          "files", "retained", "target", "problems", "target_publication"}
+                          "files", "retained", "target", "problems", "target_publication", "execution"}
             and (value.get("installation_id") in (None, "") if fresh else value.get("installation_id") == selected["id"]),
             "installer-identity-changed")
     if operation != "inspect":
         require(value.get("operation_id") == operation_id, "installer-identity-changed")
-    require(value.get("state") in {"planned", "prepared", "installed", "partial", "removing", "removed", "conflict"},
+    observing = operation in ("status", "stop")
+    require(value.get("state") in {"planned", "prepared", "installed", "partial", "removing", "removed", "conflict", "running", "unknown"},
             "installer-state-unknown")
-    require(value.get("completion") == "known", "installer-state-unknown")
+    require(value.get("completion") in ("known", "unknown") if observing else value.get("completion") == "known", "installer-state-unknown")
+    if apply or observing:
+        validate_installer_execution(value, terminal=not observing)
+    else:
+        require("execution" not in value, "installer-execution-invalid")
     publication = value.get("target_publication")
     require(isinstance(publication, dict) and set(publication) <= {"status", "path", "name", "error"},
             "installer-publication-invalid")
     if target_out:
-        require(publication.get("status") in ("published", "failed")
+        require(publication.get("status") in ("published", "failed", "not-published")
                 and publication.get("path") == selected["target_out"] and "name" not in publication
-                and ("error" not in publication if publication["status"] == "published" else isinstance(publication.get("error"), str)),
+                and (isinstance(publication.get("error"), str) if publication["status"] == "failed" else "error" not in publication),
                 "installer-publication-invalid")
     else:
         require(publication == {"status": "not-requested"}, "installer-publication-invalid")
     publication_failed = target_out and publication["status"] == "failed" and value["state"] == "installed"
-    require(value.get("problems") == [] and (response["exit_code"] == 0 or publication_failed), "installer-operation-failed")
+    problems = value.get("problems")
+    require(isinstance(problems, list) and len(problems) <= 64
+            and all(isinstance(p, dict) and set(p) == {"code", "message"}
+                    and isinstance(p["code"], str) and isinstance(p["message"], str) for p in problems),
+            "installer-problems-invalid")
+    require(observing or problems == [] and (response["exit_code"] == 0 or publication_failed), "installer-operation-failed")
     root = windows_path(selected["state_root"])
     retained = [str(root), str(root / ".operation.lock"), str(root / ".launch.lock"), str(root / "runs"),
                 str(root / "receipts"), str(root / "installations" / selected["id"] / "receipt.json")]
@@ -998,6 +1063,82 @@ try {
     if expected_plan:
         require(plan.get("plan_sha256") == expected_plan, "installer-plan-changed")
     return value
+
+
+def validate_installer_execution(result, *, terminal=False):
+    execution = result.get("execution")
+    require(isinstance(execution, dict) and set(execution) <= {"token", "request_sha256", "deadline", "state", "tree_cleanup",
+                                                               "task_mutation", "cancel_requested", "keeper", "worker", "process_state", "fence_state"}
+            and matches(r"bbxe_[a-f0-9]{32}", execution.get("token"))
+            and matches(HASH, execution.get("request_sha256"))
+            and execution.get("state") in {"running", "terminal", "unknown"}
+            and execution.get("process_state") in {"started", "not-started", "unknown"}
+            and execution.get("fence_state") in {"held", "released"}
+            and execution.get("tree_cleanup") in {"known", "unknown"}
+            and execution.get("task_mutation") in {"settled", "unknown"}
+            and type(execution.get("cancel_requested")) is bool, "installer-execution-invalid")
+    try:
+        deadline = datetime.datetime.fromisoformat(execution["deadline"].replace("Z", "+00:00"))
+        require(deadline.tzinfo is not None, "installer-execution-invalid")
+    except (ValueError, KeyError, AttributeError, TypeError) as error:
+        raise ProofError("installer-execution-invalid") from error
+    for role in ("keeper", "worker"):
+        if role not in execution:
+            require(execution["state"] == "unknown" and execution["process_state"] == "unknown"
+                    or role == "worker" and execution["process_state"] == "not-started", "installer-execution-invalid")
+            continue
+        identity = execution[role]
+        require(isinstance(identity, dict) and set(identity) == {"pid", "created_filetime"}
+                and type(identity["pid"]) is int and 0 < identity["pid"] <= 2**32 - 1
+                and matches(r"[1-9][0-9]{0,19}", identity["created_filetime"]), "installer-execution-invalid")
+    if execution["process_state"] == "not-started":
+        require(execution["state"] == "terminal" and result["state"] == "partial" and "worker" not in execution,
+                "installer-execution-invalid")
+    if execution["state"] == "terminal" or terminal:
+        require(execution["state"] == "terminal" and execution["tree_cleanup"] == "known"
+                and execution["task_mutation"] == "settled" and result["completion"] == "known", "installer-state-unknown")
+    if terminal:
+        require(execution["fence_state"] == "released", "installer-state-unknown")
+    return execution
+
+
+def require_same_installer_execution(before, after):
+    require(all(before.get(field) == after.get(field) for field in
+                ("token", "request_sha256", "deadline")), "installer-execution-changed")
+    require(all(role not in before or before[role] == after.get(role) for role in ("keeper", "worker")),
+            "installer-execution-changed")
+    require(before["process_state"] == "unknown" or before["process_state"] == after["process_state"],
+            "installer-execution-changed")
+
+
+def recover_installer(commands, operator, operation_id, expected_plan, *, target_out=False):
+    deadline = time.monotonic() + 15
+    observed = installer_call(commands, operator, "status", operation_id=operation_id, expected_plan=expected_plan,
+                              target_out=target_out, recovery=True, recovery_deadline=deadline)
+    require(time.monotonic() < deadline, "installer-stop-unsettled")
+    execution = validate_installer_execution(observed)
+    cancellation_attempted = False
+    while execution["state"] != "terminal" or execution["fence_state"] != "released":
+        require(time.monotonic() < deadline, "installer-stop-unsettled")
+        if not cancellation_attempted or execution["state"] == "terminal" and execution["fence_state"] == "held":
+            cancellation_attempted = True
+            try:
+                installer_call(commands, operator, "stop", operation_id=operation_id, apply=True,
+                               execution_token=execution["token"], target_out=target_out, recovery=True,
+                               recovery_deadline=deadline)
+            except Exception:
+                pass
+        # The cancellation or fence release may have committed despite a lost response.
+        observed = installer_call(commands, operator, "status", operation_id=operation_id, expected_plan=expected_plan,
+                                  target_out=target_out, recovery=True, recovery_deadline=deadline)
+        require(time.monotonic() < deadline, "installer-stop-unsettled")
+        latest = validate_installer_execution(observed)
+        require_same_installer_execution(execution, latest)
+        execution = latest
+        if execution["state"] != "terminal" or execution["fence_state"] != "released":
+            threading.Event().wait(0.1)
+    validate_installer_execution(observed, terminal=True)
+    return observed
 
 
 def installer_target(commands, operator, result, destination):
@@ -1132,7 +1273,7 @@ def baseline(request, commands_factory=Commands):
             require(inspected["state"] == "planned", "installer-inspect-mismatch")
             report["outcomes"][current] = {"status": "pass", "code": "dedicated-absent-fixture-verified"}
             current = "install-preview"
-            plan = installer_call(commands, operator, "install", operation_id=operation_ids["install"])
+            plan = installer_call(commands, operator, "install", operation_id=operation_ids["install"], target_out=True)
             require(plan["state"] == "planned", "installer-preview-mismatch")
             require(installer_observation(commands, operator) == original_observation, "installer-preview-mutated")
             report["outcomes"][current] = {"status": "pass", "code": "install-preview-read-only"}
@@ -1141,6 +1282,10 @@ def baseline(request, commands_factory=Commands):
             applied = installer_call(commands, operator, "install", operation_id=operation_ids["install"], apply=True,
                                      expected_plan=plan["plan"]["plan_sha256"], target_out=True)
             require(applied["state"] == "installed", "installer-apply-mismatch")
+            observed_install = recover_installer(commands, operator, operation_ids["install"], plan["plan"]["plan_sha256"], target_out=True)
+            require(observed_install.get("target") == applied.get("target")
+                    , "installer-status-mismatch")
+            require_same_installer_execution(applied["execution"], observed_install["execution"])
             installation_owned = True
             report["installation"]["state"] = "installed"
             report["outcomes"][current] = {"status": "pass", "code": "owned-runtime-installed"}
@@ -1257,9 +1402,6 @@ def baseline(request, commands_factory=Commands):
             try:
                 require(all(record is not None for record in recovered), "recovery-unavailable")
                 cleanup = verify_recovery(run or recovered[0], *recovered)
-                if run is not None and run.get("state") == "complete":
-                    retained = request.candidate_checkout / "artifacts/blender-box" / commands.run_id
-                    verify_baseline(retained, verify_bundle(retained, run))
                 report["cleanup"] = cleanup
                 report["outcomes"]["recovery"] = {"status": "pass", "code": "reconnect-exact-identity"}
                 report["outcomes"]["cleanup"] = {"status": "pass", "code": "settled-and-reobserved"}
@@ -1267,6 +1409,14 @@ def baseline(request, commands_factory=Commands):
                 code = error.code if isinstance(error, ProofError) else "recovery-unavailable"
                 report["outcomes"]["recovery"] = {"status": "fail", "code": code}
                 report["outcomes"]["cleanup"] = {"status": "fail", "code": "cleanup-unknown"}
+            else:
+                if run is not None and run.get("state") == "complete":
+                    try:
+                        retained = request.candidate_checkout / "artifacts/blender-box" / commands.run_id
+                        verify_baseline(retained, verify_bundle(retained, run))
+                    except Exception as error:
+                        code = error.code if isinstance(error, ProofError) else "retained-evidence-unavailable"
+                        report["outcomes"]["evidence"] = {"status": "fail", "code": code}
         if not commands.group_cleanup_known:
             report["outcomes"]["recovery"] = {"status": "fail", "code": "command-cleanup-unknown"}
             report["outcomes"]["cleanup"] = {"status": "fail", "code": "cleanup-unknown"}
@@ -1281,13 +1431,20 @@ def baseline(request, commands_factory=Commands):
             except Exception:
                 report["outcomes"]["target-forget"] = {"status": "fail", "code": "target-forget-failed"}
         if installing and install_attempted:
-            if installation_owned and commands.group_cleanup_known and (not scenario_attempted or report["cleanup"]):
+            if commands.group_cleanup_known:
+                try:
+                    applied = recover_installer(commands, operator, operation_ids["install"], plan["plan"]["plan_sha256"], target_out=True)
+                    installation_owned = applied["state"] == "installed"
+                except Exception:
+                    installation_owned = False
+            if (installation_owned and commands.group_cleanup_known
+                    and (not scenario_attempted or report["cleanup"] and report["outcomes"]["evidence"]["status"] != "fail")):
                 repeat_install = scenario_attempted and not commands.cancelled.is_set()
                 removal_stage = "install-repeat" if repeat_install else "remove-preview"
                 try:
                     if repeat_install:
                         repeated = installer_call(commands, operator, "install", operation_id=operation_ids["install"], apply=True,
-                                                  expected_plan=plan["plan"]["plan_sha256"], recovery=True)
+                                                  expected_plan=plan["plan"]["plan_sha256"], target_out=True, recovery=True)
                         require(repeated["state"] == "installed" and repeated.get("target") == applied.get("target")
                                 and repeated.get("files") == applied.get("files"), "installer-repeat-mismatch")
                         report["outcomes"][removal_stage] = {"status": "pass", "code": "identical-install-repeated-after-run"}
@@ -1298,11 +1455,21 @@ def baseline(request, commands_factory=Commands):
                     require(still_installed["state"] == "installed", "installer-remove-preview-mutated")
                     report["outcomes"][removal_stage] = {"status": "pass", "code": "remove-preview-read-only"}
                     removal_stage = "remove-apply"
-                    removed = installer_call(commands, operator, "remove", operation_id=operation_ids["remove"], apply=True,
-                                             expected_plan=preview["plan"]["plan_sha256"], recovery=True)
-                    require(removed["state"] == "removed", "installer-remove-mismatch")
+                    removal_failure = None
+                    removed = None
+                    try:
+                        removed = installer_call(commands, operator, "remove", operation_id=operation_ids["remove"], apply=True,
+                                                 expected_plan=preview["plan"]["plan_sha256"], recovery=True)
+                        require(removed["state"] == "removed", "installer-remove-mismatch")
+                    except Exception as error:
+                        removal_failure = error.code if isinstance(error, ProofError) else "installer-removal-unavailable"
+                    observed_remove = recover_installer(commands, operator, operation_ids["remove"], preview["plan"]["plan_sha256"])
+                    require(observed_remove["state"] == "removed", "installer-status-mismatch")
+                    if removed is not None:
+                        require_same_installer_execution(removed["execution"], observed_remove["execution"])
                     report["installation"]["state"] = "removed"
-                    report["outcomes"][removal_stage] = {"status": "pass", "code": "owned-runtime-removed"}
+                    report["outcomes"][removal_stage] = {"status": "fail" if removal_failure else "pass",
+                                                         "code": removal_failure or "owned-runtime-removed"}
                     removal_stage = "remove-repeat"
                     repeated = installer_call(commands, operator, "remove", operation_id=operation_ids["remove"], apply=True, recovery=True)
                     require(repeated["state"] == "removed", "installer-remove-repeat-mismatch")

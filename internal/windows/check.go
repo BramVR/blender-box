@@ -293,7 +293,15 @@ Add-Check 'host.executable' ($hostOK -and (Test-SafePath $hostPath $expectedSid 
 $rootExists = Test-Path -LiteralPath ([string]$config.work_root) -PathType Container -ErrorAction SilentlyContinue
 Add-Check 'work-root.access' ($rootExists -and $lockFilesOK -and (Test-SafePath ([string]$config.work_root) $expectedSid $sshSid $rootAccess $true $false $true $true) -and (Test-ConservativePathAccess ([string]$config.work_root) $sshSid $fullControl $true) -and (Test-RootStateFileInheritance ([string]$config.work_root) $expectedSid $sshSid)) $true ([ordered]@{root=[string]$config.work_root; lock_files=$lockFilesOK}) ([ordered]@{root='controller-owned'; operation_lock='sealed regular file'; launch_lock='sealed regular file'}) 'The operator-managed work root and both process lock files must preserve the declared authority.'
 $stateTreeOK = $rootExists -and (Test-SafeStateTree ([System.IO.Path]::Combine([string]$config.work_root, 'runs')) $expectedSid $sshSid) -and (Test-SafeStateTree ([System.IO.Path]::Combine([string]$config.work_root, 'receipts')) $expectedSid $sshSid)
-Add-Check 'work-root.state-tree' $stateTreeOK $true $stateTreeOK $true 'Existing Run and receipt trees must contain no reparse points and only declared writers.'
+try {
+    $setupOwnerEntries = @([System.IO.DirectoryInfo]::new([string]$config.work_root).EnumerateFileSystemInfos('setup-owner'))
+    $setupOwnerEntries += @([System.IO.DirectoryInfo]::new([string]$config.work_root).EnumerateFileSystemInfos('setup-operations'))
+    if (@([System.IO.DirectoryInfo]::new([string]$config.work_root).EnumerateFileSystemInfos('pending-setup.json')).Count -ne 0) { $stateTreeOK = $false }
+    foreach ($entry in $setupOwnerEntries) {
+        $stateTreeOK = $stateTreeOK -and (Test-SafeStateTree $entry.FullName $expectedSid $sshSid)
+    }
+} catch { $stateTreeOK = $false }
+Add-Check 'work-root.state-tree' $stateTreeOK $true $stateTreeOK $true 'Required Run and receipt trees and existing setup journals must contain no reparse points and only declared writers. Pending setup excludes new Runs until execution cleanup is known.'
 $task = Get-ScheduledTask -TaskPath '\' -TaskName ([string]$config.task_name) -ErrorAction SilentlyContinue
 $taskActual = $null
 $taskOK = $false

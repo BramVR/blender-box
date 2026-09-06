@@ -103,6 +103,18 @@ func TestCheckRequiresProvisionedStateDirectories(t *testing.T) {
 	if !strings.Contains(checkScript, "if (-not (Test-Path -LiteralPath $Path -PathType Container)) { return $false }") {
 		t.Fatal("state-tree inspection accepts an absent state directory")
 	}
+	for _, required := range []string{
+		"$setupOwnerEntries = @([System.IO.DirectoryInfo]::new([string]$config.work_root).EnumerateFileSystemInfos('setup-owner'))",
+		"foreach ($entry in $setupOwnerEntries)",
+		"EnumerateFileSystemInfos('setup-operations')",
+		"EnumerateFileSystemInfos('pending-setup.json')).Count -ne 0) { $stateTreeOK = $false }",
+		"Test-SafeStateTree $entry.FullName $expectedSid $sshSid",
+		"} catch { $stateTreeOK = $false }",
+	} {
+		if !strings.Contains(checkScript, required) {
+			t.Fatalf("optional setup-owner inspection can skip unreadable or reparse entries: missing %q", required)
+		}
+	}
 }
 
 func TestCheckAncestorsTrustOnlyControllerAndSystemAuthority(t *testing.T) {

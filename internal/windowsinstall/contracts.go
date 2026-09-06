@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"regexp"
 
+	"github.com/BramVR/blender-box/internal/strictjson"
 	"github.com/BramVR/blender-box/internal/target"
 )
 
@@ -46,21 +47,31 @@ type RuntimeManifest struct {
 	DaemonProtocol     string     `json:"daemon_protocol"`
 	DaemonCapabilities []string   `json:"daemon_capabilities"`
 }
-type Request struct {
-	Operation      string
-	Platform       string
-	StateRoot      string
-	InstallationID InstallationID
-	OperationID    OperationID
-	RuntimePath    string
-	BlenderPath    string
-	PythonPath     string
-	SSHAlias       string
-	WindowsUser    string
-	TaskName       string
-	ExpectedPlan   SHA256
-	Apply          bool
+type Publication struct {
+	Status string `json:"status"`
+	Path   string `json:"path,omitempty"`
+	Name   string `json:"name,omitempty"`
+	Error  string `json:"error,omitempty"`
 }
+type Request struct {
+	Operation      string         `json:"operation"`
+	Platform       string         `json:"platform"`
+	StateRoot      string         `json:"state_root"`
+	InstallationID InstallationID `json:"installation_id"`
+	OperationID    OperationID    `json:"operation_id"`
+	RuntimePath    string         `json:"runtime_path"`
+	BlenderPath    string         `json:"blender_path"`
+	PythonPath     string         `json:"python_path"`
+	SSHAlias       string         `json:"ssh_alias"`
+	WindowsUser    string         `json:"windows_user"`
+	TaskName       string         `json:"task_name"`
+	ExpectedPlan   SHA256         `json:"expected_plan"`
+	Apply          bool           `json:"apply"`
+	TargetOut      string         `json:"target_out"`
+	SaveTarget     string         `json:"save_target"`
+	ExecutionToken string         `json:"execution_token"`
+}
+
 type File struct {
 	Path     string `json:"path"`
 	Kind     string `json:"kind"`
@@ -97,17 +108,19 @@ type Problem struct {
 	Message string `json:"message"`
 }
 type Result struct {
-	SchemaVersion  int            `json:"schema_version"`
-	OperationID    OperationID    `json:"operation_id,omitempty"`
-	InstallationID InstallationID `json:"installation_id,omitempty"`
-	State          string         `json:"state"`
-	Completion     string         `json:"completion"`
-	Plan           Plan           `json:"plan"`
-	Inspection     Inspection     `json:"inspection"`
-	Files          []File         `json:"files"`
-	Retained       []string       `json:"retained"`
-	Target         *target.Target `json:"target,omitempty"`
-	Problems       []Problem      `json:"problems"`
+	Execution         *Execution     `json:"execution,omitempty"`
+	TargetPublication Publication    `json:"target_publication"`
+	SchemaVersion     int            `json:"schema_version"`
+	OperationID       OperationID    `json:"operation_id,omitempty"`
+	InstallationID    InstallationID `json:"installation_id,omitempty"`
+	State             string         `json:"state"`
+	Completion        string         `json:"completion"`
+	Plan              Plan           `json:"plan"`
+	Inspection        Inspection     `json:"inspection"`
+	Files             []File         `json:"files"`
+	Retained          []string       `json:"retained"`
+	Target            *target.Target `json:"target,omitempty"`
+	Problems          []Problem      `json:"problems"`
 }
 type Executor interface {
 	Execute(context.Context, Request) (Result, error)
@@ -142,4 +155,26 @@ func problem(result Result, code string, err error) (Result, error) {
 	}
 	result.Problems = append(result.Problems, Problem{code, err.Error()})
 	return result, fmt.Errorf("%s: %w", code, err)
+}
+
+// UnmarshalJSON keeps the target's validated document boundary when results cross a process.
+func (result *Result) UnmarshalJSON(data []byte) error {
+	type fields Result
+	var decoded fields
+	wire := struct {
+		*fields
+		Target json.RawMessage `json:"target,omitempty"`
+	}{fields: &decoded}
+	if err := strictjson.Decode(data, &wire); err != nil {
+		return err
+	}
+	if len(wire.Target) != 0 {
+		selected, err := target.Decode(wire.Target)
+		if err != nil {
+			return err
+		}
+		decoded.Target = &selected
+	}
+	*result = Result(decoded)
+	return nil
 }

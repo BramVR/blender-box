@@ -16,12 +16,7 @@ import (
 	"github.com/BramVR/blender-box/internal/windowsinstall"
 )
 
-type targetPublication struct {
-	Status string `json:"status"`
-	Path   string `json:"path,omitempty"`
-	Name   string `json:"name,omitempty"`
-	Error  string `json:"error,omitempty"`
-}
+type targetPublication = windowsinstall.Publication
 
 func setupCommand(ctx context.Context, args []string, stdout, stderr io.Writer, dependencies Dependencies) int {
 	if len(args) == 0 {
@@ -29,14 +24,14 @@ func setupCommand(ctx context.Context, args []string, stdout, stderr io.Writer, 
 		return 2
 	}
 	if args[0] == "--help" || args[0] == "-h" {
-		fmt.Fprintln(stdout, "Host-local Windows setup. Use an external verified bootstrap as the logged-in interactive account.\nPrerequisites: explicit CPython 3.11 through 3.14 amd64, Blender, and a dependency-free daemon wheel.\n  setup manifest --help     Build an offline runtime manifest from exact source artifacts.\n  setup inspect --help      Inspect the account, state root and executable candidates.\n  setup install --help      Preview; repeat with --apply to install the owned runtime and task.\n  setup remove --help       Preview; repeat with --apply to remove the exact installation.\nNo setup command edits SSH configuration or starts Blender.")
+		fmt.Fprintln(stdout, "Host-local Windows setup. Use an external verified bootstrap as the logged-in interactive account.\nPrerequisites: explicit CPython 3.11 through 3.14 amd64, Blender, and a dependency-free daemon wheel.\n  setup manifest --help     Build an offline runtime manifest from exact source artifacts.\n  setup inspect --help      Inspect the account, state root and executable candidates.\n  setup install --help      Preview; repeat with --apply to install the owned runtime and task.\n  setup remove --help       Preview; repeat with --apply to remove the exact installation.\n  setup status --help       Read the exact logical setup operation.\n  setup stop --help         Cancel the exact execution with --apply.\nNo setup command edits SSH configuration or starts Blender.")
 		return 0
 	}
 	if args[0] == "manifest" {
 		return setupManifestCommand(args[1:], stdout, stderr)
 	}
-	if args[0] != "inspect" && args[0] != "install" && args[0] != "remove" {
-		fmt.Fprintln(stderr, "setup requires inspect, install, remove, or manifest")
+	if args[0] != "inspect" && args[0] != "install" && args[0] != "remove" && args[0] != "status" && args[0] != "stop" {
+		fmt.Fprintln(stderr, "setup requires inspect, install, remove, status, stop, or manifest")
 		return 2
 	}
 	request := windowsinstall.Request{Operation: args[0]}
@@ -51,10 +46,17 @@ func setupCommand(ctx context.Context, args []string, stdout, stderr io.Writer, 
 		flags.StringVar(&request.BlenderPath, "blender", "", "explicit Blender executable")
 		flags.StringVar(&request.PythonPath, "python", "", "explicit CPython Windows executable")
 	}
-	if request.Operation == "install" || request.Operation == "remove" {
+	if request.Operation == "install" || request.Operation == "remove" || request.Operation == "status" || request.Operation == "stop" {
 		flags.StringVar(&operation, "operation", "", "operation identity from preview")
-		flags.StringVar(&expected, "expected-plan", "", "require preview plan SHA-256")
-		flags.BoolVar(&request.Apply, "apply", false, "apply this bounded install or removal")
+		if request.Operation != "status" {
+			flags.BoolVar(&request.Apply, "apply", false, "apply this bounded install, removal or stop")
+		}
+		if request.Operation == "install" || request.Operation == "remove" {
+			flags.StringVar(&expected, "expected-plan", "", "require preview plan SHA-256")
+		}
+		if request.Operation == "stop" {
+			flags.StringVar(&request.ExecutionToken, "execution", "", "exact execution token from fresh setup status")
+		}
 	}
 	if request.Operation == "install" {
 		flags.StringVar(&request.RuntimePath, "runtime", "", "path to runtime manifest")
@@ -70,8 +72,8 @@ func setupCommand(ctx context.Context, args []string, stdout, stderr io.Writer, 
 		}
 		return 2
 	}
-	if flags.NArg() != 0 || request.Platform == "" || request.StateRoot == "" || (targetOut != "" || saveTarget != "") && (!request.Apply || request.Operation != "install") || targetOut != "" && saveTarget != "" {
-		fmt.Fprintln(stderr, "setup requires --platform and --state-root; target publication requires install --apply and one destination")
+	if flags.NArg() != 0 || request.Platform == "" || request.StateRoot == "" || (targetOut != "" || saveTarget != "") && request.Operation != "install" || targetOut != "" && saveTarget != "" {
+		fmt.Fprintln(stderr, "setup requires --platform and --state-root; target publication requires install and one destination")
 		return 2
 	}
 
@@ -110,6 +112,12 @@ func setupCommand(ctx context.Context, args []string, stdout, stderr io.Writer, 
 			return fail(stderr, "target path", fmt.Errorf("target publication must remain outside the setup state root"))
 		}
 	}
+	request.TargetOut = targetOut
+	request.SaveTarget = saveTarget
+	if saveTarget != "" {
+		root, _ := target.ConfigDir()
+		request.TargetOut = filepath.Join(root, "targets", saveTarget+".json")
+	}
 	request.InstallationID = windowsinstall.InstallationID(id)
 	request.OperationID = windowsinstall.OperationID(operation)
 	request.ExpectedPlan = windowsinstall.SHA256(expected)
@@ -118,25 +126,9 @@ func setupCommand(ctx context.Context, args []string, stdout, stderr io.Writer, 
 		executor = windowsinstall.NewLocal()
 	}
 	result, err := executor.Execute(ctx, request)
-	publication := targetPublication{Status: "not-requested"}
-	if targetOut != "" || saveTarget != "" {
-		publication = targetPublication{Status: "not-published", Path: targetOut, Name: saveTarget}
-		if err == nil && result.State == "installed" && result.Target != nil {
-			publishErr := publishInstalledTarget(*result.Target, targetOut, saveTarget)
-			if publishErr != nil {
-				publication.Status = "failed"
-				publication.Error = publishErr.Error()
-				err = publishErr
-			} else {
-				publication.Status = "published"
-			}
-		}
-	}
+	publication := result.TargetPublication
 	if *asJSON {
-		if code := writeJSON(stdout, stderr, struct {
-			windowsinstall.Result
-			TargetPublication targetPublication `json:"target_publication"`
-		}{result, publication}); code != 0 {
+		if code := writeJSON(stdout, stderr, result); code != 0 {
 			return code
 		}
 	} else {
@@ -189,35 +181,6 @@ func setupPublicationPath(path string) (string, error) {
 	}
 }
 
-func publishInstalledTarget(selected target.Target, path, name string) error {
-	data, err := json.Marshal(selected)
-	if err != nil {
-		return err
-	}
-	data = append(data, '\n')
-	if path != "" {
-		return privatefile.Publish(filepath.Dir(path), filepath.Base(path), data, false)
-	}
-	temporary, err := os.CreateTemp("", "blender-box-target-*.json")
-	if err != nil {
-		return err
-	}
-	temporaryPath := temporary.Name()
-	defer os.Remove(temporaryPath)
-	if _, err = temporary.Write(data); err != nil {
-		temporary.Close()
-		return err
-	}
-	if err = temporary.Close(); err != nil {
-		return err
-	}
-	root, err := target.ConfigDir()
-	if err != nil {
-		return err
-	}
-	_, err = (target.Store{Root: root}).Import(name, temporaryPath, false)
-	return err
-}
 func setupManifestCommand(args []string, stdout, stderr io.Writer) int {
 	flags := flag.NewFlagSet("setup manifest", flag.ContinueOnError)
 	flags.SetOutput(stderr)

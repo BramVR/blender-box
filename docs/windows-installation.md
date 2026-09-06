@@ -50,12 +50,12 @@ Run commands on Windows through the verified bootstrap:
 
 ```powershell
 & $Bootstrap setup inspect --platform windows --state-root $StateRoot --json
-& $Bootstrap setup install --platform windows --state-root $StateRoot --runtime $Manifest --blender $Blender --python $Python --ssh-alias $SSHAlias --windows-user $WindowsUser --task-name $TaskName --json
+& $Bootstrap setup install --platform windows --state-root $StateRoot --runtime $Manifest --blender $Blender --python $Python --ssh-alias $SSHAlias --windows-user $WindowsUser --task-name $TaskName --target-out $TargetFile --json
 ```
 
 Inspection reports selections, prerequisites, and conflicts. Select an exact Blender executable when discovery is ambiguous. Review the installation destination, account, task, runtime inventory, and retained components. Neither command applies changes without `--apply`.
 
-Save the returned installation ID, operation ID, and plan SHA-256. Pass them when applying the reviewed plan. Preserve both identities on retries. A changed immutable selection requires resolving the conflict rather than overwriting the old installation.
+Save the returned installation ID, operation ID, and plan SHA-256. Apply requires both identities from preview. Preserve them and the target publication destination on retries. A changed immutable selection requires resolving the conflict rather than overwriting the old installation.
 
 ## Install and export a target
 
@@ -78,9 +78,29 @@ Target exports and saved targets must stay outside the setup state root. Setup r
 
 ## Repeat and recover
 
-Use the same runtime manifest, selections, installation ID, and operation ID to repeat install. Omitting the operation ID on a retry uses the receipt's ID; supplying a different one conflicts. The installer rereads its receipt and actual files. It must not create another task or adopt unrelated resources. Keep JSON results when an operation fails; a partial result records what remains and what requires attention.
+Use the same runtime manifest, selections, installation ID, operation ID, and target publication destination to repeat install. The installer rereads its receipt and actual files. A running execution remains observable; a settled partial operation can resume only after exact process cleanup and fresh admission checks. Each resumed execution has a new internal token. Repeating an operation must not create another task or adopt unrelated resources.
 
-Receipts live beneath `STATE_ROOT/installations/INSTALLATION_ID/`. Do not delete a receipt to clear an error. A changed task, modified runtime file, interrupted operation, or active Run can prevent convergence. Inspect the exact installation and preserve unknown state for operator review.
+If SSH or the waiting CLI loses its response, query the operation through a fresh connection:
+
+```powershell
+& $Bootstrap setup status --platform windows --state-root $StateRoot --installation $InstallationID --operation $InstallOperationID --json
+```
+
+The result includes execution state, process state, deadline, process-tree cleanup, task-mutation state, and `fence_state`. An admitted execution can briefly report `unknown` before its process identities appear; keep observing the same operation and token. A proven `not-started` attempt can be retried; missing worker identity alone is insufficient. To request cancellation, or release a fence still held by an already settled execution, use the exact execution token from that result:
+
+```powershell
+& $Bootstrap setup stop --platform windows --state-root $StateRoot --installation $InstallationID --operation $InstallOperationID --execution $ExecutionToken --apply --json
+```
+
+Cancellation requested does not mean cleanup completed. Query status again and retain the JSON receipts. A settled execution can still hold its fence if the keeper died between recording proof and releasing authority; exact stop reconciles that release. Stop affects that execution only; a later explicit apply may resume the logical operation after the previous execution settles.
+
+Status and exact stop validate the account and state root without rediscovering Blender or Python. They still require the authenticated account to match the logged-in desktop user, enabled UAC, and the existing root ownership checks.
+
+An independent native keeper bounds installer execution even if SSH disconnects. An unknown outcome blocks new Runs and unrelated setup operations. Missing process IDs or an absent task do not establish cleanup. If the keeper dies before recording proof, or a Task Scheduler mutation remains unsettled, preserve the state for operator review.
+
+Installation receipts live beneath `STATE_ROOT/installations/INSTALLATION_ID/`; execution records live beneath `STATE_ROOT/setup-operations/`. Do not delete receipts or pending setup authority to clear an error. A changed task, modified runtime file, interrupted operation, or active Run can prevent convergence.
+
+Runtime and execution-record publication stages temporary bytes at the managed state root, outside their exact inventories. An interrupted writer can leave a temporary file there. Setup preserves that file without adopting or deleting it; it does not block a settled retry. Interruption before the first durable installation receipt or execution request remains ambiguous and requires operator review.
 
 ## Remove an installation
 

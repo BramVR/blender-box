@@ -46,7 +46,9 @@ func (host diskHost) write(receipt orchestrator.RunReceipt) error {
 	}
 	return os.WriteFile(host.receiptPath, data, 0o600)
 }
-func (host diskHost) Inspect(context.Context, target.Target) error { return host.record("inspect") }
+func (host diskHost) Inspect(context.Context, target.Target, orchestrator.HostRequirements) (orchestrator.HostInspection, error) {
+	return orchestrator.HostInspection{SchemaVersion: 1, Status: "pass"}, host.record("inspect")
+}
 func (host diskHost) Acquire(_ context.Context, _ target.Target, claim orchestrator.LockClaim) error {
 	if err := host.record("acquire"); err != nil {
 		return err
@@ -119,18 +121,7 @@ func TestTargetsCLIProcessHelper(t *testing.T) {
 	root := os.Getenv("BLENDER_BOX_CONFIG_DIR")
 	host := diskHost{root: root, receiptPath: os.Getenv("BBX_TEST_RECEIPT"), auditPath: os.Getenv("BBX_TEST_AUDIT")}
 	ssh := &fakeSSH{stdout: passingChecks()}
-	if len(args) > 1 && args[0] == "windows" && args[1] == "setup" {
-		for i, arg := range args {
-			if arg == "--host-binary" && i+1 < len(args) {
-				data, err := os.ReadFile(args[i+1])
-				if err != nil {
-					continue
-				}
-				hash := sha256.Sum256(data)
-				ssh.stdout, _ = json.Marshal(windows.SetupResult{SchemaVersion: 1, Status: "applied", Applied: true, HostSize: int64(len(data)), HostSHA256: hex.EncodeToString(hash[:])})
-			}
-		}
-	}
+
 	code := Run(context.Background(), args, strings.NewReader(""), os.Stdout, os.Stderr, Dependencies{Runner: orchestrator.New(host, root), SSH: ssh})
 	if ssh.host != "" {
 		if err := host.record("ssh"); err != nil {
@@ -267,6 +258,15 @@ func TestPublicNamedTargetsAcrossProcessesAndBothVersions(t *testing.T) {
 			t.Fatal("legacy apply refusal contacted host")
 		}
 		cli.call(0, append([]string{"windows", "check", "--json"}, selector...)...)
+		before = cli.calls()
+		cli.call(0, append([]string{"plan", "--payload", cliPayload(t), "--json"}, selector...)...)
+		if cli.calls() != before {
+			t.Fatal("plan contacted host")
+		}
+		cli.call(0, append([]string{"doctor", "--payload", cliPayload(t), "--json"}, selector...)...)
+		if cli.calls() != before+"inspect\n" {
+			t.Fatal("doctor did not inspect exactly once")
+		}
 		var result orchestrator.RunResult
 		output := cli.call(0, append([]string{"run", "--payload", cliPayload(t), "--evidence-dir", filepath.Join(t.TempDir(), "evidence"), "--json"}, selector...)...)
 		if err := json.Unmarshal([]byte(output), &result); err != nil || !result.Cleanup.Known() || result.SessionID == "" {
@@ -306,7 +306,7 @@ func TestAllSelectorsRejectAmbiguousEmptyAndMissingBeforeEffects(t *testing.T) {
 	cli := newProcessCLI(t)
 	source := writeTarget(t, t.TempDir())
 	cli.call(0, "targets", "import", "studio", "--file", source)
-	commands := [][]string{{"windows", "setup", "--host-binary", "unused"}, {"windows", "check"}, {"run", "--payload", "unused"}, {"status", "--run", "bbx_test-run-identity-123456"}, {"stop", "--run", "bbx_test-run-identity-123456"}}
+	commands := [][]string{{"plan", "--payload", "unused"}, {"doctor", "--payload", "unused"}, {"windows", "setup", "--host-binary", "unused"}, {"windows", "check"}, {"run", "--payload", "unused"}, {"status", "--run", "bbx_test-run-identity-123456"}, {"stop", "--run", "bbx_test-run-identity-123456"}}
 	for _, command := range commands {
 		for _, selection := range [][]string{nil, {"--target", ""}, {"--target-name", ""}, {"--target", source, "--target-name", "studio"}, {"--target", "", "--target-name", "studio"}, {"--target", source, "--target-name", ""}} {
 			cli.call(2, append(append([]string{}, command...), selection...)...)
@@ -340,7 +340,7 @@ func TestFileSelectorsReportInvalidConfigOverrideBeforeEffects(t *testing.T) {
 			cli.env[i] = "BLENDER_BOX_CONFIG_DIR=relative"
 		}
 	}
-	commands := [][]string{{"windows", "setup", "--host-binary", "unused"}, {"windows", "check"}, {"run", "--payload", "unused"}, {"status", "--run", "bbx_test-run-identity-123456"}, {"stop", "--run", "bbx_test-run-identity-123456"}}
+	commands := [][]string{{"plan", "--payload", "unused"}, {"doctor", "--payload", "unused"}, {"windows", "setup", "--host-binary", "unused"}, {"windows", "check"}, {"run", "--payload", "unused"}, {"status", "--run", "bbx_test-run-identity-123456"}, {"stop", "--run", "bbx_test-run-identity-123456"}}
 	for _, command := range commands {
 		output := cli.call(1, append(command, "--target", source)...)
 		if !strings.Contains(output, "BLENDER_BOX_CONFIG_DIR must be absolute") {

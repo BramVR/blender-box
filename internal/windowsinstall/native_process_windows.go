@@ -138,6 +138,10 @@ func (job *nativeJob) terminateAndWait() error {
 }
 
 func (job *nativeJob) start(executable string, args, environment []string, files [3]*os.File) (nativeSpawn, error) {
+	return job.startFlags(executable, args, environment, files, 0)
+}
+
+func (job *nativeJob) startFlags(executable string, args, environment []string, files [3]*os.File, creationFlags uint32) (nativeSpawn, error) {
 	var spawn nativeSpawn
 	application, err := syscall.UTF16PtrFromString(executable)
 	if err != nil {
@@ -186,16 +190,23 @@ func (job *nativeJob) start(executable string, args, environment []string, files
 		}
 	}
 	var size uintptr
-	_, _, _ = nativeInitializeAttributes.Call(0, 2, 0, uintptr(unsafe.Pointer(&size)))
+	attributeCount := uintptr(1)
+	if job != nil {
+		attributeCount = 2
+	}
+	_, _, _ = nativeInitializeAttributes.Call(0, attributeCount, 0, uintptr(unsafe.Pointer(&size)))
 	if size == 0 || size > 1<<20 {
 		return spawn, fmt.Errorf("invalid native startup attribute size")
 	}
 	storage := make([]uintptr, (size+unsafe.Sizeof(uintptr(0))-1)/unsafe.Sizeof(uintptr(0)))
 	attributes := unsafe.Pointer(&storage[0])
-	if ok, _, err := nativeInitializeAttributes.Call(uintptr(attributes), 2, 0, uintptr(unsafe.Pointer(&size))); ok == 0 {
+	if ok, _, err := nativeInitializeAttributes.Call(uintptr(attributes), attributeCount, 0, uintptr(unsafe.Pointer(&size))); ok == 0 {
 		return spawn, fmt.Errorf("initialize native startup attributes: %w", err)
 	}
-	jobs := [1]syscall.Handle{job.handle}
+	var jobs [1]syscall.Handle
+	if job != nil {
+		jobs[0] = job.handle
+	}
 	defer func() {
 		nativeDeleteAttributes.Call(uintptr(attributes))
 		runtime.KeepAlive(storage)
@@ -206,14 +217,16 @@ func (job *nativeJob) start(executable string, args, environment []string, files
 		return spawn, fmt.Errorf("set native inherited handles: %w", err)
 	}
 	// JOB_LIST assigns the process before its initial thread can execute.
-	if ok, _, err := nativeUpdateAttribute.Call(uintptr(attributes), 0, 0x0002000d, uintptr(unsafe.Pointer(&jobs[0])), unsafe.Sizeof(jobs), 0, 0); ok == 0 {
-		return spawn, fmt.Errorf("set native process job: %w", err)
+	if job != nil {
+		if ok, _, err := nativeUpdateAttribute.Call(uintptr(attributes), 0, 0x0002000d, uintptr(unsafe.Pointer(&jobs[0])), unsafe.Sizeof(jobs), 0, 0); ok == 0 {
+			return spawn, fmt.Errorf("set native process job: %w", err)
+		}
 	}
 	startup := nativeStartupInfo{Attributes: attributes}
 	startup.Cb = uint32(unsafe.Sizeof(startup))
 	startup.Flags = syscall.STARTF_USESTDHANDLES
 	startup.StdInput, startup.StdOutput, startup.StdErr = inherited[0], inherited[1], inherited[2]
-	err = syscall.CreateProcess(application, &command[0], nil, nil, true, 0x00080000|syscall.CREATE_UNICODE_ENVIRONMENT|0x08000000, &block[0], directory, &startup.StartupInfo, &spawn.Info)
+	err = syscall.CreateProcess(application, &command[0], nil, nil, true, 0x00080000|syscall.CREATE_UNICODE_ENVIRONMENT|0x08000000|creationFlags, &block[0], directory, &startup.StartupInfo, &spawn.Info)
 	runtime.KeepAlive(command)
 	runtime.KeepAlive(block)
 	runtime.KeepAlive(startup)
@@ -237,7 +250,23 @@ type nativeExit struct {
 	err   error
 }
 
+type nativeRunGate struct {
+	NotStarted func()
+	Admit      func(nativeSpawn) error
+	TreeExited func(nativeSpawn)
+}
+
 func runNativeJob(ctx context.Context, executable string, args []string, input []byte, environment []string) ([]byte, error) {
+	return runNativeJobGated(ctx, executable, args, input, environment, nil)
+}
+
+func runNativeJobGated(ctx context.Context, executable string, args []string, input []byte, environment []string, gate *nativeRunGate) ([]byte, error) {
+	definitelyNotStarted := true
+	defer func() {
+		if gate != nil && gate.NotStarted != nil && definitelyNotStarted {
+			gate.NotStarted()
+		}
+	}()
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -274,7 +303,15 @@ func runNativeJob(ctx context.Context, executable string, args []string, input [
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	spawn, startErr := job.start(executable, args, environment, [3]*os.File{stdinRead, stdoutWrite, stderrWrite})
+	flags := uint32(0)
+	if gate != nil {
+		flags = 0x00000004
+	}
+	definitelyNotStarted = false
+	spawn, startErr := job.startFlags(executable, args, environment, [3]*os.File{stdinRead, stdoutWrite, stderrWrite}, flags)
+	if spawn.Info.Process == 0 && startErr != nil {
+		definitelyNotStarted = true
+	}
 	_ = stdinRead.Close()
 	_ = stdoutWrite.Close()
 	_ = stderrWrite.Close()
@@ -294,6 +331,14 @@ func runNativeJob(ctx context.Context, executable string, args []string, input [
 	if startErr != nil {
 		return abortStart(startErr)
 	}
+	if gate != nil {
+		if err := gate.Admit(spawn); err != nil {
+			return abortStart(err)
+		}
+		if result, _, err := nativeResumeThread.Call(uintptr(spawn.Info.Thread)); result != 1 {
+			return abortStart(fmt.Errorf("resume owned worker: %w", err))
+		}
+	}
 	// The original spawn handle pins this PID while os.FindProcess opens its wait handle.
 	process, err := os.FindProcess(int(spawn.Info.ProcessId))
 	if err != nil {
@@ -310,7 +355,11 @@ func runNativeJob(ctx context.Context, executable string, args []string, input [
 		}
 		streams <- nativeStream{kind, data, err}
 	}
-	go readStream("stdout", stdoutRead, 256<<10)
+	stdoutLimit := int64(256 << 10)
+	if gate != nil {
+		stdoutLimit = maxExecutionRecord
+	}
+	go readStream("stdout", stdoutRead, stdoutLimit)
 	go readStream("stderr", stderrRead, 64<<10)
 	go func() {
 		_, err := io.Copy(stdinWrite, bytes.NewReader(input))
@@ -391,6 +440,9 @@ func runNativeJob(ctx context.Context, executable string, args []string, input [
 			cleanupErr = errors.Join(cleanupErr, errNativeCleanupUnknown, fmt.Errorf("native pipe drain exceeded deadline"))
 			remainingStreams = 0
 		}
+	}
+	if cleanupErr == nil && gate != nil {
+		gate.TreeExited(spawn)
 	}
 	if err := errors.Join(operationErr, cleanupErr); err != nil {
 		return stdout, fmt.Errorf("native operation failed: %w: %s", errors.Join(errNativeExecutionFailed, err, exitErr), strings.TrimSpace(string(stderr)))

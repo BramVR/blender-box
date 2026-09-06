@@ -14,6 +14,11 @@ import (
 
 // WithMaintenance holds the same authority locks as Run acquisition and startup.
 func WithMaintenance(ctx context.Context, root string, action func() error) error {
+	return WithSetupMaintenance(ctx, root, nil, action)
+}
+
+// WithSetupMaintenance admits only the exact pending setup worker.
+func WithSetupMaintenance(ctx context.Context, root string, own *SetupClaim, action func() error) error {
 	if err := validateRoot(root); err != nil {
 		return err
 	}
@@ -39,7 +44,7 @@ func WithMaintenance(ctx context.Context, root string, action func() error) erro
 		return fmt.Errorf("launch-in-progress")
 	}
 	defer releaseLaunch()
-	if err := InspectMaintenance(root); err != nil {
+	if err := InspectSetupMaintenance(root, own); err != nil {
 		return err
 	}
 	return action()
@@ -47,10 +52,17 @@ func WithMaintenance(ctx context.Context, root string, action func() error) erro
 
 // InspectMaintenance reads authority without creating lock files or directories.
 func InspectMaintenance(root string) error {
+	return InspectSetupMaintenance(root, nil)
+}
+
+func InspectSetupMaintenance(root string, own *SetupClaim) error {
 	if _, err := os.Lstat(root); os.IsNotExist(err) {
 		return nil
 	}
 	if err := validateRoot(root); err != nil {
+		return err
+	}
+	if err := inspectSetupClaim(root, own); err != nil {
 		return err
 	}
 	for _, name := range []string{"host-lock.json", "pending-request.json"} {

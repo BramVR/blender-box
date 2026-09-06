@@ -82,3 +82,38 @@ func TestMaintenanceAcceptsOnlyFullySettledReceipt(t *testing.T) {
 		t.Fatal("unsettled receipt accepted without Host Lock")
 	}
 }
+
+func TestPendingSetupFencesRunAdmissionAndUnrelatedMaintenance(t *testing.T) {
+	root := t.TempDir()
+	if err := os.Chmod(root, 0700); err != nil {
+		t.Fatal(err)
+	}
+	claim := SetupClaim{SchemaVersion: 1, InstallationID: "bbxi_" + strings.Repeat("a", 32), OperationID: "bbxo_" + strings.Repeat("b", 32), ExecutionToken: "bbxe_" + strings.Repeat("c", 32), RequestSHA256: strings.Repeat("d", 64), RootIdentity: "fake-root", OwnerSID: "fake-owner", Deadline: time.Now().Add(time.Minute).UTC()}
+	if err := WithMaintenance(context.Background(), root, func() error { return PublishSetupClaim(root, claim) }); err != nil {
+		t.Fatal(err)
+	}
+	service := NewService(Dependencies{})
+	if err := service.Acquire(context.Background(), root, AcquireRequest{SchemaVersion: 1, Claim: testHostClaim(time.Now(), "S")}); err == nil {
+		t.Fatal("pending setup admitted Run")
+	}
+	if err := WithMaintenance(context.Background(), root, func() error { t.Fatal("unrelated maintenance entered"); return nil }); err == nil {
+		t.Fatal("pending setup admitted maintenance")
+	}
+	if err := WithSetupMaintenance(context.Background(), root, &claim, func() error { return nil }); err != nil {
+		t.Fatal("exact worker denied", err)
+	}
+	changed := claim
+	changed.ExecutionToken = "bbxe_" + strings.Repeat("e", 32)
+	if err := WithSetupMaintenance(context.Background(), root, &changed, func() error { return nil }); err == nil {
+		t.Fatal("foreign worker admitted")
+	}
+	if err := os.WriteFile(filepath.Join(root, "pending-setup.json"), []byte(`{"schema_version":1,"schema_version":1}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.Acquire(context.Background(), root, AcquireRequest{SchemaVersion: 1, Claim: testHostClaim(time.Now(), "T")}); err == nil {
+		t.Fatal("malformed setup fence admitted Run")
+	}
+	if err := InspectMaintenance(root); err == nil {
+		t.Fatal("malformed setup fence appeared ready")
+	}
+}

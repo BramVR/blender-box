@@ -13,7 +13,7 @@ Use this guide to prove a candidate through the existing Windows Run path. The b
 
 Select an owned Windows desktop with a logged-in interactive user, a compatible daemon, and an existing target profile. The SSH user and interactive task must resolve to the same SID. Preserve the host's existing shared Host Lock root; creating another root is not a way to bypass activity on the desktop.
 
-Record the expected hostname, Windows build, Blender version, interactive identity SID, daemon executable hash, and exact target in a private operator document outside the repository. Retain the daemon source revision, any patch digest, wheel hash, installed-source verification, and Python version beside it. A package version alone does not prove the required `blender-box-v1` and `typed-call-error-reason` capabilities.
+Record the expected hostname, Windows build, Blender version, interactive identity SID, daemon executable hash, and exact target in a private operator document outside the repository. Retain the daemon source revision, any patch digest, wheel hash, installed-source verification, and Python version beside it. A package version alone does not prove the required `blender-box-v1` and `typed-call-error-reason` capabilities. The retired daemon setup-owner capability is not a runtime requirement.
 
 Use schema version 1 with these fields:
 
@@ -32,7 +32,7 @@ Keep secrets, resolved host details, and raw check output private. Do not copy a
 
 ## Run the candidate locally
 
-Use a macOS or Linux controller with Python 3.12, the repository's Go version, and a clean candidate checkout. Windows controllers are unsupported by this proof runner; Windows is the remote Blender host. Set the private configuration's permissions to `0600`. Supply the full commit SHA, private configuration, and a fresh proof-output directory outside the checkout or under its ignored `.blender-box/` directory. The output's parent must exist.
+Use Python 3.13 or newer on macOS, or Python 3.12 or newer on Linux, with the repository's Go version and a clean candidate checkout. Python added macOS support for [os.waitid](https://docs.python.org/3/library/os.html#os.waitid) in 3.13; the runner uses it to retain exact process-group ownership during cleanup. Windows controllers are unsupported by this proof runner; Windows is the remote Blender host. Set the private configuration's permissions to `0600`. Supply the full commit SHA, private configuration, and a fresh proof-output directory outside the checkout or under its ignored `.blender-box/` directory. The output's parent must exist.
 
 ```sh
 python3 scripts/onboarding_proof.py baseline \
@@ -80,7 +80,7 @@ The installer operator document uses schema version 1 and these fields:
 - `connection` contains `ssh_alias` and `windows_user`.
 - `expected_host` contains the same five expected-host fields as baseline. Its `daemon_sha256` is the pinned native broker artifact hash.
 - `fixture` contains `id`, `kind: "dedicated"`, and `state: "absent"`. `windows-onboarding-prepared-v1` is rejected.
-- `installation` contains `id` (`bbxi_` plus 32 lowercase hex characters), `state_root`, `task_name`, `blender`, `python`, and `target_out`. The exported target must be absent and outside the installation subtree. It remains after removal for recovery and review.
+- `installation` contains `id` (`bbxi_` plus 32 lowercase hex characters), `state_root`, `task_name`, `blender`, `python`, and `target_out`. The exported target must be absent and outside the entire state root. It remains after removal for recovery and review.
 - `bootstrap` contains its exact Windows `path`, byte `size`, and `sha256`.
 - `runtime` contains `local_manifest`, an absolute private controller path, and `remote_manifest` with Windows `path`, byte `size`, and `sha256`. Both copies must have identical bytes. Artifact `name` fields are exact absolute Windows paths already provisioned on the host.
 - `before_state` contains `installation_absent: true`, `task_absent: true`, `target_absent: true`, `unrelated_files`, and `unrelated_tasks`. Declare 1–32 unrelated files with `path`, `size`, and `sha256`, and 0–8 unrelated tasks with `name` and `xml_sha256`. Task hashes cover UTF-8 `Export-ScheduledTask` output. These exact fixtures remain outside the installation subtree.
@@ -102,7 +102,11 @@ python3 scripts/onboarding_proof.py host-install \
 
 Require the baseline outcomes plus `install-inspect`, `install-preview`, `install-apply`, `install-target`, `install-repeat`, `remove-preview`, `remove-apply`, `remove-repeat`, and `fixture-preserved`. The proof checks the before-state, inspects and previews, installs, fetches the generated target, runs readiness and the real Scenario, verifies exact recovery, repeats installation, previews and repeats removal, then compares unrelated fixtures. No target paths are hand-edited.
 
-Retain private CLI receipts and original target snapshots after failure. Remove only an installation whose ownership is known and whose Run is proven settled. Missing Run authority or unknown cleanup must retain the runtime for recovery. Successful removal retains the shared authority skeleton, receipt tombstone, and exported target.
+Retain private CLI receipts and original target snapshots after failure. Recover a lost setup response through fresh `setup status` using the recorded installation and operation IDs. If cancellation is needed, `setup stop --apply` must name the observed execution token. A cancellation receipt alone does not prove cleanup. Remove only an installation whose ownership is known and whose Run and installer execution are proven settled. Missing Run authority, unknown process-tree cleanup, or unsettled task mutation must retain the runtime and pending setup fence for recovery. Successful removal retains the shared authority skeleton, receipt tombstone, execution records, and exported target.
+
+Recovery polls an admitted execution whose process identities have not appeared yet. It keeps the original token, request hash, and deadline, then pins each process identity when observed. A later replacement or disappearance fails recovery. If cancellation is followed by a settled execution whose fence remains held, recovery requests exact-token reconciliation and observes status again within the same bounded budget.
+
+The observation budget starts before the first status request. Each status or stop receives the time remaining from that 15-second budget; expiry prevents another request. Settling an interrupted local command can still take the separate existing cleanup grace, so the budget is not a total shutdown-time guarantee.
 
 This sequence does not inject installation interruption, drop SSH deliberately, or exercise removal refusal during a live or kept Session. Those remain explicit `not_exercised` entries; local failure tests do not prove their native behavior. Native acceptance must cover those cases separately before closing the installation issue.
 
@@ -130,7 +134,11 @@ Dispatch only an explicitly authorized full candidate SHA through the trusted ma
 
 Upload only the runner's public projection and explicitly permitted validated viewport. Never upload private output, raw diagnostics, target documents, credential files, or an arbitrary Evidence Bundle glob. A viewport capture proves the scene, not Blender window chrome or the Windows desktop.
 
-The baseline accepts noninterlaced 8-bit RGB or RGBA PNG captures with valid pixel data and bounded numeric color or resolution metadata. Free-form metadata and unsupported encodings fail validation.
+The baseline accepts noninterlaced 8-bit RGB or RGBA PNG captures with valid pixel data and bounded numeric color or resolution metadata. This includes Blender's resolution-only EXIF layout and zero image origin. Other EXIF layouts, free-form metadata and unsupported encodings fail validation. Original capture bytes and hashes are preserved.
+
+Evidence validation and cleanup are separate outcomes. A rejected or missing retained image fails the proof while preserving cleanup facts established by matching public status and stop receipts.
+
+Local receipt or process setup failures still trigger graceful command cancellation and exact process-group cleanup. If cleanup cannot be verified, the runner reports it as unknown and stops further recovery commands.
 
 Inspect the actual hosted job conclusion and returned receipts. A missing, skipped, cancelled, fake-only, or merely local gate leaves the required proof incomplete. Local success does not establish environment policy or hosted reachability.
 

@@ -7,24 +7,31 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/BramVR/blender-box/internal/capture"
+	"github.com/BramVR/blender-box/internal/host"
 	"github.com/BramVR/blender-box/internal/orchestrator"
 	"github.com/BramVR/blender-box/internal/payload"
 	"github.com/BramVR/blender-box/internal/target"
+	"github.com/BramVR/blender-box/internal/uiaction"
 	"github.com/BramVR/blender-box/internal/windows"
+	"github.com/BramVR/blender-box/internal/windowsinstall"
 )
 
 type fakeSSH struct {
-	stdout  []byte
-	host    string
-	args    []string
-	stdin   []byte
-	uploads [][2]string
+	stdout    []byte
+	host      string
+	args      []string
+	stdin     []byte
+	uploads   [][2]string
+	runResult func([]string, []byte) ([]byte, error)
 }
 
 type fakeRunService struct {
@@ -39,7 +46,16 @@ type fakeRunService struct {
 }
 
 type noContactHost struct {
-	calls int
+	calls      int
+	inspection *orchestrator.HostInspection
+}
+
+func (fake *fakeRunService) Plan(intent orchestrator.PlanIntent) (orchestrator.PlanResult, error) {
+	return orchestrator.New(nil, "").Plan(intent)
+}
+
+func (fake *fakeRunService) Doctor(context.Context, orchestrator.PlanIntent) (orchestrator.DoctorResult, error) {
+	return orchestrator.DoctorResult{}, errors.New("unexpected doctor call")
 }
 
 func (host *noContactHost) unexpected() error {
@@ -47,7 +63,13 @@ func (host *noContactHost) unexpected() error {
 	return errors.New("unexpected host contact")
 }
 
-func (host *noContactHost) Inspect(context.Context, target.Target) error { return host.unexpected() }
+func (host *noContactHost) Inspect(context.Context, target.Target, orchestrator.HostRequirements) (orchestrator.HostInspection, error) {
+	host.calls++
+	if host.inspection != nil {
+		return *host.inspection, nil
+	}
+	return orchestrator.HostInspection{}, errors.New("unexpected host contact")
+}
 func (host *noContactHost) Acquire(context.Context, target.Target, orchestrator.LockClaim) error {
 	return host.unexpected()
 }
@@ -215,6 +237,75 @@ func TestRunCommandEmitsVersionedJSONAndPassesBoundedIntent(t *testing.T) {
 	}
 	if result.SchemaVersion != 1 || result.RunID != service.runIntent.RunID || result.SessionID == "" || !result.Cleanup.Known() {
 		t.Fatalf("result = %+v", result)
+	}
+}
+
+func TestPlanValidatesCaptureRequestsWithoutHostContact(t *testing.T) {
+	root := t.TempDir()
+	targetPath := writeTarget(t, root)
+	if err := os.WriteFile(filepath.Join(root, "scenario.py"), []byte("print('capture')\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	payloadPath := filepath.Join(root, "payload.json")
+	document := `{"schema_version":2,"files":[{"source":"scenario.py","destination":"scenario.py"}],"scenario":{"script":"scenario.py","capture_blender_window":true,"capture_desktop":true}}`
+	if err := os.WriteFile(payloadPath, []byte(document), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	host := &noContactHost{}
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+
+	exitCode := Run(context.Background(), []string{
+		"plan", "--target", targetPath, "--payload", payloadPath, "--json",
+	}, strings.NewReader(""), &stdout, &stderr, Dependencies{Runner: orchestrator.New(host, t.TempDir())})
+
+	if exitCode != 0 || stderr.Len() != 0 || host.calls != 0 {
+		t.Fatalf("exit = %d, stderr = %q, host calls = %d", exitCode, stderr.String(), host.calls)
+	}
+	var plan orchestrator.PlanResult
+	if err := json.Unmarshal(stdout.Bytes(), &plan); err != nil {
+		t.Fatalf("stdout is not JSON: %v\n%s", err, stdout.String())
+	}
+	if plan.Status != "pass" || len(plan.Captures) != 2 || !plan.Captures[1].PrivacySensitive {
+		t.Fatalf("plan = %+v", plan)
+	}
+}
+
+func TestDoctorReportsUnsupportedRequestedCapture(t *testing.T) {
+	root := t.TempDir()
+	targetPath := writeTarget(t, root)
+	if err := os.WriteFile(filepath.Join(root, "scenario.py"), []byte("print('capture')\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	payloadPath := filepath.Join(root, "payload.json")
+	document := `{"schema_version":2,"files":[{"source":"scenario.py","destination":"scenario.py"}],"scenario":{"script":"scenario.py","capture_desktop":true}}`
+	if err := os.WriteFile(payloadPath, []byte(document), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	inspection := orchestrator.HostInspection{
+		SchemaVersion: 1,
+		Status:        "pass",
+		Captures: []orchestrator.CaptureSupport{
+			{Kind: capture.Desktop, Capability: "capture-desktop-v1", Supported: false},
+		},
+	}
+	host := &noContactHost{inspection: &inspection}
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+
+	exitCode := Run(context.Background(), []string{
+		"doctor", "--target", targetPath, "--payload", payloadPath, "--json",
+	}, strings.NewReader(""), &stdout, &stderr, Dependencies{Runner: orchestrator.New(host, t.TempDir())})
+
+	if exitCode != 1 || host.calls != 1 {
+		t.Fatalf("exit = %d, host calls = %d, stderr = %q", exitCode, host.calls, stderr.String())
+	}
+	var result orchestrator.DoctorResult
+	if err := json.Unmarshal(stdout.Bytes(), &result); err != nil {
+		t.Fatalf("stdout is not JSON: %v\n%s", err, stdout.String())
+	}
+	if result.Status != "fail" || len(result.Host.Captures) != 1 || result.Host.Captures[0].Supported {
+		t.Fatalf("doctor = %+v", result)
 	}
 }
 
@@ -398,6 +489,26 @@ func TestWindowsSetupPlansWithoutSSHAndRequiresApplyForWrite(t *testing.T) {
 	}
 }
 
+func decodePowerShellCommand(t *testing.T, arguments []string) string {
+	t.Helper()
+	for index, argument := range arguments {
+		if argument != "-EncodedCommand" || index+1 >= len(arguments) {
+			continue
+		}
+		encoded, err := base64.StdEncoding.DecodeString(arguments[index+1])
+		if err != nil || len(encoded)%2 != 0 {
+			t.Fatalf("invalid PowerShell command: %v", err)
+		}
+		decoded := make([]byte, len(encoded)/2)
+		for offset := range decoded {
+			decoded[offset] = byte(binary.LittleEndian.Uint16(encoded[offset*2:]))
+		}
+		return string(decoded)
+	}
+	t.Fatalf("SSH arguments have no PowerShell command: %q", arguments)
+	return ""
+}
+
 func writeTarget(t *testing.T, root string) string {
 	t.Helper()
 	path := filepath.Join(root, "target.json")
@@ -427,6 +538,9 @@ func (fake *fakeSSH) Run(
 	fake.host = host
 	fake.args = append([]string(nil), args...)
 	fake.stdin = append([]byte(nil), stdin...)
+	if fake.runResult != nil {
+		return fake.runResult(args, stdin)
+	}
 	return fake.stdout, nil
 }
 
@@ -631,5 +745,280 @@ func TestWindowsCheckPrintsVersionedJSONWithoutRemoteWrites(t *testing.T) {
 	}
 	if stderr.Len() != 0 {
 		t.Fatalf("stderr = %q", stderr.String())
+	}
+}
+
+func TestNamedUIPlanAndDoctorInspectCanonicalWindowsTarget(t *testing.T) {
+	for _, publication := range []string{"import", "install-export", "install-save"} {
+		t.Run(publication, func(t *testing.T) {
+			root := filepath.Join(t.TempDir(), "private")
+			t.Setenv("BLENDER_BOX_CONFIG_DIR", root)
+			source := writeTarget(t, t.TempDir())
+			selected, err := target.Load(source)
+			if err != nil {
+				t.Fatal(err)
+			}
+			selector := []string{"--target-name", "studio"}
+			if publication == "import" {
+				if _, err := (target.Store{Root: root}).Import("studio", source, false); err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				executor := &setupExecutor{result: windowsinstall.Result{SchemaVersion: 1, State: "installed", Completion: "known", Target: &selected}}
+				args := []string{"setup", "install", "--platform", "windows", "--state-root", selected.Windows().WorkRoot, "--apply", "--json"}
+				if publication == "install-export" {
+					exportRoot := t.TempDir()
+					if err := os.Chmod(exportRoot, 0o700); err != nil {
+						t.Fatal(err)
+					}
+					exported := filepath.Join(exportRoot, "generated-target.json")
+					args = append(args, "--target-out", exported)
+					selector = []string{"--target", exported}
+				} else {
+					args = append(args, "--save-target", "studio")
+				}
+				var out, stderr bytes.Buffer
+				if code := Run(context.Background(), args, strings.NewReader(""), &out, &stderr, Dependencies{Setup: executor}); code != 0 {
+					t.Fatalf("target publication code=%d stdout=%s stderr=%s", code, &out, &stderr)
+				}
+			}
+			payloadPath := cliPayload(t)
+			document := `{"schema_version":3,"files":[{"source":"scenario.py","destination":"scenario.py"}],"scenario":{"script":"scenario.py","capture_blender_window":true,"ui_actions":{"schema_version":1,"timeout_seconds":10,"actions":[{"type":"text","text":"private entered text"}]}}}`
+			if err := os.WriteFile(payloadPath, []byte(document), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			calls := 0
+			ssh := &fakeSSH{}
+			ssh.runResult = func(arguments []string, input []byte) ([]byte, error) {
+				calls++
+				if calls == 1 {
+					return passingChecks(), nil
+				}
+				if calls != 2 || !strings.Contains(decodePowerShellCommand(t, arguments), "'host' 'capabilities'") {
+					t.Fatalf("unexpected inspection call %d", calls)
+				}
+				var request host.CapabilitiesRequest
+				if err := json.Unmarshal(input, &request); err != nil {
+					t.Fatal(err)
+				}
+				if !request.UIActions || request.SchemaVersion != 1 || request.BlenderExecutable != selected.Windows().BlenderExecutable || request.SessionBrokerExecutable != selected.Windows().SessionBrokerExecutable {
+					t.Fatalf("UI inspection request=%+v", request)
+				}
+				capabilities := host.CapabilitiesResponse{SchemaVersion: 1, Status: "pass", UIActions: &orchestrator.UIActionSupport{Capability: uiaction.Capability, Supported: true}}
+				for _, definition := range capture.Definitions() {
+					capabilities.Captures = append(capabilities.Captures, orchestrator.CaptureSupport{Kind: definition.Kind, Capability: definition.Capability, Supported: true})
+				}
+				return json.Marshal(capabilities)
+			}
+			dependencies := Dependencies{Runner: orchestrator.New(windows.NewAdapter(ssh), root)}
+			for _, command := range []string{"plan", "doctor"} {
+				var stdout, stderr bytes.Buffer
+				code := Run(context.Background(), append(append([]string{command}, selector...), "--payload", payloadPath, "--json"), strings.NewReader(""), &stdout, &stderr, dependencies)
+				if code != 0 || strings.Contains(stdout.String(), "private entered text") {
+					t.Fatalf("%s code=%d stderr=%s stdout=%s", command, code, &stderr, &stdout)
+				}
+				if command == "plan" && calls != 0 {
+					t.Fatal("plan contacted host")
+				}
+				if command == "doctor" && (calls != 2 || ssh.host != selected.SSHAlias()) {
+					t.Fatalf("doctor calls=%d alias=%s", calls, ssh.host)
+				}
+				if !strings.Contains(stdout.String(), "blender-window-before-actions.png") || !strings.Contains(stdout.String(), "blender-window-after-actions.png") {
+					t.Fatalf("UI capture inventory lost: %s", &stdout)
+				}
+			}
+			if _, err := os.Stat(filepath.Join(root, "runs")); !os.IsNotExist(err) {
+				t.Fatalf("read-only planning created Run journal: %v", err)
+			}
+
+			invalid := strings.Replace(document, `,"ui_actions":{"schema_version":1,"timeout_seconds":10,"actions":[{"type":"text","text":"private entered text"}]}`, "", 1)
+			if err := os.WriteFile(payloadPath, []byte(invalid), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			var stdout, stderr bytes.Buffer
+			code := Run(context.Background(), append(append([]string{"run"}, selector...), "--payload", payloadPath, "--json"), strings.NewReader(""), &stdout, &stderr, dependencies)
+			if code != 1 || calls != 2 || !strings.Contains(stdout.String(), "requires a UI action batch") {
+				t.Fatalf("invalid UI preflight code=%d calls=%d stdout=%s stderr=%s", code, calls, &stdout, &stderr)
+			}
+			if _, err := os.Stat(filepath.Join(root, "runs")); !os.IsNotExist(err) {
+				t.Fatalf("invalid UI preflight created Run journal: %v", err)
+			}
+		})
+	}
+}
+
+func TestRunJSONStopsAtWindowsStartAuthorityDrift(t *testing.T) {
+	for _, replay := range []bool{false, true} {
+		for _, field := range []string{"controller", "deadline", "hash"} {
+			t.Run(fmt.Sprintf("replay-%t-%s", replay, field), func(t *testing.T) {
+				root := filepath.Join(t.TempDir(), "private")
+				t.Setenv("BLENDER_BOX_CONFIG_DIR", root)
+				targetPath := writeTarget(t, t.TempDir())
+				var operations []string
+				starts := 0
+				ssh := &fakeSSH{}
+				ssh.runResult = func(arguments []string, input []byte) ([]byte, error) {
+					command := decodePowerShellCommand(t, arguments)
+					operation := "check"
+					for _, name := range []string{"acquire", "stage", "start", "status", "settle"} {
+						if strings.Contains(command, "'host' '"+name+"'") {
+							operation = name
+						}
+					}
+					operations = append(operations, operation)
+					switch operation {
+					case "check":
+						return passingChecks(), nil
+					case "acquire":
+						return json.Marshal(host.Acknowledgement{SchemaVersion: 1, Status: "acquired"})
+					case "stage":
+						return json.Marshal(host.Acknowledgement{SchemaVersion: 1, Status: "staged"})
+					case "start":
+						starts++
+						var request orchestrator.RunRequest
+						if err := json.Unmarshal(input, &request); err != nil {
+							t.Fatal(err)
+						}
+						receipt := orchestrator.RunReceipt{SchemaVersion: 1, Claim: request.Claim, State: orchestrator.StateStarting}
+						if replay && starts == 1 {
+							return json.Marshal(receipt)
+						}
+						switch field {
+						case "controller":
+							receipt.Claim.ControllerID = "replacement-controller"
+						case "deadline":
+							receipt.Claim.Deadline = receipt.Claim.Deadline.Add(time.Second)
+						case "hash":
+							receipt.Claim.RequestHash = strings.Repeat("0", 64)
+						}
+						return json.Marshal(receipt)
+					default:
+						return nil, errors.New("effect after changed authority")
+					}
+				}
+				var stdout, stderr bytes.Buffer
+				code := Run(context.Background(), []string{"run", "--target", targetPath, "--payload", cliPayload(t), "--evidence-dir", filepath.Join(t.TempDir(), "evidence"), "--json"}, strings.NewReader(""), &stdout, &stderr, Dependencies{Runner: orchestrator.New(windows.NewAdapter(ssh), root)})
+				want := []string{"check", "acquire", "stage", "start"}
+				if replay {
+					want = append(want, "start")
+				}
+				if code != 1 || !strings.Contains(stdout.String(), "insufficient recovery authority") || !slices.Equal(operations, want) {
+					t.Fatalf("code=%d operations=%v stdout=%s stderr=%s", code, operations, &stdout, &stderr)
+				}
+			})
+		}
+	}
+}
+
+func TestMalformedWindowsStartCannotHideConflictingPin(t *testing.T) {
+	for _, replay := range []bool{false, true} {
+		for _, shape := range []string{"schema", "ui"} {
+			for _, sameSession := range []bool{false, true} {
+				t.Run(fmt.Sprintf("replay-%t-%s-same-%t", replay, shape, sameSession), func(t *testing.T) {
+					root := filepath.Join(t.TempDir(), "private")
+					t.Setenv("BLENDER_BOX_CONFIG_DIR", root)
+					targetPath := writeTarget(t, t.TempDir())
+					selected, err := target.Load(targetPath)
+					if err != nil {
+						t.Fatal(err)
+					}
+					var runner *orchestrator.Runner
+					var pinnedReceipt orchestrator.RunReceipt
+					var operations []string
+					pinning := false
+					starts := 0
+					ssh := &fakeSSH{}
+					ssh.runResult = func(arguments []string, input []byte) ([]byte, error) {
+						command := decodePowerShellCommand(t, arguments)
+						operation := "check"
+						for _, name := range []string{"acquire", "stage", "start", "status", "settle"} {
+							if strings.Contains(command, "'host' '"+name+"'") {
+								operation = name
+							}
+						}
+						label := operation
+						if pinning {
+							label = "concurrent-status"
+						}
+						operations = append(operations, label)
+						switch operation {
+						case "check":
+							return passingChecks(), nil
+						case "acquire":
+							return json.Marshal(host.Acknowledgement{SchemaVersion: 1, Status: "acquired"})
+						case "stage":
+							return json.Marshal(host.Acknowledgement{SchemaVersion: 1, Status: "staged"})
+						case "status":
+							return json.Marshal(pinnedReceipt)
+						case "settle":
+							var request host.SettleRequest
+							if err := json.Unmarshal(input, &request); err != nil {
+								t.Fatal(err)
+							}
+							if request.Receipt.SessionID != pinnedReceipt.SessionID {
+								t.Fatal("cleanup Session changed")
+							}
+							pinnedReceipt.Cleanup = orchestrator.CleanupState{SessionStopped: true, PayloadRemoved: true, RunRootRemoved: true, LockReleased: true}
+							pinnedReceipt.State = orchestrator.StateFailed
+							return json.Marshal(host.SettleResponse{SchemaVersion: 1, Cleanup: pinnedReceipt.Cleanup})
+						case "start":
+							starts++
+							var request orchestrator.RunRequest
+							if err := json.Unmarshal(input, &request); err != nil {
+								t.Fatal(err)
+							}
+							receipt := orchestrator.RunReceipt{SchemaVersion: 1, Claim: request.Claim, State: orchestrator.StateStarting}
+							if replay && starts == 1 {
+								return json.Marshal(receipt)
+							}
+							pinnedReceipt = orchestrator.RunReceipt{SchemaVersion: 1, Claim: request.Claim, State: orchestrator.StateRunning, SessionID: "bss_concurrently-pinned-session-123456"}
+							pinning = true
+							_, err := runner.Status(context.Background(), selected, request.Claim.RunID)
+							pinning = false
+							if err != nil {
+								t.Fatal(err)
+							}
+							receipt.SessionID = "bss_different-start-session-123456"
+							if sameSession {
+								receipt.SessionID = pinnedReceipt.SessionID
+							}
+							if shape == "schema" {
+								receipt.SchemaVersion = 99
+							} else {
+								receipt.UIActions = &uiaction.Journal{SchemaVersion: 99}
+							}
+							return json.Marshal(receipt)
+						}
+						return nil, errors.New("unexpected operation")
+					}
+					runner = orchestrator.New(windows.NewAdapter(ssh), root)
+					var stdout, stderr bytes.Buffer
+					code := Run(context.Background(), []string{"run", "--target", targetPath, "--payload", cliPayload(t), "--evidence-dir", filepath.Join(t.TempDir(), "evidence"), "--json"}, strings.NewReader(""), &stdout, &stderr, Dependencies{Runner: runner})
+					want := []string{"check", "acquire", "stage", "start"}
+					if replay {
+						want = append(want, "start")
+					}
+					want = append(want, "concurrent-status")
+					if sameSession {
+						want = append(want, "settle", "status")
+					}
+					authorityFailure := strings.Contains(stdout.String(), "insufficient recovery authority")
+					if code != 1 || authorityFailure == sameSession || !slices.Equal(operations, want) {
+						t.Fatalf("code=%d operations=%v stdout=%s stderr=%s", code, operations, &stdout, &stderr)
+					}
+					var result orchestrator.RunResult
+					if err := json.Unmarshal(stdout.Bytes(), &result); err != nil {
+						t.Fatal(err)
+					}
+					shapeError := "schema"
+					if shape == "ui" {
+						shapeError = "invalid UI journal"
+					}
+					if sameSession && (!result.Cleanup.Known() || !strings.Contains(result.Error, shapeError)) {
+						t.Fatalf("same-Session shape failure lost cleanup or original error: %+v", result)
+					}
+				})
+			}
+		}
 	}
 }

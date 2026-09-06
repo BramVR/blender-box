@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/binary"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -12,6 +13,7 @@ import (
 	"time"
 	"unicode/utf16"
 
+	"github.com/BramVR/blender-box/internal/capture"
 	"github.com/BramVR/blender-box/internal/host"
 	"github.com/BramVR/blender-box/internal/orchestrator"
 	"github.com/BramVR/blender-box/internal/payload"
@@ -20,11 +22,13 @@ import (
 )
 
 type scriptedSSH struct {
-	outputs   [][]byte
-	arguments [][]string
-	inputs    [][]byte
-	uploads   []scriptedUpload
-	runHook   func()
+	outputs      [][]byte
+	arguments    [][]string
+	inputs       [][]byte
+	uploads      []scriptedUpload
+	runHook      func()
+	runResult    func(context.Context, int, []string, []byte) ([]byte, error)
+	uploadResult func(context.Context, int, string, string, string) error
 }
 
 type scriptedUpload struct {
@@ -34,7 +38,97 @@ type scriptedUpload struct {
 	contents    []byte
 }
 
-func (fake *scriptedSSH) Run(_ context.Context, _ string, arguments []string, input []byte) ([]byte, error) {
+func TestInspectReadsCaptureSupportFromInstalledHost(t *testing.T) {
+	checks := make([]map[string]any, 0, 10)
+	for _, id := range []string{
+		"host.windows", "host.console-user", "host.ssh-user", "host.limited-token-policy",
+		"blender.executable", "daemon.executable", "host.executable", "work-root.access",
+		"work-root.state-tree", "task.interactive",
+	} {
+		checks = append(checks, map[string]any{"id": id, "passed": true, "required": true})
+	}
+	checkResult := map[string]any{"schema_version": 1, "status": "pass", "checks": checks}
+	capabilities := host.CapabilitiesResponse{
+		SchemaVersion: 1,
+		Status:        "pass",
+		Captures: []orchestrator.CaptureSupport{
+			{Kind: capture.Viewport, Capability: "capture-viewport-v1", Supported: true},
+			{Kind: capture.BlenderWindow, Capability: "capture-blender-window-v1", Supported: true},
+			{Kind: capture.Desktop, Capability: "capture-desktop-v1", Supported: false},
+		},
+	}
+	fake := &scriptedSSH{outputs: [][]byte{mustJSON(t, checkResult), mustJSON(t, capabilities)}}
+
+	inspection, err := NewAdapter(fake).Inspect(context.Background(), adapterTarget(), orchestrator.HostRequirements{PayloadSchemaVersion: 2, Captures: []capture.Kind{capture.Desktop}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if inspection.Status != "pass" || len(inspection.Captures) != 3 || inspection.Captures[2].Supported {
+		t.Fatalf("inspection = %+v", inspection)
+	}
+	if string(fake.inputs[1]) != "{\"schema_version\":1}" {
+		t.Fatalf("legacy schema2 capabilities changed: %s", fake.inputs[1])
+	}
+	if len(fake.arguments) != 2 || !strings.Contains(decodedAdapterScript(t, fake.arguments[1]), "'host' 'capabilities'") {
+		t.Fatalf("host capability calls = %d", len(fake.arguments))
+	}
+}
+
+func TestInspectPreservesLegacyViewportWithoutHostCapabilityCommand(t *testing.T) {
+	checks := make([]map[string]any, 0, 10)
+	for _, id := range []string{
+		"host.windows", "host.console-user", "host.ssh-user", "host.limited-token-policy",
+		"blender.executable", "daemon.executable", "host.executable", "work-root.access",
+		"work-root.state-tree", "task.interactive",
+	} {
+		checks = append(checks, map[string]any{"id": id, "passed": true, "required": true})
+	}
+	checkResult := map[string]any{"schema_version": 1, "status": "pass", "checks": checks}
+	fake := &scriptedSSH{outputs: [][]byte{mustJSON(t, checkResult)}}
+
+	inspection, err := NewAdapter(fake).Inspect(context.Background(), adapterTarget(), orchestrator.HostRequirements{PayloadSchemaVersion: 1, Captures: []capture.Kind{capture.Viewport}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if inspection.Status != "pass" || len(inspection.Captures) != 1 || !inspection.Captures[0].Supported || inspection.Captures[0].Kind != capture.Viewport {
+		t.Fatalf("inspection = %+v", inspection)
+	}
+	if len(fake.arguments) != 1 {
+		t.Fatalf("legacy inspection made %d SSH calls", len(fake.arguments))
+	}
+}
+
+func TestInspectRequiresUpgradedHostCapabilitiesForSchema2Viewport(t *testing.T) {
+	capabilities := host.CapabilitiesResponse{SchemaVersion: 1, Status: "pass", Captures: []orchestrator.CaptureSupport{
+		{Kind: capture.Viewport, Capability: "capture-viewport-v1", Supported: true},
+		{Kind: capture.BlenderWindow, Capability: "capture-blender-window-v1", Supported: true},
+		{Kind: capture.Desktop, Capability: "capture-desktop-v1", Supported: true},
+	}}
+	fake := &scriptedSSH{outputs: [][]byte{passingAdapterCheck(t), mustJSON(t, capabilities)}}
+
+	inspection, err := NewAdapter(fake).Inspect(context.Background(), adapterTarget(), orchestrator.HostRequirements{PayloadSchemaVersion: 2, Captures: []capture.Kind{capture.Viewport}})
+	if err != nil || inspection.Status != "pass" {
+		t.Fatalf("inspection = %+v, error = %v", inspection, err)
+	}
+	if len(fake.arguments) != 2 {
+		t.Fatalf("schema 2 inspection made %d SSH calls", len(fake.arguments))
+	}
+}
+
+func passingAdapterCheck(t *testing.T) []byte {
+	t.Helper()
+	checks := make([]map[string]any, 0, 10)
+	for _, id := range []string{
+		"host.windows", "host.console-user", "host.ssh-user", "host.limited-token-policy",
+		"blender.executable", "daemon.executable", "host.executable", "work-root.access",
+		"work-root.state-tree", "task.interactive",
+	} {
+		checks = append(checks, map[string]any{"id": id, "passed": true, "required": true})
+	}
+	return mustJSON(t, map[string]any{"schema_version": 1, "status": "pass", "checks": checks})
+}
+
+func (fake *scriptedSSH) Run(ctx context.Context, _ string, arguments []string, input []byte) ([]byte, error) {
 	if fake.runHook != nil {
 		hook := fake.runHook
 		fake.runHook = nil
@@ -42,17 +136,26 @@ func (fake *scriptedSSH) Run(_ context.Context, _ string, arguments []string, in
 	}
 	fake.arguments = append(fake.arguments, append([]string(nil), arguments...))
 	fake.inputs = append(fake.inputs, append([]byte(nil), input...))
+	if fake.runResult != nil {
+		return fake.runResult(ctx, len(fake.arguments)-1, arguments, input)
+	}
+	if len(fake.outputs) == 0 {
+		return nil, fmt.Errorf("unexpected SSH call %d", len(fake.arguments)-1)
+	}
 	output := fake.outputs[0]
 	fake.outputs = fake.outputs[1:]
 	return output, nil
 }
 
-func (fake *scriptedSSH) Upload(_ context.Context, host, source, destination string) error {
+func (fake *scriptedSSH) Upload(ctx context.Context, host, source, destination string) error {
 	contents, err := os.ReadFile(source)
 	if err != nil {
 		return err
 	}
 	fake.uploads = append(fake.uploads, scriptedUpload{host: host, source: source, destination: destination, contents: contents})
+	if fake.uploadResult != nil {
+		return fake.uploadResult(ctx, len(fake.uploads)-1, host, source, destination)
+	}
 	return nil
 }
 
@@ -227,7 +330,7 @@ func TestEveryAdapterBoundaryRejectsZeroTargetBeforeEffects(t *testing.T) {
 	ctx := context.Background()
 	selected := target.Target{}
 	checks := []func() error{
-		func() error { return adapter.Inspect(ctx, selected) },
+		func() error { _, err := adapter.Inspect(ctx, selected, orchestrator.HostRequirements{}); return err },
 		func() error { return adapter.Acquire(ctx, selected, orchestrator.LockClaim{}) },
 		func() error { return adapter.Stage(ctx, selected, orchestrator.LockClaim{}, adapterPayload(t)) },
 		func() error { _, err := adapter.Start(ctx, selected, orchestrator.RunRequest{}); return err },
@@ -263,5 +366,25 @@ func TestAdapterStartRejectsChangedIntermediateClaimBeforeReplay(t *testing.T) {
 		if len(fake.arguments) != 1 {
 			t.Fatal("invalid intermediate receipt replayed")
 		}
+	}
+}
+
+func TestStartDoesNotReturnPartiallyDecodedReceipt(t *testing.T) {
+	claim := orchestrator.LockClaim{SchemaVersion: 1, RunID: "bbx_partial-start-run-123456", RequestID: "req_partial-start-request-123456", ControllerID: "controller", Deadline: time.Now().Add(time.Hour).UTC(), RequestHash: strings.Repeat("a", 64), TaskName: "BlenderBoxTest"}
+	for _, replay := range []bool{false, true} {
+		t.Run(fmt.Sprint(replay), func(t *testing.T) {
+			data := mustJSON(t, orchestrator.RunReceipt{SchemaVersion: 1, Claim: claim, State: orchestrator.StateStarting, SessionID: "bss_partial-start-session-123456"})
+			data = append(data[:len(data)-1], []byte(`,"unknown":true}`)...)
+			outputs := [][]byte{data}
+			if replay {
+				outputs = append([][]byte{mustJSON(t, orchestrator.RunReceipt{SchemaVersion: 1, Claim: claim, State: orchestrator.StateStarting})}, outputs...)
+			}
+			adapter := NewAdapter(&scriptedSSH{outputs: outputs})
+			adapter.pollInterval = 0
+			receipt, err := adapter.Start(context.Background(), adapterTarget(), orchestrator.RunRequest{Claim: claim})
+			if err == nil || receipt.Claim != (orchestrator.LockClaim{}) || receipt.SessionID != "" {
+				t.Fatalf("partially decoded authority escaped: %+v %v", receipt, err)
+			}
+		})
 	}
 }
