@@ -7,7 +7,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"reflect"
 	"syscall"
 	"testing"
 	"unsafe"
@@ -151,5 +153,38 @@ func TestSSHExecutablePathRefusesUntrustedApplicationDirectory(t *testing.T) {
 				t.Fatalf("untrusted application directory produced launch path %q: %v", path, err)
 			}
 		})
+	}
+}
+
+func TestSSHPreviewWindowsDACLBinding(t *testing.T) {
+	owner, reader, request := sshPreviewFixture(t)
+	reader.change = func(observed *sshNativeObservation) {
+		scope := newSSHReadScope(sshWindowsBackend{})
+		defer scope.Close()
+		image, err := scope.image(reader.config, maxSSHConfig)
+		if err != nil {
+			t.Fatal(err)
+		}
+		observed.Configuration = image
+	}
+	before, err := owner.previewSSH(context.Background(), request)
+	if err != nil || before.State != "previewed" {
+		t.Fatalf("before preview: %+v %v", before, err)
+	}
+	command := exec.Command(filepath.Join(os.Getenv("SystemRoot"), "System32", "icacls.exe"), reader.config, "/grant", "*S-1-1-0:(R)")
+	if output, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("task-file DACL change: %v %s", err, output)
+	}
+	inventory := sshInventory(t, filepath.Dir(request.StateRoot))
+	after, err := owner.previewSSH(context.Background(), request)
+	if err != nil || after.State != "previewed" {
+		t.Fatalf("after preview: %+v %v", after, err)
+	}
+	oldPin, newPin := before.Plan.Body.Configuration.Before.Pin, after.Plan.Body.Configuration.Before.Pin
+	if oldPin.Path.PhysicalID != newPin.Path.PhysicalID || oldPin.BytesSHA != newPin.BytesSHA || oldPin.Path.DescriptorSHA == newPin.Path.DescriptorSHA || before.Plan.PlanSHA256 == after.Plan.PlanSHA256 {
+		t.Fatal("native DACL change not bound independently of file identity and bytes")
+	}
+	if !reflect.DeepEqual(inventory, sshInventory(t, filepath.Dir(request.StateRoot))) {
+		t.Fatal("preview changed files after DACL observation")
 	}
 }

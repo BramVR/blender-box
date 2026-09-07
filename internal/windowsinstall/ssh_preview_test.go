@@ -8,7 +8,6 @@ import (
 	"io"
 	"io/fs"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"reflect"
 	"runtime"
@@ -491,33 +490,6 @@ func TestSSHPreviewNativePolicyLineEndings(t *testing.T) {
 		if _, _, err := sshPolicy([]byte(text)); err == nil {
 			t.Fatal("mixed or bare CR accepted")
 		}
-	}
-}
-
-func TestSSHPreviewWindowsDACLBinding(t *testing.T) {
-	if runtime.GOOS != "windows" {
-		t.Skip("native Windows handle security")
-	}
-	owner, reader, request := sshPreviewFixture(t)
-	before, err := owner.previewSSH(context.Background(), request)
-	if err != nil {
-		t.Fatal(err)
-	}
-	command := exec.Command(filepath.Join(os.Getenv("SystemRoot"), "System32", "icacls.exe"), reader.config, "/grant", "*S-1-1-0:(R)")
-	if output, err := command.CombinedOutput(); err != nil {
-		t.Fatalf("task-file DACL change: %v %s", err, output)
-	}
-	inventory := sshInventory(t, filepath.Dir(request.StateRoot))
-	after, err := owner.previewSSH(context.Background(), request)
-	if err != nil {
-		t.Fatal(err)
-	}
-	oldPin, newPin := before.Plan.Body.Configuration.Before.Pin, after.Plan.Body.Configuration.Before.Pin
-	if oldPin.Path.PhysicalID != newPin.Path.PhysicalID || oldPin.BytesSHA != newPin.BytesSHA || oldPin.Path.DescriptorSHA == newPin.Path.DescriptorSHA || before.Plan.PlanSHA256 == after.Plan.PlanSHA256 {
-		t.Fatal("native DACL change not bound independently of file identity and bytes")
-	}
-	if !reflect.DeepEqual(inventory, sshInventory(t, filepath.Dir(request.StateRoot))) {
-		t.Fatal("preview changed files after DACL observation")
 	}
 }
 
