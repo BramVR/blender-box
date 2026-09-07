@@ -608,3 +608,73 @@ func sshReadImage(path string, maximum int) (SSHByteImage, error) {
 	}
 	return SSHByteImage{Pin: SSHFilePin{Path: before, Size: int64(len(data)), BytesSHA: digest(data)}, Bytes: data}, nil
 }
+
+func TestSSHPolicyAcceptEnvOrderAndBounds(t *testing.T) {
+	t.Run("ordered-native-array", func(t *testing.T) {
+		forward, values, err := sshPolicy([]byte("port 22\nacceptenv LANG\nacceptenv LC_*\n"))
+		if err != nil || values["acceptenv"] != "LANG\nLC_*" || string(forward) != "acceptenv LANG\nacceptenv LC_*\nport 22\n" {
+			t.Fatalf("ordered AcceptEnv rejected or changed: output=%q values=%v error=%v", forward, values, err)
+		}
+		reverse, values, err := sshPolicy([]byte("port 22\nacceptenv LC_*\nacceptenv LANG\n"))
+		if err != nil || values["acceptenv"] != "LC_*\nLANG" || string(reverse) != "acceptenv LC_*\nacceptenv LANG\nport 22\n" {
+			t.Fatalf("reversed AcceptEnv rejected or changed: output=%q values=%v error=%v", reverse, values, err)
+		}
+		if digest(forward) == digest(reverse) {
+			t.Fatal("AcceptEnv ordering disappeared from policy digest")
+		}
+	})
+	for _, count := range []int{16, 17} {
+		t.Run(fmt.Sprintf("repetitions-%d", count), func(t *testing.T) {
+			var policy strings.Builder
+			var want []string
+			for i := 0; i < count; i++ {
+				value := fmt.Sprintf("VARIABLE_%02d", i)
+				want = append(want, value)
+				fmt.Fprintf(&policy, "acceptenv %s\n", value)
+			}
+			output, values, err := sshPolicy([]byte(policy.String()))
+			if count == 17 {
+				if err == nil || !strings.Contains(err.Error(), "excessive native policy repetitions") {
+					t.Fatalf("AcceptEnv repetition bound: %v", err)
+				}
+				return
+			}
+			if err != nil || string(output) != policy.String() || values["acceptenv"] != strings.Join(want, "\n") {
+				t.Fatalf("bounded AcceptEnv array rejected or changed: output=%q values=%v error=%v", output, values, err)
+			}
+		})
+	}
+}
+
+func TestSSHPreviewAcceptEnvConfiguration(t *testing.T) {
+	for name, directives := range map[string]string{"multivalue": "AcceptEnv LANG LC_*\r\n", "repeated": "AcceptEnv LANG\r\nAcceptEnv LC_*\r\n"} {
+		t.Run(name, func(t *testing.T) {
+			owner, reader, request := sshPreviewFixture(t)
+			config, err := os.ReadFile(reader.config)
+			if err != nil {
+				t.Fatal(err)
+			}
+			config = append(config, []byte(directives)...)
+			if _, err := sshConfig(config); err != nil {
+				t.Fatalf("supported AcceptEnv config rejected: %v", err)
+			}
+			if err := os.WriteFile(reader.config, config, 0600); err != nil {
+				t.Fatal(err)
+			}
+			reader.change = func(observed *sshNativeObservation) {
+				for i := range observed.Policies {
+					observed.Policies[i].Text = append(observed.Policies[i].Text, []byte("acceptenv LANG\nacceptenv LC_*\n")...)
+				}
+			}
+			result, err := owner.previewSSH(context.Background(), request)
+			if err != nil || result.Plan == nil {
+				t.Fatalf("supported config's native policy refused: %+v %v", result, err)
+			}
+			for _, policy := range result.Plan.Body.Policies {
+				if !bytes.HasSuffix(policy.NativeBefore, []byte("acceptenv LANG\nacceptenv LC_*\n")) || policy.BeforeSHA != digest(policy.NativeBefore) {
+					t.Fatalf("native AcceptEnv evidence changed: %+v", policy)
+				}
+			}
+		})
+	}
+}

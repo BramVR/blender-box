@@ -219,3 +219,59 @@ func TestSSHScopeHandleBudgetClosesEverything(t *testing.T) {
 		t.Fatal("closed scope reused")
 	}
 }
+
+type sshACLFile struct {
+	sshHeldFile
+	allowed uint32
+}
+
+func (f sshACLFile) trust(_ string, authority uint32) error {
+	if f.allowed&authority != 0 {
+		return fmt.Errorf("untrusted directory rights %#x", f.allowed)
+	}
+	return nil
+}
+func sshApplicationTrustFixture(t *testing.T, rootRights, applicationRights uint32) *sshReadScope {
+	t.Helper()
+	entries := fstest.MapFS{"directory": {Mode: fs.ModeDir | 0700}, "program.exe": {Mode: 0600}}
+	directory, _ := entries.Stat("directory")
+	executable, _ := entries.Stat("program.exe")
+	events := []string{}
+	scope := newSSHReadScope(nil)
+	for _, entry := range []struct {
+		path   string
+		info   fs.FileInfo
+		rights uint32
+	}{
+		{`C:\`, directory, rootRights},
+		{`C:\application`, directory, applicationRights},
+		{`C:\application\program.exe`, executable, 0},
+	} {
+		file := sshACLFile{&sshOrderFile{info: entry.info, name: entry.path, events: &events}, entry.rights}
+		scope.held[entry.path] = file
+		scope.order = append(scope.order, file)
+	}
+	t.Cleanup(func() { scope.Close() })
+	return scope
+}
+
+func TestSSHApplicationDirectoryRequiresFullWriterTrust(t *testing.T) {
+	for _, rights := range []uint32{0x2, 0x4, 0x6} {
+		t.Run(fmt.Sprintf("add-rights-%x", rights), func(t *testing.T) {
+			scope := sshApplicationTrustFixture(t, 0, rights)
+			if err := scope.trusted(`C:\application\program.exe`, "fixture"); err != nil {
+				t.Fatalf("ancestor policy unexpectedly broadened: %v", err)
+			}
+			if err := scope.trusted(`C:\application`, "fixture"); err == nil {
+				t.Fatal("application directory accepted untrusted create rights")
+			}
+		})
+	}
+	scope := sshApplicationTrustFixture(t, 0x6, 0)
+	if err := scope.trusted(`C:\application`, "fixture"); err != nil {
+		t.Fatalf("ordinary drive-root create rights refused: %v", err)
+	}
+	if err := scope.trusted(`C:\application\program.exe`, "fixture"); err != nil {
+		t.Fatalf("trusted executable refused: %v", err)
+	}
+}

@@ -182,7 +182,7 @@ func (s *sshNativeReader) inspectSSH(ctx context.Context, r SSHPreparationReques
 	if err != nil || keygenPin != observed.Keygen.Path {
 		return observed, fmt.Errorf("ssh-keygen changed before execution")
 	}
-	physicalKeygen, err := s.commandPath(facts.KeygenPath)
+	physicalKeygen, err := s.executablePath(facts.KeygenPath, receipt.Intent.OwnerSID)
 	if err != nil {
 		return observed, err
 	}
@@ -229,7 +229,7 @@ func (s *sshNativeReader) inspectSSH(ctx context.Context, r SSHPreparationReques
 		if err != nil {
 			return observed, err
 		}
-		physicalBinary, err := s.commandPath(facts.BinaryPath)
+		physicalBinary, err := s.executablePath(facts.BinaryPath, receipt.Intent.OwnerSID)
 		if err != nil {
 			return observed, err
 		}

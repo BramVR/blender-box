@@ -526,7 +526,7 @@ func sshPolicy(data []byte) ([]byte, map[string]string, error) {
 			return nil, nil, fmt.Errorf("excessive native policy repetitions")
 		}
 		if old, exists := values[key]; exists {
-			if key != "listenaddress" && key != "hostkey" {
+			if key != "listenaddress" && key != "hostkey" && key != "acceptenv" {
 				return nil, nil, fmt.Errorf("duplicate native policy key %s", key)
 			}
 			values[key] = old + "\n" + value

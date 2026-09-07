@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"path/filepath"
+	"time"
 	"unicode/utf16"
 )
 
@@ -18,6 +19,15 @@ func (s *sshNativeReader) commandPath(path string) (string, error) {
 		return "", err
 	}
 	return file.(*sshWindowsFile).physical, nil
+}
+func (s *sshNativeReader) executablePath(path, sid string) (string, error) {
+	if err := s.trusted(filepath.Dir(path), sid); err != nil {
+		return "", err
+	}
+	if err := s.trusted(path, sid); err != nil {
+		return "", err
+	}
+	return s.commandPath(path)
 }
 func (s *sshNativeReader) commandEnvironment() ([]string, error) {
 	system, err := systemDirectory()
@@ -46,10 +56,7 @@ func (s *sshNativeReader) powerShell(ctx context.Context, action string, input a
 		return nil, err
 	}
 	home := filepath.Join(system, "WindowsPowerShell", "v1.0")
-	if err := s.trusted(filepath.Join(home, "powershell.exe"), ""); err != nil {
-		return nil, err
-	}
-	executable, err := s.commandPath(filepath.Join(home, "powershell.exe"))
+	executable, err := s.executablePath(filepath.Join(home, "powershell.exe"), "")
 	if err != nil {
 		return nil, err
 	}
@@ -75,7 +82,9 @@ func (s *sshNativeReader) powerShell(ctx context.Context, action string, input a
 	for i, unit := range units {
 		binary.LittleEndian.PutUint16(encoded[i*2:], unit)
 	}
-	return runNative(ctx, executable, []string{"-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand", base64.StdEncoding.EncodeToString(encoded)}, data, environment)
+	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	return runNativeJobWithIntent(ctx, nativeTrustedPowerShell, executable, []string{"-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand", base64.StdEncoding.EncodeToString(encoded)}, data, environment, nil)
 }
 
 type sshReadMachine struct {
