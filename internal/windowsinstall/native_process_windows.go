@@ -50,7 +50,10 @@ type nativeAccounting struct {
 	Times                                                            [4]int64
 	PageFaults, TotalProcesses, ActiveProcesses, TerminatedProcesses uint32
 }
-type nativeJob struct{ handle, port syscall.Handle }
+type nativeJob struct {
+	handle, port syscall.Handle
+	collector    *nativeCollector
+}
 type nativeStartupInfo struct {
 	syscall.StartupInfo
 	Attributes unsafe.Pointer
@@ -88,53 +91,38 @@ func newNativeJob() (*nativeJob, error) {
 	return job, nil
 }
 func (job *nativeJob) close() {
-	if job.handle != 0 {
-		_ = syscall.CloseHandle(job.handle)
-		job.handle = 0
+	handle, port := job.handle, job.port
+	if handle == 0 && port == 0 {
+		return
 	}
-	if job.port != 0 {
-		_ = syscall.CloseHandle(job.port)
-		job.port = 0
+	job.handle, job.port = 0, 0
+	closeHandles := func() {
+		if job.collector != nil {
+			job.collector.members.close()
+		}
+		if handle != 0 {
+			_ = syscall.CloseHandle(handle)
+		}
+		if port != 0 {
+			_ = syscall.CloseHandle(port)
+		}
 	}
+	if job.collector != nil {
+		select {
+		case <-job.collector.done:
+		default:
+			go func() { <-job.collector.done; closeHandles() }()
+			return
+		}
+	}
+	closeHandles()
 }
 func (job *nativeJob) active() (uint32, error) {
-	var accounting nativeAccounting
-	if ok, _, err := nativeQueryJob.Call(uintptr(job.handle), 1, uintptr(unsafe.Pointer(&accounting)), unsafe.Sizeof(accounting), 0); ok == 0 {
-		return 0, fmt.Errorf("query native job activity: %w", err)
-	}
-	return accounting.ActiveProcesses, nil
+	counts, err := (nativeMemberWindows{job.handle}).counts()
+	return counts.active, err
 }
 func (job *nativeJob) terminateAndWait() error {
-	terminated, _, terminateErr := nativeTerminateJob.Call(uintptr(job.handle), 1)
-	deadline := time.Now().Add(nativeCleanupTimeout)
-	for {
-		active, err := job.active()
-		if err != nil {
-			return errors.Join(errNativeCleanupUnknown, err)
-		}
-		if active == 0 {
-			return nil
-		}
-		remaining := time.Until(deadline)
-		if remaining <= 0 {
-			if terminated == 0 {
-				return errors.Join(errNativeCleanupUnknown, fmt.Errorf("terminate native job: %w", terminateErr))
-			}
-			return fmt.Errorf("%w: %d processes still active", errNativeCleanupUnknown, active)
-		}
-		if remaining > 100*time.Millisecond {
-			remaining = 100 * time.Millisecond
-		}
-		var message uint32
-		var key, process uintptr
-		ok, _, err := nativeReadPort.Call(uintptr(job.port), uintptr(unsafe.Pointer(&message)), uintptr(unsafe.Pointer(&key)), uintptr(unsafe.Pointer(&process)), uintptr((remaining+time.Millisecond-1)/time.Millisecond))
-		if ok == 0 && err != syscall.Errno(syscall.WAIT_TIMEOUT) {
-			return errors.Join(errNativeCleanupUnknown, fmt.Errorf("wait native job activity: %w", err))
-		}
-		if ok != 0 && key != uintptr(job.handle) {
-			return fmt.Errorf("%w: unexpected native completion key", errNativeCleanupUnknown)
-		}
-	}
+	return job.settle(time.Now().Add(nativeCleanupTimeout))
 }
 
 func (job *nativeJob) start(executable string, args, environment []string, files [3]*os.File) (nativeSpawn, error) {
@@ -241,9 +229,10 @@ func (job *nativeJob) startFlags(executable string, args, environment []string, 
 }
 
 type nativeStream struct {
-	kind string
-	data []byte
-	err  error
+	kind  string
+	data  []byte
+	err   error
+	ioErr error
 }
 type nativeExit struct {
 	state *os.ProcessState
@@ -303,10 +292,7 @@ func runNativeJobGated(ctx context.Context, executable string, args []string, in
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	flags := uint32(0)
-	if gate != nil {
-		flags = 0x00000004
-	}
+	flags := uint32(0x00000004 | 0x00000008)
 	definitelyNotStarted = false
 	spawn, startErr := job.startFlags(executable, args, environment, [3]*os.File{stdinRead, stdoutWrite, stderrWrite}, flags)
 	if spawn.Info.Process == 0 && startErr != nil {
@@ -321,12 +307,18 @@ func runNativeJobGated(ctx context.Context, executable string, args []string, in
 	defer syscall.CloseHandle(spawn.Info.Process)
 	defer syscall.CloseHandle(spawn.Info.Thread)
 	abortStart := func(cause error) ([]byte, error) {
-		cleanupErr := job.terminateAndWait()
-		wait, err := syscall.WaitForSingleObject(spawn.Info.Process, uint32(nativeCleanupTimeout/time.Millisecond))
-		if err != nil || wait != syscall.WAIT_OBJECT_0 {
-			cleanupErr = errors.Join(cleanupErr, errNativeCleanupUnknown, fmt.Errorf("wait native spawn %d: event=%d error=%v", spawn.Info.ProcessId, wait, err))
+		deadline := time.Now().Add(nativeCleanupTimeout)
+		cleanupErr := job.settle(deadline)
+		if err := (nativeMemberWindows{}).wait(uintptr(spawn.Info.Process), deadline); err != nil {
+			cleanupErr = errors.Join(cleanupErr, errNativeCleanupUnknown, err)
+		}
+		if time.Until(deadline) <= 0 {
+			cleanupErr = errors.Join(cleanupErr, errNativeCleanupUnknown, fmt.Errorf("native startup cleanup deadline exceeded"))
 		}
 		return nil, errors.Join(cause, cleanupErr)
+	}
+	if err := job.collect(spawn); err != nil {
+		return abortStart(errors.Join(startErr, err))
 	}
 	if startErr != nil {
 		return abortStart(startErr)
@@ -335,9 +327,16 @@ func runNativeJobGated(ctx context.Context, executable string, args []string, in
 		if err := gate.Admit(spawn); err != nil {
 			return abortStart(err)
 		}
-		if result, _, err := nativeResumeThread.Call(uintptr(spawn.Info.Thread)); result != 1 {
-			return abortStart(fmt.Errorf("resume owned worker: %w", err))
+	}
+	if err := ctx.Err(); err != nil {
+		_, cleanupErr := abortStart(nil)
+		if cleanupErr == nil && gate != nil {
+			gate.TreeExited(spawn)
 		}
+		return nil, errors.Join(err, cleanupErr)
+	}
+	if result, _, err := nativeResumeThread.Call(uintptr(spawn.Info.Thread)); result != 1 {
+		return abortStart(fmt.Errorf("resume owned worker: %w", err))
 	}
 	// The original spawn handle pins this PID while os.FindProcess opens its wait handle.
 	process, err := os.FindProcess(int(spawn.Info.ProcessId))
@@ -349,11 +348,12 @@ func runNativeJobGated(ctx context.Context, executable string, args []string, in
 	streams := make(chan nativeStream, 3)
 	readStream := func(kind string, file *os.File, limit int64) {
 		data, err := io.ReadAll(io.LimitReader(file, limit+1))
+		ioErr := err
 		if int64(len(data)) > limit {
 			data = data[:limit]
 			err = fmt.Errorf("native %s exceeds limit", kind)
 		}
-		streams <- nativeStream{kind, data, err}
+		streams <- nativeStream{kind: kind, data: data, err: err, ioErr: ioErr}
 	}
 	stdoutLimit := int64(256 << 10)
 	if gate != nil {
@@ -363,14 +363,16 @@ func runNativeJobGated(ctx context.Context, executable string, args []string, in
 	go readStream("stderr", stderrRead, 64<<10)
 	go func() {
 		_, err := io.Copy(stdinWrite, bytes.NewReader(input))
-		_ = stdinWrite.Close()
+		closeErr := stdinWrite.Close()
 		if errors.Is(err, syscall.ERROR_BROKEN_PIPE) {
 			err = nil
 		}
-		streams <- nativeStream{kind: "stdin", err: err}
+		err = errors.Join(err, closeErr)
+		streams <- nativeStream{kind: "stdin", err: err, ioErr: err}
 	}()
 	var stdout, stderr []byte
 	var operationErr error
+	var cleanupErr error
 	var waited *nativeExit
 	remainingStreams := 3
 	receive := func(stream nativeStream) {
@@ -382,6 +384,9 @@ func runNativeJobGated(ctx context.Context, executable string, args []string, in
 			stderr = stream.data
 		}
 		operationErr = errors.Join(operationErr, stream.err)
+		if stream.ioErr != nil {
+			cleanupErr = errors.Join(cleanupErr, errNativeCleanupUnknown, stream.ioErr)
+		}
 	}
 	running := true
 	for running {
@@ -394,6 +399,7 @@ func runNativeJobGated(ctx context.Context, executable string, args []string, in
 			active, err := job.active()
 			if err != nil {
 				operationErr = errors.Join(operationErr, err)
+				cleanupErr = errors.Join(cleanupErr, errNativeCleanupUnknown, err)
 			} else if active != 0 {
 				operationErr = errors.Join(operationErr, fmt.Errorf("native operation left running descendants"))
 			}
@@ -405,21 +411,27 @@ func runNativeJobGated(ctx context.Context, executable string, args []string, in
 			}
 		}
 	}
-	cleanupErr := job.terminateAndWait()
+	deadline := time.Now().Add(nativeCleanupTimeout)
+	cleanupErr = errors.Join(cleanupErr, job.settle(deadline))
 	if cleanupErr != nil {
 		job.close()
 	}
 	if waited == nil {
+		timer := time.NewTimer(max(time.Until(deadline), 0))
+		defer timer.Stop()
 		select {
 		case result := <-exit:
 			waited = &result
-		case <-time.After(nativeCleanupTimeout):
+		case <-timer.C:
 			cleanupErr = errors.Join(cleanupErr, errNativeCleanupUnknown, fmt.Errorf("native root process did not finish"))
 		}
 	}
 	var exitErr error
 	if waited != nil {
 		operationErr = errors.Join(operationErr, waited.err)
+		if waited.err != nil {
+			cleanupErr = errors.Join(cleanupErr, errNativeCleanupUnknown, waited.err)
+		}
 		if waited.state == nil {
 			cleanupErr = errors.Join(cleanupErr, errNativeCleanupUnknown, fmt.Errorf("native root process has no exit state"))
 		}
@@ -427,7 +439,7 @@ func runNativeJobGated(ctx context.Context, executable string, args []string, in
 			exitErr = &exec.ExitError{ProcessState: waited.state}
 		}
 	}
-	drain := time.NewTimer(time.Second)
+	drain := time.NewTimer(max(time.Until(deadline), 0))
 	defer drain.Stop()
 	for remainingStreams > 0 {
 		select {
@@ -440,6 +452,9 @@ func runNativeJobGated(ctx context.Context, executable string, args []string, in
 			cleanupErr = errors.Join(cleanupErr, errNativeCleanupUnknown, fmt.Errorf("native pipe drain exceeded deadline"))
 			remainingStreams = 0
 		}
+	}
+	if time.Until(deadline) <= 0 {
+		cleanupErr = errors.Join(cleanupErr, errNativeCleanupUnknown, fmt.Errorf("native cleanup deadline exceeded"))
 	}
 	if cleanupErr == nil && gate != nil {
 		gate.TreeExited(spawn)

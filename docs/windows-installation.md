@@ -94,9 +94,13 @@ The result includes execution state, process state, deadline, process-tree clean
 
 Cancellation requested does not mean cleanup completed. Query status again and retain the JSON receipts. A settled execution can still hold its fence if the keeper died between recording proof and releasing authority; exact stop reconciles that release. Stop affects that execution only; a later explicit apply may resume the logical operation after the previous execution settles.
 
+Cancellation after admission but before the worker starts can leave process-tree cleanup known while task mutation remains unknown and the fence stays held. A physical cleanup receipt alone does not authorize release of that fence.
+
 Status and exact stop validate the account and state root without rediscovering Blender or Python. They still require the authenticated account to match the logged-in desktop user, enabled UAC, and the existing root ownership checks.
 
 An independent native keeper bounds installer execution even if SSH disconnects. An unknown outcome blocks new Runs and unrelated setup operations. Missing process IDs or an absent task do not establish cleanup. If the keeper dies before recording proof, or a Task Scheduler mutation remains unsettled, preserve the state for operator review.
+
+Process cleanup requires exact retained process handles and complete Job membership evidence within one five-second cleanup deadline. A missed fast child, failed process query, or exceeded collection limit leaves cleanup unknown even when the root process has exited. Preserve the pending fence and receipts in that state; do not clear them because the task list looks empty. The [ownership decision](architecture/0007-windows-installation-ownership.md) records the bounded installer workload assumptions and required native proof.
 
 Installation receipts live beneath `STATE_ROOT/installations/INSTALLATION_ID/`; execution records live beneath `STATE_ROOT/setup-operations/`. Do not delete receipts or pending setup authority to clear an error. A changed task, modified runtime file, interrupted operation, or active Run can prevent convergence.
 

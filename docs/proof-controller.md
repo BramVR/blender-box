@@ -96,7 +96,7 @@ The tests use temporary files and fake native boundaries. They exercise command 
 
 After exact enrollment approval, verify the installed artifacts and distinct account permissions on the owned Linux host. Qualify startup, exact stop, supervisor exit, service emptiness, storage flushes and locks, initiator disconnect, controller restart, and controller reboot. A service restart cannot substitute for a reboot test.
 
-The qualification receipt must bind the exact installed policy and artifact hashes. Preserve its real evidence. Bootstrap always renders an unqualified receipt and provides no command to manufacture qualification.
+The qualification receipt must bind the exact installed policy and artifact hashes. Preserve its real evidence. Bootstrap always renders an unqualified receipt and provides no command to manufacture qualification. The installed root helper supports bounded Linux and Windows qualification cases before ordinary dispatch opens. See [Qualify an installed proof controller](proof-controller-qualification.md) for authority, fixed cases, interruption, and original-Run cleanup.
 
 Verify the selected policy variant before hosted proof. The native worker projects it into `ProofRequest.proof` while retaining hosted execution and the original target and config directory. The protected driver consumes one authenticated inherited socket authorization before candidate commands. The authorization binds the root supervisor, worker process, native receipt, request, and retained inputs.
 
