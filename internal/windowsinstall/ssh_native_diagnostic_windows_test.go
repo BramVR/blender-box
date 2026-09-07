@@ -328,10 +328,9 @@ func sshDiagnosticStart(job *nativeJob, executable, workingDirectory string, arg
 }
 
 func sshDiagnosticGlobalRoot(reader *sshNativeReader, logical string) (string, error) {
-	finalPath := func(path string) (string, error) {
-		file, err := reader.open(path)
-		if err != nil {
-			return "", err
+	finalPath := func(file sshHeldFile) (string, error) {
+		if file == nil {
+			return "", fmt.Errorf("missing retained diagnostic handle")
 		}
 		var buffer [32768]uint16
 		length, _, callErr := sshKernel.NewProc("GetFinalPathNameByHandleW").Call(file.(*sshWindowsFile).Fd(), uintptr(unsafe.Pointer(&buffer[0])), uintptr(len(buffer)), 2)
@@ -343,7 +342,7 @@ func sshDiagnosticGlobalRoot(reader *sshNativeReader, logical string) (string, e
 		}
 		return syscall.UTF16ToString(buffer[:length]), nil
 	}
-	root, err := finalPath(logical[:3])
+	root, err := finalPath(reader.held[logical[:3]])
 	if err != nil {
 		return "", err
 	}
@@ -355,7 +354,7 @@ func sshDiagnosticGlobalRoot(reader *sshNativeReader, logical string) (string, e
 	if number, err := strconv.ParseUint(strings.TrimPrefix(root, prefix), 10, 32); err != nil || number == 0 {
 		return "", fmt.Errorf("invalid retained NT volume")
 	}
-	path, err := finalPath(logical)
+	path, err := finalPath(reader.held[logical])
 	if err != nil {
 		return "", err
 	}

@@ -63,7 +63,7 @@ jobs:
         with:
           python-version: "3.12"
       - name: Stream SSH native diagnostics
-        run: go test -json -count=1 -timeout=2m -run '^(TestSSHRetainedDirectoryDiagnostic|TestSSHNativeLaunchPathDiagnostic)$' ./internal/windowsinstall
+        run: go test -json -count=1 -timeout=2m -run '^(TestSSHRetainedDirectoryDiagnostic|TestSSHNativeLaunchPathDiagnostic|TestSSHWindowsRetainedReadRejectsWritersAndReenumerates)$' ./internal/windowsinstall
         shell: bash
       - run: ./scripts/ci all
         shell: bash
