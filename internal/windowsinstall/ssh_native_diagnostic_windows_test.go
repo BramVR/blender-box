@@ -3,6 +3,7 @@
 package windowsinstall
 
 import (
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/binary"
 	"encoding/json"
@@ -162,19 +163,31 @@ func TestSSHNativeLaunchPathDiagnostic(t *testing.T) {
 		binary.LittleEndian.PutUint16(encoded[i*2:], unit)
 	}
 	args := []string{"-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand", base64.StdEncoding.EncodeToString(encoded)}
+	if len(logical) < 3 || logical[1:3] != `:\` || !filepath.IsAbs(logical) {
+		t.Fatal("diagnostic requires a validated absolute DOS executable")
+	}
+	extended := `\\?\` + logical
 	for _, variant := range []struct {
-		name                  string
-		executable, directory string
-		environment           []string
+		name                          string
+		applicationShape, argv0Shape  string
+		application, argv0, directory string
+		environment                   []string
 	}{
-		{"dos-exe_dos-cwd_dos-env", logical, home, logicalEnvironment},
-		{"guid-exe_dos-cwd_dos-env", physical, home, logicalEnvironment},
-		{"dos-exe_guid-cwd_dos-env", logical, filepath.Dir(physical), logicalEnvironment},
-		{"guid-exe_guid-cwd_dos-env", physical, filepath.Dir(physical), logicalEnvironment},
-		{"dos-exe_dos-cwd_guid-env", logical, home, physicalEnvironment},
-		{"guid-exe_guid-cwd_guid-env", physical, filepath.Dir(physical), physicalEnvironment},
-		{"globalroot-exe_guid-cwd_guid-env", globalRoot, filepath.Dir(physical), physicalEnvironment},
-		{"globalroot-exe_globalroot-cwd_guid-env", globalRoot, filepath.Dir(globalRoot), physicalEnvironment},
+		{"app-D_argv0-D", "D", "D", logical, logical, home, logicalEnvironment},
+		{"app-G_argv0-D", "G", "D", physical, logical, home, logicalEnvironment},
+		{"app-D_argv0-G", "D", "G", logical, physical, home, logicalEnvironment},
+		{"app-R_argv0-D", "R", "D", globalRoot, logical, home, logicalEnvironment},
+		{"app-D_argv0-R", "D", "R", logical, globalRoot, home, logicalEnvironment},
+		{"app-E_argv0-D", "E", "D", extended, logical, home, logicalEnvironment},
+		{"app-D_argv0-E", "D", "E", logical, extended, home, logicalEnvironment},
+		{"dos-exe_dos-cwd_dos-env", "D", "D", logical, logical, home, logicalEnvironment},
+		{"guid-exe_dos-cwd_dos-env", "G", "G", physical, physical, home, logicalEnvironment},
+		{"dos-exe_guid-cwd_dos-env", "D", "D", logical, logical, filepath.Dir(physical), logicalEnvironment},
+		{"guid-exe_guid-cwd_dos-env", "G", "G", physical, physical, filepath.Dir(physical), logicalEnvironment},
+		{"dos-exe_dos-cwd_guid-env", "D", "D", logical, logical, home, physicalEnvironment},
+		{"guid-exe_guid-cwd_guid-env", "G", "G", physical, physical, filepath.Dir(physical), physicalEnvironment},
+		{"globalroot-exe_guid-cwd_guid-env", "R", "R", globalRoot, globalRoot, filepath.Dir(physical), physicalEnvironment},
+		{"globalroot-exe_globalroot-cwd_guid-env", "R", "R", globalRoot, globalRoot, filepath.Dir(globalRoot), physicalEnvironment},
 	} {
 		if !t.Run(variant.name, func(t *testing.T) {
 			job, err := newNativeJob()
@@ -195,8 +208,19 @@ func TestSSHNativeLaunchPathDiagnostic(t *testing.T) {
 					files[i] = write
 				}
 			}
-			spawn, launchErr := sshDiagnosticStart(job, variant.executable, variant.directory, args, variant.environment, files, 0x00000004)
-			row := map[string]any{"kind": "process", "variant": variant.name, "success": launchErr == nil, "pid": spawn.Info.ProcessId, "created": spawn.Created, "suspended": true, "script_units": len(units), "spawned": spawn.Info.Process != 0}
+			row := map[string]any{"kind": "process", "variant": variant.name, "application_shape": variant.applicationShape, "argv0_shape": variant.argv0Shape, "suspended": true, "script_units": len(units), "errno": uint32(0)}
+			spawn, launchErr := sshDiagnosticStart(job, variant.application, variant.argv0, variant.directory, args, variant.environment, files, 0x00000004, row)
+			if spawn.Info.Process != 0 {
+				defer syscall.CloseHandle(spawn.Info.Process)
+			}
+			if spawn.Info.Thread != 0 {
+				defer syscall.CloseHandle(spawn.Info.Thread)
+			}
+			initialCounts, initialCountsErr := (nativeMemberWindows{job.handle}).counts()
+			row["initial_total"], row["initial_active"], row["initial_counts_verified"] = initialCounts.total, initialCounts.active, initialCountsErr == nil
+			complete := spawn.Info.Process != 0 && spawn.Info.Thread != 0 && spawn.Info.ProcessId != 0
+			row["success"], row["pid"], row["created"] = launchErr == nil && complete && initialCountsErr == nil, spawn.Info.ProcessId, spawn.Created
+			row["spawned"], row["thread_handle"] = spawn.Info.Process != 0, spawn.Info.Thread != 0
 			if launchErr != nil {
 				row["error"] = launchErr.Error()
 				var errno syscall.Errno
@@ -204,22 +228,37 @@ func TestSSHNativeLaunchPathDiagnostic(t *testing.T) {
 					row["errno"] = uint32(errno)
 				}
 			}
-			if spawn.Info.Process != 0 {
-				defer syscall.CloseHandle(spawn.Info.Process)
-				defer syscall.CloseHandle(spawn.Info.Thread)
-				collectErr := job.collect(spawn)
+			if spawn.Info.Process != 0 || spawn.Info.Thread != 0 || spawn.Info.ProcessId != 0 || initialCountsErr != nil || initialCounts.total != 0 || initialCounts.active != 0 {
+				var collectErr, waitErr error
+				if spawn.Info.Process != 0 {
+					collectErr = job.collect(spawn)
+				}
 				deadline := time.Now().Add(nativeCleanupTimeout)
+				row["settlement_attempted"] = true
 				cleanupErr := job.settle(deadline)
-				waitErr := (nativeMemberWindows{}).wait(uintptr(spawn.Info.Process), deadline)
-				row["cleanup"] = cleanupErr == nil && waitErr == nil && collectErr == nil
+				if spawn.Info.Process != 0 {
+					waitErr = (nativeMemberWindows{}).wait(uintptr(spawn.Info.Process), deadline)
+				}
+				counts, countsErr := (nativeMemberWindows{job.handle}).counts()
+				row["exact_job_member"] = spawn.Info.Process != 0 && collectErr == nil
+				row["active_after_cleanup"], row["counts_verified"] = counts.active, countsErr == nil
+				row["cleanup"] = cleanupErr == nil && waitErr == nil && collectErr == nil && countsErr == nil && counts.active == 0
 				sshDiagnosticRecord(t, row)
-				if collectErr != nil || cleanupErr != nil || waitErr != nil {
-					t.Fatalf("exact Job cleanup: collect=%v settle=%v root=%v", collectErr, cleanupErr, waitErr)
+				if collectErr != nil || cleanupErr != nil || waitErr != nil || countsErr != nil || counts.active != 0 {
+					t.Fatalf("exact Job cleanup: collect=%v settle=%v root=%v counts=%v active=%d", collectErr, cleanupErr, waitErr, countsErr, counts.active)
+				}
+				if launchErr != nil || !complete || initialCountsErr != nil {
+					t.Fatalf("partial creation or authority failed: launch=%v complete=%v initial_counts=%v", launchErr, complete, initialCountsErr)
 				}
 			} else {
+				row["total_after_failure"], row["active_after_cleanup"] = initialCounts.total, initialCounts.active
+				row["counts_verified"], row["cleanup"], row["settlement_attempted"] = true, true, false
 				sshDiagnosticRecord(t, row)
+				if row["stage"] != sshDiagnosticCreateProcess || launchErr == nil {
+					t.Fatal("launch setup failed", launchErr)
+				}
 			}
-			if variant.name == "dos-exe_dos-cwd_dos-env" && launchErr != nil {
+			if (variant.name == "app-D_argv0-D" || variant.name == "dos-exe_dos-cwd_dos-env") && launchErr != nil {
 				t.Fatal("DOS control did not start", launchErr)
 			}
 		}) {
@@ -228,21 +267,28 @@ func TestSSHNativeLaunchPathDiagnostic(t *testing.T) {
 	}
 }
 
-func sshDiagnosticStart(job *nativeJob, executable, workingDirectory string, args, environment []string, files [3]*os.File, creationFlags uint32) (nativeSpawn, error) {
+type sshDiagnosticStage string
+
+const sshDiagnosticCreateProcess sshDiagnosticStage = "CreateProcessW"
+
+func sshDiagnosticStart(job *nativeJob, applicationName, argv0, workingDirectory string, args, environment []string, files [3]*os.File, creationFlags uint32, row map[string]any) (nativeSpawn, error) {
 	var spawn nativeSpawn
-	application, err := syscall.UTF16PtrFromString(executable)
+	row["stage"] = sshDiagnosticStage("encode-application")
+	applicationUnits, err := syscall.UTF16FromString(applicationName)
 	if err != nil {
 		return spawn, err
 	}
-	if !filepath.IsAbs(executable) {
+	if !filepath.IsAbs(applicationName) {
 		return spawn, fmt.Errorf("native executable must be absolute")
 	}
-	directory, err := syscall.UTF16PtrFromString(workingDirectory)
+	row["stage"] = sshDiagnosticStage("encode-directory")
+	directoryUnits, err := syscall.UTF16FromString(workingDirectory)
 	if err != nil {
 		return spawn, err
 	}
+	row["stage"] = sshDiagnosticStage("encode-command")
 	quoted := make([]string, 0, len(args)+1)
-	for _, arg := range append([]string{executable}, args...) {
+	for _, arg := range append([]string{argv0}, args...) {
 		if strings.ContainsRune(arg, 0) {
 			return spawn, fmt.Errorf("native argument contains NUL")
 		}
@@ -255,10 +301,12 @@ func sshDiagnosticStart(job *nativeJob, executable, workingDirectory string, arg
 	if environment == nil {
 		environment = os.Environ()
 	}
+	row["stage"] = sshDiagnosticStage("encode-environment")
 	block, err := nativeEnvironmentBlock(environment)
 	if err != nil {
 		return spawn, err
 	}
+	row["stage"] = sshDiagnosticStage("GetCurrentProcess")
 	self, err := syscall.GetCurrentProcess()
 	if err != nil {
 		return spawn, err
@@ -271,11 +319,13 @@ func sshDiagnosticStart(job *nativeJob, executable, workingDirectory string, arg
 			}
 		}
 	}()
+	row["stage"] = sshDiagnosticStage("DuplicateHandle")
 	for i, file := range files {
 		if err := syscall.DuplicateHandle(self, syscall.Handle(file.Fd()), self, &inherited[i], 0, true, syscall.DUPLICATE_SAME_ACCESS); err != nil {
 			return spawn, err
 		}
 	}
+	row["stage"] = sshDiagnosticStage("InitializeProcThreadAttributeList")
 	var size uintptr
 	attributeCount := uintptr(1)
 	if job != nil {
@@ -300,9 +350,11 @@ func sshDiagnosticStart(job *nativeJob, executable, workingDirectory string, arg
 		runtime.KeepAlive(inherited)
 		runtime.KeepAlive(jobs)
 	}()
+	row["stage"] = sshDiagnosticStage("UpdateProcThreadAttribute-handles")
 	if ok, _, err := nativeUpdateAttribute.Call(uintptr(attributes), 0, 0x00020002, uintptr(unsafe.Pointer(&inherited[0])), unsafe.Sizeof(inherited), 0, 0); ok == 0 {
 		return spawn, fmt.Errorf("set native inherited handles: %w", err)
 	}
+	row["stage"] = sshDiagnosticStage("UpdateProcThreadAttribute-job")
 	// JOB_LIST assigns the process before its initial thread can execute.
 	if job != nil {
 		if ok, _, err := nativeUpdateAttribute.Call(uintptr(attributes), 0, 0x0002000d, uintptr(unsafe.Pointer(&jobs[0])), unsafe.Sizeof(jobs), 0, 0); ok == 0 {
@@ -313,17 +365,35 @@ func sshDiagnosticStart(job *nativeJob, executable, workingDirectory string, arg
 	startup.Cb = uint32(unsafe.Sizeof(startup))
 	startup.Flags = syscall.STARTF_USESTDHANDLES
 	startup.StdInput, startup.StdOutput, startup.StdErr = inherited[0], inherited[1], inherited[2]
-	err = syscall.CreateProcess(application, &command[0], nil, nil, true, 0x00080000|syscall.CREATE_UNICODE_ENVIRONMENT|0x08000000|creationFlags, &block[0], directory, &startup.StartupInfo, &spawn.Info)
+	flags := uint32(0x00080000 | syscall.CREATE_UNICODE_ENVIRONMENT | 0x08000000 | creationFlags)
+	row["flags"], row["argv0_escaped"] = flags, quoted[0] != argv0
+	row["utf16_lengths_include_terminators"] = true
+	argumentUnits, err := syscall.UTF16FromString(strings.Join(quoted[1:], " "))
+	if err != nil {
+		return spawn, err
+	}
+	for label, input := range map[string][]uint16{"application": applicationUnits, "command_precall": command, "cwd": directoryUnits, "environment": block, "argument_tail": argumentUnits} {
+		encoded := make([]byte, len(input)*2)
+		for i, unit := range input {
+			binary.LittleEndian.PutUint16(encoded[i*2:], unit)
+		}
+		row[label+"_utf16_units"] = len(input)
+		row[label+"_sha256"] = fmt.Sprintf("%x", sha256.Sum256(encoded))
+	}
+	row["stage"] = sshDiagnosticCreateProcess
+	err = syscall.CreateProcess(&applicationUnits[0], &command[0], nil, nil, true, flags, &block[0], &directoryUnits[0], &startup.StartupInfo, &spawn.Info)
 	runtime.KeepAlive(command)
 	runtime.KeepAlive(block)
 	runtime.KeepAlive(startup)
 	if err != nil {
 		return spawn, fmt.Errorf("start native process in job: %w", err)
 	}
+	row["stage"] = sshDiagnosticStage("GetProcessTimes")
 	var exited, kernel, user syscall.Filetime
 	if err := syscall.GetProcessTimes(spawn.Info.Process, &spawn.Created, &exited, &kernel, &user); err != nil {
 		return spawn, fmt.Errorf("record native process creation: %w", err)
 	}
+	row["stage"] = sshDiagnosticStage("created-suspended")
 	return spawn, nil
 }
 
