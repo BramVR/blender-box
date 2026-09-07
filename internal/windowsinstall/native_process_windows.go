@@ -313,17 +313,21 @@ func runNativeJobWithIntent(ctx context.Context, intent nativeLaunchIntent, exec
 	}
 	definitelyNotStarted = false
 	spawn, startErr := job.startFlags(executable, args, environment, [3]*os.File{stdinRead, stdoutWrite, stderrWrite}, flags)
-	if spawn.Info.Process == 0 && startErr != nil {
-		definitelyNotStarted = true
+	if spawn.Info.Process != 0 {
+		defer syscall.CloseHandle(spawn.Info.Process)
+	}
+	if spawn.Info.Thread != 0 {
+		defer syscall.CloseHandle(spawn.Info.Thread)
 	}
 	_ = stdinRead.Close()
 	_ = stdoutWrite.Close()
 	_ = stderrWrite.Close()
 	if spawn.Info.Process == 0 {
-		return nil, startErr
+		members := newNativeMembers(nativeMemberWindows{job.handle})
+		defer members.close()
+		definitelyNotStarted, err = members.settleFailedStart(spawn != (nativeSpawn{}), startErr, time.Now().Add(nativeCleanupTimeout))
+		return nil, err
 	}
-	defer syscall.CloseHandle(spawn.Info.Process)
-	defer syscall.CloseHandle(spawn.Info.Thread)
 	abortStart := func(cause error) ([]byte, error) {
 		deadline := time.Now().Add(nativeCleanupTimeout)
 		cleanupErr := job.settle(deadline)

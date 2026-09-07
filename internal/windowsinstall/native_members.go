@@ -149,6 +149,24 @@ func (members *nativeMembers) event(message uint32, pid uintptr) bool {
 	return members.fault == nil
 }
 
+func (members *nativeMembers) settleFailedStart(hasReturnedIdentity bool, startErr error, deadline time.Time) (bool, error) {
+	failed := startErr != nil
+	if !failed {
+		startErr = fmt.Errorf("native start succeeded without a process")
+	}
+	var counts nativeJobCounts
+	if time.Until(deadline) > 0 {
+		counts = members.observeCounts()
+	}
+	if time.Until(deadline) <= 0 {
+		members.fail(fmt.Errorf("native cleanup deadline exceeded"))
+	}
+	if failed && !hasReturnedIdentity && members.fault == nil && counts.total == 0 && counts.active == 0 {
+		return true, startErr
+	}
+	return false, errors.Join(startErr, errNativeCleanupUnknown, members.settle(deadline))
+}
+
 func (members *nativeMembers) settle(deadline time.Time) error {
 	withinDeadline := func() bool {
 		if time.Until(deadline) > 0 {

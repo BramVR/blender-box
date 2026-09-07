@@ -102,6 +102,8 @@ Status and exact stop validate the account and state root without rediscovering 
 
 An independent native keeper bounds installer execution even if SSH disconnects. An unknown outcome blocks new Runs and unrelated setup operations. Missing process IDs or an absent task do not establish cleanup. If the keeper dies before recording proof, or a Task Scheduler mutation remains unsettled, preserve the state for operator review.
 
+If native startup fails without a returned process identity, retain the pending fence unless fresh Job accounting proves that no process was created. A later empty Job does not clear uncertain startup history.
+
 Process cleanup requires exact retained process handles and complete Job membership evidence within one five-second cleanup deadline. A missed fast child, failed process query, or exceeded collection limit leaves cleanup unknown even when the root process has exited. Preserve the pending fence and receipts in that state; do not clear them because the task list looks empty. The [ownership decision](architecture/0007-windows-installation-ownership.md) records the bounded installer workload assumptions and required native proof.
 
 Installation receipts live beneath `STATE_ROOT/installations/INSTALLATION_ID/`; execution records live beneath `STATE_ROOT/setup-operations/`. Do not delete receipts or pending setup authority to clear an error. A changed task, modified runtime file, interrupted operation, or active Run can prevent convergence.

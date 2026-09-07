@@ -19,6 +19,7 @@ type memberFixture struct {
 	nextHandle      uintptr
 	total           uint32
 	openErr         error
+	countErrors     []error
 	countsErr       error
 	listErr         error
 	terminateErr    error
@@ -61,10 +62,15 @@ func (fixture *memberFixture) close(handle uintptr) {
 }
 
 func (fixture *memberFixture) counts() (nativeJobCounts, error) {
+	err := fixture.countsErr
+	if len(fixture.countErrors) > 0 {
+		err = fixture.countErrors[0]
+		fixture.countErrors = fixture.countErrors[1:]
+	}
 	if len(fixture.countResults) > 0 {
 		result := fixture.countResults[0]
 		fixture.countResults = fixture.countResults[1:]
-		return result, fixture.countsErr
+		return result, err
 	}
 	var active uint32
 	for _, process := range fixture.processes {
@@ -72,7 +78,7 @@ func (fixture *memberFixture) counts() (nativeJobCounts, error) {
 			active++
 		}
 	}
-	return nativeJobCounts{fixture.total, active}, fixture.countsErr
+	return nativeJobCounts{fixture.total, active}, err
 }
 
 func (fixture *memberFixture) list() (nativeMemberList, error) {
@@ -360,5 +366,87 @@ func TestNativeMembersExpiredCaptureStillTerminatesWithoutAcknowledgment(t *test
 	defer members.close()
 	if err := members.settle(time.Now().Add(-time.Second)); !errors.Is(err, errNativeCleanupUnknown) || fixture.terminations != 1 || len(members.held) != 0 {
 		t.Fatalf("expired capture was accepted or termination skipped: %v", err)
+	}
+}
+
+func TestNativeMembersFailedStartProof(t *testing.T) {
+	for _, mode := range []string{"zero-history", "observed-total-one-active-zero", "partial-identity", "transient-accounting-error", "success-without-process", "retained-members", "terminate-error", "wait-error", "wait-budget-exhausted", "expired-deadline"} {
+		t.Run(mode, func(t *testing.T) {
+			fixture := newMemberFixture()
+			startErr := errors.New("original start failure")
+			cause := errors.New("boundary failure")
+			hasIdentity := false
+			deadline := fixture.now.Add(time.Second)
+			switch mode {
+			case "observed-total-one-active-zero":
+				fixture.total = 1
+			case "partial-identity":
+				hasIdentity = true
+			case "transient-accounting-error":
+				fixture.countErrors = []error{cause, nil, nil}
+			case "success-without-process":
+				startErr = nil
+			case "retained-members", "wait-error", "wait-budget-exhausted":
+				fixture.add(1)
+				fixture.add(2)
+				if mode == "wait-error" {
+					fixture.waitErr = cause
+				}
+				if mode == "wait-budget-exhausted" {
+					fixture.waitDuration = 4 * time.Second
+					deadline = fixture.now.Add(5 * time.Second)
+				}
+			case "terminate-error":
+				hasIdentity = true
+				fixture.terminateErr = cause
+			case "expired-deadline":
+				deadline = fixture.now.Add(-time.Second)
+			}
+			members := newNativeMembers(fixture)
+			defer members.close()
+			notStarted, err := members.settleFailedStart(hasIdentity, startErr, deadline)
+			if mode == "zero-history" {
+				if !notStarted || err != startErr || fixture.terminations != 0 || len(fixture.handles) != 0 {
+					t.Fatalf("zero-history proof lost: notStarted=%v err=%v terminations=%d", notStarted, err, fixture.terminations)
+				}
+				return
+			}
+			if notStarted || !errors.Is(err, errNativeCleanupUnknown) || fixture.terminations != 1 {
+				t.Fatalf("unproved failed start acknowledged: notStarted=%v err=%v terminations=%d", notStarted, err, fixture.terminations)
+			}
+			if startErr != nil && !errors.Is(err, startErr) {
+				t.Fatalf("original start error lost: %v", err)
+			}
+			if mode == "transient-accounting-error" || mode == "terminate-error" || mode == "wait-error" {
+				if !errors.Is(err, cause) {
+					t.Fatalf("boundary cause lost after settlement: %v", err)
+				}
+			}
+			if mode == "wait-budget-exhausted" {
+				signaled := 0
+				for _, process := range fixture.processes {
+					if process.signaled {
+						signaled++
+					}
+				}
+				if signaled != 1 || !fixture.now.Equal(deadline) || len(fixture.waitedDeadlines) != 2 {
+					t.Fatal("failed-start member waits did not consume one deadline")
+				}
+			}
+			if mode == "retained-members" {
+				if len(fixture.waitedDeadlines) != 2 || !fixture.processes[1].signaled || !fixture.processes[2].signaled {
+					t.Fatal("retained members were not waited")
+				}
+				for _, observed := range fixture.waitedDeadlines {
+					if observed != deadline {
+						t.Fatal("retained member received a replacement deadline")
+					}
+				}
+				members.close()
+				if fixture.closed != 2 || len(fixture.handles) != 0 {
+					t.Fatal("retained member handles leaked")
+				}
+			}
+		})
 	}
 }
