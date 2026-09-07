@@ -58,7 +58,7 @@ func powerShellWithTimeout(ctx context.Context, action string, input any, timeou
 	executable := filepath.Join(directory, "WindowsPowerShell", "v1.0", "powershell.exe")
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	return runNativeJob(ctx, executable, []string{"-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand", base64.StdEncoding.EncodeToString(encoded)}, data, powerShellEnvironment(os.Environ(), directory))
+	return runNativeJobWithIntent(ctx, nativeTrustedPowerShell, executable, []string{"-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand", base64.StdEncoding.EncodeToString(encoded)}, data, powerShellEnvironment(os.Environ(), directory), nil)
 }
 func (m nativeMachine) inspect(ctx context.Context, r Request) (Inspection, error) {
 	inspection := Inspection{BlenderCandidates: []Candidate{}}
