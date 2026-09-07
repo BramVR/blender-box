@@ -62,6 +62,9 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
+      - name: Stream SSH native diagnostics
+        run: go test -json -count=1 -timeout=2m -run '^(TestSSHRetainedDirectoryDiagnostic|TestSSHNativeLaunchPathDiagnostic)$' ./internal/windowsinstall
+        shell: bash
       - run: ./scripts/ci all
         shell: bash
 
