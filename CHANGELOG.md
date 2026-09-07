@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Add local pairing preparation and trusted-receipt reconciliation, schema-3 targets with pinned SSH identity, shared SSH/SCP credential policy and unchanged legacy fingerprints; native enrollment, revocation, SSH preparation and Windows client credential support remain unfinished.
+- Reserve pairing recovery state before credentials so oversized requests, concurrent preparation and interrupted publication do not leave undiscoverable private keys or change the original request on retry.
 - Add bounded root-only proof-controller qualification cases and original-Run cleanup authority while keeping ordinary dispatch closed until all native evidence is approved.
 - Add owned Windows runtime installation with pinned artifact manifests, preview, durable installation receipts, bounded execution status and recovery, generated targets, repeatable removal, and maintenance fencing; refuse legacy setup apply without ownership and prepare separately authorized host-install proof.
 - Start trusted Windows installer PowerShell commands suspended with `CREATE_NO_WINDOW` to restore execution and output while generic commands remain detached and suspended; retain exact Job-member handles, including any console helper, and require complete membership and physical exit proof within one cleanup deadline before reporting tree cleanup.

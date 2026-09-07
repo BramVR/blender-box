@@ -6,7 +6,7 @@ Run declared Blender Scenarios on an owned desktop from a developer checkout. Wi
 
 Blender Box sends a bounded Run Payload over SSH and starts the host entry point through the platform desktop launcher. A host-local [`blendersessiond`](https://github.com/BramVR/blendersessiond) owns the Blender process. The client returns a verified Evidence Bundle, then cleans up the exact Session that it started.
 
-Tailscale can provide private reachability, but Blender Box connects through a configured SSH alias. Blender's MCP add-on stays bound to host loopback.
+Tailscale can provide private reachability. Blender Box connects through an operator SSH alias or a paired target with a pinned endpoint and key. Blender's MCP add-on stays bound to host loopback.
 
 ## Project status
 
@@ -112,7 +112,7 @@ go run ./cmd/blender-box targets list --json
 go run ./cmd/blender-box targets show studio --json
 ```
 
-Import stores a copy. Changing or deleting the source file does not change the saved target. `show` displays the local operator configuration as a schema version 2 target, including profiles imported from version 1.
+Import stores a copy. Changing or deleting the source file does not change the saved target. `show` displays alias targets as schema version 2, including profiles imported from version 1. Paired targets retain schema version 3 and their complete connection identity.
 
 Names start with a lowercase ASCII letter and contain at most 63 lowercase letters, digits, underscores, or hyphens. Reserved Windows device names are rejected. A collision fails unless you pass `--replace`.
 
@@ -121,6 +121,24 @@ Import, list, show, and forget work offline. Forget removes only the saved local
 Every target-taking command accepts either `--target-name NAME` or `--target PATH`. Supply exactly one. There is no default target or automatic fallback. The examples below use `studio`; explicit file selection remains available.
 
 Saved profiles and Run recovery records use the operating system's user configuration directory under `blender-box`. Set `BLENDER_BOX_CONFIG_DIR` to an absolute, operator-owned directory to isolate another configuration. Preserve that directory for later recovery, even when using a custom Evidence Bundle directory.
+
+## Prepare local pairing
+
+The local pairing client accepts independently trusted host offers and enrollment receipts. Native offer creation, enrollment, revocation and SSH preparation are not implemented yet. This slice does not provide a complete onboarding flow or prove host readiness.
+
+On a POSIX client with `ssh-keygen`, an authorized test or integration can use these entrypoints with its trusted input files and independently verified digests:
+
+```sh
+blender-box pair prepare studio --offer /path/to/offer.json --trust-offer "$OFFER_DIGEST" --json
+blender-box pair status studio --json
+blender-box pair complete studio --receipt /path/to/receipt.json --trust-receipt "$RECEIPT_DIGEST" --json
+```
+
+Do not compute a digest from an untrusted file and treat that as host approval. Preparation reserves recovery state before retaining a private key and outputs only the durable public intent. Oversized requests refuse before credential creation. Repeating preparation after a failure or concurrent attempt preserves the original request and key. Completion verifies the original intent and saves a schema-3 target without replacing another profile. Readiness stays unchecked until `doctor` succeeds.
+
+Paired transport pins the host's Ed25519 key and the dedicated client key for both SSH and SCP. It refuses missing or changed credentials. Windows clients refuse paired credentials until native owner and ACL checks are available. Existing alias profiles remain supported.
+
+Keep pairing state private and retain it after an interrupted request. Local cancellation does not revoke a grant. See the [client pairing contract](docs/architecture/0008-client-pairing.md) for trust, recovery and unfinished host work.
 
 ## Set up the Windows host
 
@@ -230,7 +248,7 @@ To recover after renaming or forgetting a target, supply an original profile fil
 
 The local record preserves the original complete request claim and the first accepted Session identity. `stop` compares host receipts with that authority and stops only the exact Session. It never stops Blender by process name, port, executable path, or a guessed PID. Runs created before local recovery records existed require the original client and original target; this client cannot reconstruct missing authority from a selected host's reply.
 
-This check pins declared target configuration. SSH still resolves and authenticates the alias using operator-managed SSH configuration. A target digest does not pin DNS or replace SSH host-key trust. See the [target contract](docs/architecture/target-contract.md) for the boundary and storage rules.
+This check pins declared target configuration. Alias targets still use operator-managed SSH configuration. Paired targets also bind their direct endpoint, host public key and dedicated client-key fingerprint. Missing pairing credentials never fall back to an alias or another key. See the [target contract](docs/architecture/target-contract.md) for the boundary and storage rules.
 
 After cleanup, replace or forget a saved profile when needed:
 

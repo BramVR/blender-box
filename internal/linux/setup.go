@@ -72,7 +72,7 @@ func Setup(ctx context.Context, ssh SSH, selected target.Target, source string, 
 	}
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
 	defer cancel()
-	output, err := ssh.Run(ctx, selected.SSHAlias(), []string{"/usr/bin/python3 -I -S -B -c " + Quote(setupScript)}, input)
+	output, err := ssh.Run(ctx, selected.Connection(), []string{"/usr/bin/python3 -I -S -B -c " + Quote(setupScript)}, input)
 	if err != nil {
 		return SetupResult{}, fmt.Errorf("Linux setup apply: %w", err)
 	}

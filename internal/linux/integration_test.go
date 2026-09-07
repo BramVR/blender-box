@@ -111,8 +111,8 @@ type localServiceSSH struct {
 	dropStart, replacement bool
 }
 
-func (boundary *localServiceSSH) Run(ctx context.Context, alias string, args []string, input []byte) ([]byte, error) {
-	if alias != boundary.selected.SSHAlias() || len(args) != 1 {
+func (boundary *localServiceSSH) Run(ctx context.Context, connection target.Connection, args []string, input []byte) ([]byte, error) {
+	if connection.Alias() != boundary.selected.SSHAlias() || len(args) != 1 {
 		return nil, errors.New("unexpected SSH routing")
 	}
 	config := boundary.selected.Linux()

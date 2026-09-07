@@ -18,10 +18,11 @@ const MaxDocumentSize = 64 << 10
 var sshAliasPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$`)
 
 type Target struct {
-	platform string
-	alias    string
-	windows  windowstarget.Config
-	linux    linuxtarget.Config
+	connection Connection
+	platform   string
+	alias      string
+	windows    windowstarget.Config
+	linux      linuxtarget.Config
 }
 
 type document struct {
@@ -53,8 +54,8 @@ func (value Target) Validate() error {
 	if value.platform != "windows" && value.platform != "linux" {
 		return fmt.Errorf("target platform must be windows or linux")
 	}
-	if !sshAliasPattern.MatchString(value.alias) {
-		return fmt.Errorf("target ssh_alias is unsafe")
+	if err := value.Connection().Validate(); err != nil {
+		return err
 	}
 	if value.platform == "linux" {
 		return value.linux.Validate()
@@ -64,6 +65,22 @@ func (value Target) Validate() error {
 func (value Target) MarshalJSON() ([]byte, error) {
 	if err := value.Validate(); err != nil {
 		return nil, err
+	}
+	if direct, paired := value.Connection().Direct(); paired {
+		if value.platform == "linux" {
+			return json.Marshal(struct {
+				SchemaVersion int                `json:"schema_version"`
+				Platform      string             `json:"platform"`
+				SSH           DirectSSH          `json:"ssh"`
+				Linux         linuxtarget.Config `json:"linux"`
+			}{3, "linux", direct, value.linux})
+		}
+		return json.Marshal(struct {
+			SchemaVersion int                  `json:"schema_version"`
+			Platform      string               `json:"platform"`
+			SSH           DirectSSH            `json:"ssh"`
+			Windows       windowstarget.Config `json:"windows"`
+		}{3, "windows", direct, value.windows})
 	}
 	if value.platform == "linux" {
 		return json.Marshal(struct {
@@ -135,7 +152,43 @@ func Decode(content []byte) (Target, error) {
 			return Target{}, fmt.Errorf("unsupported target platform")
 		}
 		return NewWindows(wire.SSHAlias, wire.Windows)
+	case 3:
+		var platform string
+		if err := json.Unmarshal(fields["platform"], &platform); err != nil {
+			return Target{}, fmt.Errorf("invalid target platform")
+		}
+		if platform == "linux" {
+			var wire struct {
+				SchemaVersion int                `json:"schema_version"`
+				Platform      string             `json:"platform"`
+				SSH           DirectSSH          `json:"ssh"`
+				Linux         linuxtarget.Config `json:"linux"`
+			}
+			if err := strictjson.Decode(content, &wire); err != nil {
+				return Target{}, err
+			}
+			return NewPaired(Target{platform: "linux", linux: wire.Linux}, wire.SSH)
+		}
+		var wire struct {
+			SchemaVersion int                  `json:"schema_version"`
+			Platform      string               `json:"platform"`
+			SSH           DirectSSH            `json:"ssh"`
+			Windows       windowstarget.Config `json:"windows"`
+		}
+		if err := strictjson.Decode(content, &wire); err != nil {
+			return Target{}, err
+		}
+		return NewPaired(Target{platform: wire.Platform, windows: wire.Windows}, wire.SSH)
 	default:
-		return Target{}, fmt.Errorf("target schema_version must be 1 or 2")
+		return Target{}, fmt.Errorf("target schema_version must be 1, 2 or 3")
 	}
+}
+
+func (value *Target) UnmarshalJSON(data []byte) error {
+	decoded, err := Decode(data)
+	if err != nil {
+		return err
+	}
+	*value = decoded
+	return nil
 }

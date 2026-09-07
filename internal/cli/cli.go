@@ -47,6 +47,8 @@ func Run(ctx context.Context, args []string, stdin io.Reader, stdout io.Writer, 
 		return 2
 	}
 	switch args[0] {
+	case "pair":
+		return pairCommand(ctx, args[1:], stdout, stderr, dependencies)
 	case "setup":
 		return setupCommand(ctx, args[1:], stdout, stderr, dependencies)
 	case "targets":
@@ -84,6 +86,7 @@ func Run(ctx context.Context, args []string, stdin io.Reader, stdout io.Writer, 
 
 func printUsage(output io.Writer) {
 	fmt.Fprintln(output, "usage:")
+	fmt.Fprintln(output, "  blender-box pair prepare|complete|status NAME [--help]")
 	fmt.Fprintln(output, "  blender-box setup inspect|install|remove --platform windows --state-root PATH [--apply] [--json]")
 	fmt.Fprintln(output, "  blender-box setup manifest --host-binary PATH --broker-launcher PATH --daemon-wheel PATH --source-commit SHA --daemon-source-commit SHA --patch-sha256 SHA --recipe-sha256 SHA --out PATH")
 	fmt.Fprintln(output, "  blender-box targets import NAME --file PATH [--replace] [--json]\n  blender-box targets list [--json]\n  blender-box targets show NAME [--json]\n  blender-box targets forget NAME [--json]")
