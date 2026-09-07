@@ -61,7 +61,7 @@ class PublicAdoptionTests(unittest.TestCase):
     def start(self, operation):
         self.assertEqual(operation, "start")
         self.starts += 1
-        pending = native.parse_intent(self.files.read(self.fixture.runtime / "pending.json"))
+        pending = native.Selector.parse(self.files.read(self.fixture.runtime / "pending.json")).intent
         info = self.fixture.group.stat()
         inv = replace(fixtures.invocation(), request_digest=self.req.digest, attempt=pending["attempt"])
         self.receipt = native.NativeReceipt(inv, 3000, info.st_dev, info.st_ino)
@@ -161,7 +161,7 @@ class PublicAdoptionTests(unittest.TestCase):
         self.stranded()
         pending = self.fixture.runtime / "pending.json"
         original = self.files.read(pending)
-        self.files.publish(pending, model.proof.canonical(dict(model.document(original), attempt=2)), exclusive=False)
+        self.files.publish(pending, model.proof.canonical(native.Selector.create("operational", native.Selector.parse(original).intent | {"attempt": 2}).wire()), exclusive=False)
         self.assertEqual(self.dispatch("stop")[0], 1)
         self.files.publish(pending, original, exclusive=False)
         self.ops.process.side_effect = lambda pid: replace(self.process(pid), start=9999) if pid == 301 else self.process(pid)
@@ -214,7 +214,7 @@ class ProtectedProofTests(unittest.TestCase):
         intent = {"schema_version": 1, "execution_id": req.execution_id, "attempt": 2,
                   "request_digest": req.digest, "mode": "recover"}
         files.publish(control / "intent-0002.json", model.proof.canonical(intent))
-        files.publish(runtime / "pending.json", model.proof.canonical(intent))
+        files.publish(runtime / "pending.json", model.proof.canonical(native.Selector.create("operational", intent).wire()))
         def receipt():
             return native.NativeReceipt(current["inv"], 3000, info.st_dev, info.st_ino)
         files.publish(control / "native-0002.json", model.proof.canonical(asdict(receipt())))
@@ -236,7 +236,7 @@ class ProtectedProofTests(unittest.TestCase):
         ops.process.side_effect = lambda pid: native.Process(300, 1, 3000, native.UNIT_CGROUP) if pid == 300 else native.Process(
             301, 300, 4001, current["inv"].cgroup)
         def start(operation):
-            pending = native.parse_intent(files.read(runtime / "pending.json"))
+            pending = native.Selector.parse(files.read(runtime / "pending.json")).intent
             current.update(inv=replace(current["inv"], attempt=pending["attempt"]), empty=False)
             files.publish(native.receipt_path(current["inv"]), model.proof.canonical(asdict(receipt())))
         ops.systemctl.side_effect = start

@@ -35,6 +35,7 @@ SHA = r"[0-9a-f]{40}"
 HASH = r"[0-9a-f]{64}"
 RUN_ID = r"bbx_[A-Za-z0-9_-]{16,64}"
 FIXTURE = Path(__file__).resolve().parents[1] / "tests/fixtures/onboarding-baseline"
+QUALIFICATION_HOLD_FIXTURE = FIXTURE.parent / "qualification-windows-hold"
 BASELINE_RESULT = {"schema_version": 1, "status": "pass", "object": "OnboardingCube",
                    "type": "MESH", "vertices": 8, "edges": 12, "faces": 6}
 
@@ -751,6 +752,86 @@ class WindowsProofHost:
         return {"daemon_capabilities": list(CAPABILITIES), "blender_version": operator.expected["blender_version"]}
 
 
+def active_qualification_checkpoint(job, commands_factory=Commands):
+    import proof_controller as model
+    import proof_controller_native as native
+
+    require(os.getuid() == os.geteuid() != 0, "qualification-checkpoint-runner-required")
+    end = time.monotonic() + 600
+    model.private_directory(job.root)
+
+    def wait_path(path, limit=None):
+        require(path.is_relative_to(job.root), "qualification-checkpoint-path-invalid")
+        if path.parent != job.root:
+            wait_path(path.parent)
+
+        def ready():
+            try:
+                if limit is not None:
+                    if path.stat().st_size == 0:
+                        return None
+                    return model.read_private(path, limit)
+                model.private_directory(path)
+                return path
+            except FileNotFoundError:
+                return None
+
+        remaining = end - time.monotonic()
+        require(remaining > 0, "qualification-checkpoint-timeout")
+        return native.wait_file(path, ready, remaining)
+
+    marker_raw = wait_path(job.output / "private/run-journal.json", 4096)
+    marker = document(marker_raw)
+    require(set(marker) == {"schema_version", "run_id"} and matches(RUN_ID, marker["run_id"]),
+            "run-locator-unavailable")
+    journal = job.config / "runs" / (marker["run_id"] + ".json")
+    pin_path = journal.with_suffix(".session.json")
+    claim_raw, pin_raw = wait_path(journal, 16 << 10), wait_path(pin_path, 16 << 10)
+    claim_record, pin = document(claim_raw), document(pin_raw)
+    require(set(claim_record) == {"schema_version", "claim", "target_fingerprint"}
+            and set(pin) == {"schema_version", "run_id", "claim", "target_fingerprint", "session_id"}
+            and matches(HASH, claim_record["target_fingerprint"])
+            and pin["claim"] == claim_record["claim"]
+            and pin["target_fingerprint"] == claim_record["target_fingerprint"]
+            and pin["run_id"] == marker["run_id"], "qualification-checkpoint-authority-invalid")
+    claim = claim_record["claim"]
+    require(isinstance(claim, dict)
+            and set(claim) == {"schema_version", "run_id", "request_id", "controller_id", "deadline",
+                              "request_hash", "task_name"}
+            and all(isinstance(claim[key], str) and claim[key].strip() for key in ("controller_id", "task_name"))
+            and claim["run_id"] == marker["run_id"], "qualification-checkpoint-authority-invalid")
+    fence = Fence.parse(dict(claim, session_id=pin["session_id"]))
+    model.verify_worker_inputs(job)
+    private = job.output / "private"
+    client, target = private / "blender-box", private / "target.json"
+    target_raw = model.read_private(target)
+    require(target_raw == model.read_private(job.root / "inputs/target.json"), "original-inputs-unavailable")
+    command_root = job.attempt_root / "active-commands"
+    model.private_directory(command_root, create=True)
+    commands = commands_factory(command_root, job.candidate_checkout)
+    commands.env["BLENDER_BOX_CONFIG_DIR"] = str(job.config)
+    configure_ssh(commands, job.root / "inputs/ssh-config")
+    require(digest(model.read_private(client, 128 << 20)) == job.expected_client_sha256, "client-artifact-mismatch")
+    status = commands.json([client, "status", "--target", target, "--run", fence.run_id,
+                            "--timeout", "60s", "--json"], timeout=100, recovery=True)
+    observed = datetime.datetime.now(datetime.timezone.utc)
+    require(Fence.parse(status) == fence and status.get("state") in ("running", "calling")
+            and not status.get("error"), "qualification-run-not-active")
+    require((datetime.datetime.fromisoformat(fence.deadline.replace("Z", "+00:00")) - observed).total_seconds() >= 900,
+            "qualification-checkpoint-deadline")
+    require(model.read_private(journal, 16 << 10) == claim_raw
+            and model.read_private(pin_path, 16 << 10) == pin_raw
+            and model.read_private(private / "run-journal.json", 4096) == marker_raw
+            and model.read_private(target) == target_raw, "qualification-checkpoint-authority-changed")
+    model.verify_worker_inputs(job)
+    return {"schema_version": 1, "kind": "windows-active-checkpoint", "execution_id": job.request.execution_id,
+            "attempt": job.attempt, "inputs_digest": job.inputs_digest, **dataclasses.asdict(fence),
+            "marker_sha256": digest(marker_raw), "claim_sha256": digest(claim_raw),
+            "session_pin_sha256": digest(pin_raw), "client_sha256": job.expected_client_sha256,
+            "target_sha256": digest(target_raw), "status_sha256": digest(canonical(status)),
+            "observed_at": observed.isoformat()}
+
+
 def baseline(request, commands_factory=Commands, host=None, *, native_authority=None):
     host = host or WindowsProofHost()
     request.output.mkdir(mode=0o700, parents=False, exist_ok=False)
@@ -776,6 +857,8 @@ def baseline(request, commands_factory=Commands, host=None, *, native_authority=
     selector = ["--target", target_path]
     catalog_attempted, replacement_attempted = False, False
     old_signals = {}
+    qualification = None
+    fixture, run_timeout, command_timeout = FIXTURE, "20m", 1320
     if threading.current_thread() is threading.main_thread():
         for sig in (signal.SIGINT, signal.SIGTERM):
             old_signals[sig] = signal.signal(sig, lambda *_: commands.cancelled.set())
@@ -785,10 +868,22 @@ def baseline(request, commands_factory=Commands, host=None, *, native_authority=
         if request.execution == "hosted":
             require(matches(SHA, request.driver_sha) and os.environ.get("GITHUB_RUN_ATTEMPT") == "1", "hosted-authorization-invalid")
             require(native_authority is not None, "hosted-recovery-retention-unavailable")
-            from proof_controller_worker import NativeAdmission
-            require(type(host) is WindowsProofHost and type(native_authority) is NativeAdmission,
+            from proof_controller_worker import NativeAdmission, WindowsQualificationAdmission
+            require(type(host) is WindowsProofHost
+                    and type(native_authority) in (NativeAdmission, WindowsQualificationAdmission),
                     "hosted-authorization-invalid")
-            NativeAdmission.require_proof(native_authority, request)
+            if type(native_authority) is NativeAdmission:
+                NativeAdmission.require_proof(native_authority, request)
+            else:
+                WindowsQualificationAdmission.require_proof(native_authority, request)
+                qualification = native_authority
+                require(qualification.case in ("windows-baseline", "windows-named-target",
+                                               "windows-crash-recover", "windows-reboot-recover")
+                        and (qualification.case != "windows-baseline" or not named)
+                        and (qualification.case != "windows-named-target" or named),
+                        "hosted-authorization-invalid")
+                if qualification.case in ("windows-crash-recover", "windows-reboot-recover"):
+                    fixture, run_timeout, command_timeout = QUALIFICATION_HOLD_FIXTURE, "25m", 1595
         operator = host.load_operator(request.operator_config, request.candidate_sha)
         require(commands.run(["git", "rev-parse", "HEAD"], timeout=30).decode().strip() == request.candidate_sha,
                 "candidate-mismatch")
@@ -810,6 +905,8 @@ def baseline(request, commands_factory=Commands, host=None, *, native_authority=
         commands.run(["go", "build", "-trimpath", "-o", host_binary, "./cmd/blender-box"], timeout=300, env=host_env)
         host_bytes = read_regular(private, host_binary.name, 128 << 20)
         host_hash, host_size = digest(host_bytes), len(host_bytes)
+        if qualification is not None:
+            require(host_hash == qualification.expected_host_sha256, "host-artifact-mismatch")
         setup_args = [client, host.platform, "setup", *selector, "--host-binary", host_binary, "--json"]
         plan = commands.json(setup_args)
         host.verify_setup(plan, operator, host_hash, host_size, False)
@@ -828,8 +925,9 @@ def baseline(request, commands_factory=Commands, host=None, *, native_authority=
         report.update(host.public_runtime(operator))
         report["outcomes"][current] = {"status": "pass", "code": host.platform + "-check-passed"}
         current = "scenario"
-        run = commands.json([client, "run", *selector, "--payload", FIXTURE / "payload.json",
-                             "--timeout", "20m", "--json"], timeout=1320, marker=True)
+        run = commands.json([client, "run", *selector, "--payload", fixture / "payload.json",
+                             "--timeout", run_timeout, "--json"], timeout=command_timeout, marker=True)
+        require(fixture != QUALIFICATION_HOLD_FIXTURE, "qualification-hold-returned")
         fence = Fence.parse(run)
         require(commands.run_id == fence.run_id, "run-marker-mismatch")
         report["run"] = {key: getattr(fence, key) for key in ("run_id", "request_id", "request_hash", "session_id")}

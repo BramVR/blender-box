@@ -453,12 +453,16 @@ class ProofWorker:
 
 
 class Controller:
-    def __init__(self, control_root, jobs_root, policy, service, worker=None, clock=None, files=None, admission=None):
+    def __init__(self, control_root, jobs_root, policy, service, worker=None, clock=None, files=None, admission=None, qualification=None):
         self.control_root, self.jobs_root = control_root, jobs_root
         self.policy, self.service = policy, service
         self.files = files or local_files()
         self.worker = worker or ProofWorker(files=self.files)
         self.admission = admission
+        self.qualification = qualification
+        if qualification is not None:
+            from proof_controller_native import WindowsQualification
+            require(type(qualification) is WindowsQualification, "qualification-authority-invalid")
         self.clock = clock or (lambda: datetime.now(timezone.utc))
 
     @contextmanager
@@ -475,6 +479,14 @@ class Controller:
             self.admission(command)
         with self.locked():
             control = self.control_root / command.execution_id
+            if self.qualification is None:
+                require(not self.files.exists(control / "origin.json")
+                        and not self.files.exists(control / "qualification-authorization.json")
+                        and not proof.matches(r"wq-[a-f0-9]{32}", command.execution_id), "qualification-origin-forbidden")
+            else:
+                require(command.execution_id == self.qualification.execution_id, "qualification-origin-changed")
+                if self.files.exists(control):
+                    self.qualification.verify_origin(self.files)
             if command.operation == "start":
                 require(command.request is not None and command.request.execution_id == command.execution_id,
                         "invalid-command")
@@ -588,13 +600,23 @@ class Controller:
         for entry in self.files.entries(self.control_root):
             if entry.name == "fixture.lock":
                 continue
+            if entry.name == "qualification":
+                from proof_controller_native import qualification_reservations_settled
+                qualification_reservations_settled(self.files, entry)
+                continue
             self.files.directory(entry)
             require(proof.matches(EXECUTION_ID, entry.name),
                     "fixture-unresolved")
             require(self.load(entry)["phase"] == "settled", "fixture-unresolved")
         observation = self.observe()
         require(observation.empty, "fixture-unresolved")
+        if self.qualification is not None:
+            from proof_controller_native import qualification_count
+            require(qualification_count(self.files) < 32, "qualification-capacity")
         self.files.directory(control, create=True)
+        if self.qualification is not None:
+            self.files.publish(control / "qualification-authorization.json", self.qualification.authorization.raw)
+            self.files.publish(control / "origin.json", proof.canonical(self.qualification.origin))
         self.files.publish(control / "request.json", proof.canonical(asdict(request)))
         state = {"schema_version": 1, "execution_id": request.execution_id, "phase": "accepted", "closed": False,
                  "attempt": 0, "request_digest": request.digest, "inputs_digest": None, "invocation": None,
@@ -606,6 +628,8 @@ class Controller:
             job = self.job(control, state)
             self.files.directory(job.root, create=True)
             self.files.directory(job.root / "attempts", create=True)
+            if self.qualification is not None:
+                self.files.publish(job.root / "qualification-authorization.json", self.qualification.authorization.raw)
             state["inputs_digest"] = snapshot_inputs(control, job, self.policy, self.files)
             self.save(control, state)
             return self.receipt(self.launch(control, state, "baseline"))
@@ -696,13 +720,20 @@ class Controller:
         verify_inputs(control, job, state["inputs_digest"], self.files)
         if mode == "baseline":
             require(not state["closed"] and self.clock() < utc(job.request.expires_at), "execution-expired")
-        require(state["attempt"] < 9999, "attempt-limit")
+        require(state["attempt"] < (9999 if self.qualification is None else self.qualification.authorization.value["max_attempts"]),
+                "attempt-limit")
         state.update(attempt=state["attempt"] + 1, phase="starting", invocation=None, local_termination="unknown")
         self.save(control, state)
         job = replace(job, attempt=state["attempt"])
         self.files.directory(job.attempt_root, create=True)
         intent = {"schema_version": 1, "execution_id": job.request.execution_id, "attempt": job.attempt,
                   "request_digest": job.request.digest, "mode": mode}
+        if self.qualification is not None:
+            self.qualification.verify_origin(self.files)
+            self.qualification.verify_inputs(self.files, job)
+            intent = self.qualification.intent(job.request, job.attempt, mode)
+            if self.qualification.cleanup is not None:
+                self.files.publish(control / f"cleanup-{job.attempt:04d}.json", self.qualification.cleanup.raw)
         self.files.publish(control / f"intent-{job.attempt:04d}.json", proof.canonical(intent))
         invocation = self.service.start(job.request, job.attempt)
         invocation = Invocation.parse(asdict(invocation))
@@ -713,6 +744,9 @@ class Controller:
         if mode == "baseline":
             require(self.clock() < utc(job.request.expires_at), "execution-expired")
         authorization = {"schema_version": 1, "invocation": asdict(invocation), "mode": mode}
+        if self.qualification is not None:
+            receipt = self.service.receipt(invocation)
+            authorization = self.qualification.release_record(self.files, receipt, mode) | {"native_receipt": asdict(receipt)}
         authorization_path = control / f"authorization-{job.attempt:04d}.json"
         self.files.publish(authorization_path, proof.canonical(authorization))
         verify_inputs(control, job, state["inputs_digest"], self.files)
