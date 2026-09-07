@@ -3,10 +3,8 @@ package cli
 import (
 	"bytes"
 	"context"
-	"crypto/sha256"
 	"encoding/base64"
 	"encoding/binary"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -24,6 +22,7 @@ import (
 	"github.com/BramVR/blender-box/internal/target"
 	"github.com/BramVR/blender-box/internal/uiaction"
 	"github.com/BramVR/blender-box/internal/windows"
+	"github.com/BramVR/blender-box/internal/windowsinstall"
 )
 
 type fakeSSH struct {
@@ -476,7 +475,6 @@ func TestWindowsSetupPlansWithoutSSHAndRequiresApplyForWrite(t *testing.T) {
 		HostSize:      planned.HostSize,
 		HostSHA256:    planned.HostSHA256,
 	})
-	setSetupOwnerResult(t, fake)
 	stdout.Reset()
 	stderr.Reset()
 	exitCode = Run(context.Background(), []string{
@@ -486,7 +484,7 @@ func TestWindowsSetupPlansWithoutSSHAndRequiresApplyForWrite(t *testing.T) {
 		"--apply",
 		"--json",
 	}, strings.NewReader(""), &stdout, &stderr, Dependencies{SSH: fake})
-	if exitCode != 0 || stderr.Len() != 0 || fake.host != "windows-test" || len(fake.uploads) != 3 || fake.uploads[1][0] == hostBinary || filepath.Base(fake.uploads[1][0]) != "blender-box.exe" || !strings.HasPrefix(fake.uploads[1][1], `C:\BlenderBoxTest\.setup-`) {
+	if exitCode != 1 || !strings.Contains(stderr.String(), "legacy-setup-unowned") || fake.host != "" || len(fake.uploads) != 0 {
 		t.Fatalf("apply exit = %d, stderr = %q, SSH host = %q, uploads = %q", exitCode, stderr.String(), fake.host, fake.uploads)
 	}
 }
@@ -750,122 +748,102 @@ func TestWindowsCheckPrintsVersionedJSONWithoutRemoteWrites(t *testing.T) {
 	}
 }
 
-func setSetupOwnerResult(t *testing.T, fake *fakeSSH) {
-	t.Helper()
-	fake.runResult = func(arguments []string, stdin []byte) ([]byte, error) {
-		if len(stdin) != 0 {
-			t.Fatalf("setup SSH stdin = %q", stdin)
-		}
-		command := decodePowerShellCommand(t, arguments)
-		const marker = `$r = [Convert]::FromBase64String('`
-		start := strings.Index(command, marker)
-		if start < 0 {
-			return nil, nil
-		}
-		start += len(marker)
-		end := strings.Index(command[start:], `')`)
-		if end < 0 {
-			t.Fatal("setup owner launch has an incomplete embedded request")
-		}
-		requestBytes, err := base64.StdEncoding.DecodeString(command[start : start+end])
-		if err != nil {
-			t.Fatalf("decode embedded setup owner request: %v", err)
-		}
-		var request struct {
-			AttemptID string `json:"attempt_id"`
-			LaunchID  string `json:"launch_id"`
-		}
-		if err := json.Unmarshal(requestBytes, &request); err != nil {
-			return nil, err
-		}
-		hash := sha256.Sum256(requestBytes)
-		return json.Marshal(map[string]any{
-			"schema_version":   1,
-			"attempt_id":       request.AttemptID,
-			"launch_id":        request.LaunchID,
-			"request_sha256":   hex.EncodeToString(hash[:]),
-			"status":           "terminal",
-			"outcome":          "process_succeeded",
-			"process":          "exited",
-			"cleanup":          "tree_gone",
-			"exit_code":        0,
-			"stdout":           string(fake.stdout),
-			"stderr":           "",
-			"stdout_truncated": false,
-			"stderr_truncated": false,
-			"finished_at":      time.Now().UTC().Format(time.RFC3339Nano),
-		})
-	}
-}
-
 func TestNamedUIPlanAndDoctorInspectCanonicalWindowsTarget(t *testing.T) {
-	root := filepath.Join(t.TempDir(), "private")
-	t.Setenv("BLENDER_BOX_CONFIG_DIR", root)
-	source := writeTarget(t, t.TempDir())
-	selected, err := (target.Store{Root: root}).Import("studio", source, false)
-	if err != nil {
-		t.Fatal(err)
-	}
-	payloadPath := cliPayload(t)
-	document := `{"schema_version":3,"files":[{"source":"scenario.py","destination":"scenario.py"}],"scenario":{"script":"scenario.py","capture_blender_window":true,"ui_actions":{"schema_version":1,"timeout_seconds":10,"actions":[{"type":"text","text":"private entered text"}]}}}`
-	if err := os.WriteFile(payloadPath, []byte(document), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	calls := 0
-	ssh := &fakeSSH{}
-	ssh.runResult = func(arguments []string, input []byte) ([]byte, error) {
-		calls++
-		if calls == 1 {
-			return passingChecks(), nil
-		}
-		if calls != 2 || !strings.Contains(decodePowerShellCommand(t, arguments), "'host' 'capabilities'") {
-			t.Fatalf("unexpected inspection call %d", calls)
-		}
-		var request host.CapabilitiesRequest
-		if err := json.Unmarshal(input, &request); err != nil {
-			t.Fatal(err)
-		}
-		if !request.UIActions || request.SchemaVersion != 1 || request.BlenderExecutable != selected.Windows().BlenderExecutable || request.SessionBrokerExecutable != selected.Windows().SessionBrokerExecutable {
-			t.Fatalf("UI inspection request=%+v", request)
-		}
-		capabilities := host.CapabilitiesResponse{SchemaVersion: 1, Status: "pass", UIActions: &orchestrator.UIActionSupport{Capability: uiaction.Capability, Supported: true}}
-		for _, definition := range capture.Definitions() {
-			capabilities.Captures = append(capabilities.Captures, orchestrator.CaptureSupport{Kind: definition.Kind, Capability: definition.Capability, Supported: true})
-		}
-		return json.Marshal(capabilities)
-	}
-	dependencies := Dependencies{Runner: orchestrator.New(windows.NewAdapter(ssh), root)}
-	for _, command := range []string{"plan", "doctor"} {
-		var stdout, stderr bytes.Buffer
-		code := Run(context.Background(), []string{command, "--target-name", "studio", "--payload", payloadPath, "--json"}, strings.NewReader(""), &stdout, &stderr, dependencies)
-		if code != 0 || strings.Contains(stdout.String(), "private entered text") {
-			t.Fatalf("%s code=%d stderr=%s stdout=%s", command, code, &stderr, &stdout)
-		}
-		if command == "plan" && calls != 0 {
-			t.Fatal("plan contacted host")
-		}
-		if command == "doctor" && (calls != 2 || ssh.host != selected.SSHAlias()) {
-			t.Fatalf("doctor calls=%d alias=%s", calls, ssh.host)
-		}
-		if !strings.Contains(stdout.String(), "blender-window-before-actions.png") || !strings.Contains(stdout.String(), "blender-window-after-actions.png") {
-			t.Fatalf("UI capture inventory lost: %s", &stdout)
-		}
-	}
-	if _, err := os.Stat(filepath.Join(root, "runs")); !os.IsNotExist(err) {
-		t.Fatalf("read-only planning created Run journal: %v", err)
-	}
+	for _, publication := range []string{"import", "install-export", "install-save"} {
+		t.Run(publication, func(t *testing.T) {
+			root := filepath.Join(t.TempDir(), "private")
+			t.Setenv("BLENDER_BOX_CONFIG_DIR", root)
+			source := writeTarget(t, t.TempDir())
+			selected, err := target.Load(source)
+			if err != nil {
+				t.Fatal(err)
+			}
+			selector := []string{"--target-name", "studio"}
+			if publication == "import" {
+				if _, err := (target.Store{Root: root}).Import("studio", source, false); err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				executor := &setupExecutor{result: windowsinstall.Result{SchemaVersion: 1, State: "installed", Completion: "known", Target: &selected}}
+				args := []string{"setup", "install", "--platform", "windows", "--state-root", selected.Windows().WorkRoot, "--apply", "--json"}
+				if publication == "install-export" {
+					exportRoot := t.TempDir()
+					if err := os.Chmod(exportRoot, 0o700); err != nil {
+						t.Fatal(err)
+					}
+					exported := filepath.Join(exportRoot, "generated-target.json")
+					args = append(args, "--target-out", exported)
+					selector = []string{"--target", exported}
+				} else {
+					args = append(args, "--save-target", "studio")
+				}
+				var out, stderr bytes.Buffer
+				if code := Run(context.Background(), args, strings.NewReader(""), &out, &stderr, Dependencies{Setup: executor}); code != 0 {
+					t.Fatalf("target publication code=%d stdout=%s stderr=%s", code, &out, &stderr)
+				}
+			}
+			payloadPath := cliPayload(t)
+			document := `{"schema_version":3,"files":[{"source":"scenario.py","destination":"scenario.py"}],"scenario":{"script":"scenario.py","capture_blender_window":true,"ui_actions":{"schema_version":1,"timeout_seconds":10,"actions":[{"type":"text","text":"private entered text"}]}}}`
+			if err := os.WriteFile(payloadPath, []byte(document), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			calls := 0
+			ssh := &fakeSSH{}
+			ssh.runResult = func(arguments []string, input []byte) ([]byte, error) {
+				calls++
+				if calls == 1 {
+					return passingChecks(), nil
+				}
+				if calls != 2 || !strings.Contains(decodePowerShellCommand(t, arguments), "'host' 'capabilities'") {
+					t.Fatalf("unexpected inspection call %d", calls)
+				}
+				var request host.CapabilitiesRequest
+				if err := json.Unmarshal(input, &request); err != nil {
+					t.Fatal(err)
+				}
+				if !request.UIActions || request.SchemaVersion != 1 || request.BlenderExecutable != selected.Windows().BlenderExecutable || request.SessionBrokerExecutable != selected.Windows().SessionBrokerExecutable {
+					t.Fatalf("UI inspection request=%+v", request)
+				}
+				capabilities := host.CapabilitiesResponse{SchemaVersion: 1, Status: "pass", UIActions: &orchestrator.UIActionSupport{Capability: uiaction.Capability, Supported: true}}
+				for _, definition := range capture.Definitions() {
+					capabilities.Captures = append(capabilities.Captures, orchestrator.CaptureSupport{Kind: definition.Kind, Capability: definition.Capability, Supported: true})
+				}
+				return json.Marshal(capabilities)
+			}
+			dependencies := Dependencies{Runner: orchestrator.New(windows.NewAdapter(ssh), root)}
+			for _, command := range []string{"plan", "doctor"} {
+				var stdout, stderr bytes.Buffer
+				code := Run(context.Background(), append(append([]string{command}, selector...), "--payload", payloadPath, "--json"), strings.NewReader(""), &stdout, &stderr, dependencies)
+				if code != 0 || strings.Contains(stdout.String(), "private entered text") {
+					t.Fatalf("%s code=%d stderr=%s stdout=%s", command, code, &stderr, &stdout)
+				}
+				if command == "plan" && calls != 0 {
+					t.Fatal("plan contacted host")
+				}
+				if command == "doctor" && (calls != 2 || ssh.host != selected.SSHAlias()) {
+					t.Fatalf("doctor calls=%d alias=%s", calls, ssh.host)
+				}
+				if !strings.Contains(stdout.String(), "blender-window-before-actions.png") || !strings.Contains(stdout.String(), "blender-window-after-actions.png") {
+					t.Fatalf("UI capture inventory lost: %s", &stdout)
+				}
+			}
+			if _, err := os.Stat(filepath.Join(root, "runs")); !os.IsNotExist(err) {
+				t.Fatalf("read-only planning created Run journal: %v", err)
+			}
 
-	invalid := strings.Replace(document, `,"ui_actions":{"schema_version":1,"timeout_seconds":10,"actions":[{"type":"text","text":"private entered text"}]}`, "", 1)
-	if err := os.WriteFile(payloadPath, []byte(invalid), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	var stdout, stderr bytes.Buffer
-	code := Run(context.Background(), []string{"run", "--target-name", "studio", "--payload", payloadPath, "--json"}, strings.NewReader(""), &stdout, &stderr, dependencies)
-	if code != 1 || calls != 2 || !strings.Contains(stdout.String(), "requires a UI action batch") {
-		t.Fatalf("invalid UI preflight code=%d calls=%d stdout=%s stderr=%s", code, calls, &stdout, &stderr)
-	}
-	if _, err := os.Stat(filepath.Join(root, "runs")); !os.IsNotExist(err) {
-		t.Fatalf("invalid UI preflight created Run journal: %v", err)
+			invalid := strings.Replace(document, `,"ui_actions":{"schema_version":1,"timeout_seconds":10,"actions":[{"type":"text","text":"private entered text"}]}`, "", 1)
+			if err := os.WriteFile(payloadPath, []byte(invalid), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			var stdout, stderr bytes.Buffer
+			code := Run(context.Background(), append(append([]string{"run"}, selector...), "--payload", payloadPath, "--json"), strings.NewReader(""), &stdout, &stderr, dependencies)
+			if code != 1 || calls != 2 || !strings.Contains(stdout.String(), "requires a UI action batch") {
+				t.Fatalf("invalid UI preflight code=%d calls=%d stdout=%s stderr=%s", code, calls, &stdout, &stderr)
+			}
+			if _, err := os.Stat(filepath.Join(root, "runs")); !os.IsNotExist(err) {
+				t.Fatalf("invalid UI preflight created Run journal: %v", err)
+			}
+		})
 	}
 }
 

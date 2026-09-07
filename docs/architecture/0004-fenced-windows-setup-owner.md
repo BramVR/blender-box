@@ -1,14 +1,14 @@
 ---
-summary: Windows setup programs run only through a fenced daemon-owned process tree.
+summary: Historical daemon-owned SSH setup design, superseded by owned host installation.
 read_when:
-  - Changing Windows setup apply, setup recovery, setup cleanup, or blendersessiond setup-owner calls.
+  - Investigating the retired Windows SSH setup implementation.
 ---
 
 # Fenced Windows setup owner
 
 ## Status
 
-Accepted for slice 0.
+Historical. Superseded for installation by [ADR 0007](0007-windows-installation-ownership.md). The legacy `windows setup --apply` path now refuses with `legacy-setup-unowned` before SSH; the design below describes the retired path. Its process ownership guarantees remain requirements for the replacement installer, not proof that the new path already supplies them.
 
 ## Problem
 

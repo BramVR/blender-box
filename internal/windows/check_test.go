@@ -103,8 +103,17 @@ func TestCheckRequiresProvisionedStateDirectories(t *testing.T) {
 	if !strings.Contains(checkScript, "if (-not (Test-Path -LiteralPath $Path -PathType Container)) { return $false }") {
 		t.Fatal("state-tree inspection accepts an absent state directory")
 	}
-	if !strings.Contains(checkScript, "[System.IO.Path]::Combine([string]$config.work_root, 'setup-owner')") || !strings.Contains(checkScript, "Existing Run, receipt, and setup-owner trees") {
-		t.Fatal("state-tree inspection omits the setup-owner authority root")
+	for _, required := range []string{
+		"$setupOwnerEntries = @([System.IO.DirectoryInfo]::new([string]$config.work_root).EnumerateFileSystemInfos('setup-owner'))",
+		"foreach ($entry in $setupOwnerEntries)",
+		"EnumerateFileSystemInfos('setup-operations')",
+		"EnumerateFileSystemInfos('pending-setup.json')).Count -ne 0) { $stateTreeOK = $false }",
+		"Test-SafeStateTree $entry.FullName $expectedSid $sshSid",
+		"} catch { $stateTreeOK = $false }",
+	} {
+		if !strings.Contains(checkScript, required) {
+			t.Fatalf("optional setup-owner inspection can skip unreadable or reparse entries: missing %q", required)
+		}
 	}
 }
 
@@ -142,7 +151,7 @@ func TestCheckRequiresBlenderBoxSessionBrokerContract(t *testing.T) {
 	for _, required := range []string{
 		"function Test-SessionBrokerContract",
 		"function Invoke-SessionBrokerProbe",
-		"'capabilities', '--require', 'blender-box-v1', '--require-capability', 'typed-call-error-reason', '--require-capability', 'windows-setup-owner-v1'",
+		"'capabilities', '--require', 'blender-box-v1', '--require-capability', 'typed-call-error-reason'",
 		"Start-Process -FilePath $Path",
 		"-RedirectStandardOutput 'NUL'",
 		"-RedirectStandardError '\\\\.\\NUL'",
