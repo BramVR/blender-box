@@ -17,6 +17,7 @@ suite = unittest.TestSuite([
     loader.discover('tests/ci', pattern='test_proof_controller*.py'),
     loader.discover('tests/ci', pattern='test_proof_adoption.py'),
     loader.discover('tests/ci', pattern='test_platform_install_integration.py'),
+    loader.discover('tests/ci', pattern='test_qualification*.py'),
 ])
 assert not loader.errors, '\\n'.join(loader.errors)
 assert 'proof_controller_worker' not in sys.modules
@@ -29,6 +30,12 @@ required = {
     'test_proof_controller_native.NativeParsingTests.test_native_receipt_only_accepts_unique_fixed_subtree',
     'test_proof_controller_native.NativeCLITests.test_scp_pin_and_tmpfiles_binding_are_required',
     'test_proof_controller_native.NativeCLITests.test_false_or_wrong_binding_refuses_before_any_native_mutation',
+    'test_qualification_contract.QualificationContractTests.test_linux_hash_domains_and_three_way_selector_rejection',
+    'test_qualification_contract.QualificationContractTests.test_exact_shapes_duplicate_keys_versions_boolean_numbers_and_size',
+    'test_qualification_contract.QualificationContractTests.test_authorization_file_hash_and_execution_identity_have_different_roles',
+    'test_qualification_contract.QualificationContractTests.test_operational_dispatch_never_accepts_qualification_document',
+    'test_qualification_driver.LocalQualificationDriverTests.test_local_driver_sha_does_not_select_hold',
+    'test_qualification_driver.HoldFixtureTests.test_fixed_hold_timeout_fails_without_a_success_result',
 }
 pending = list(suite)
 discovered = set()

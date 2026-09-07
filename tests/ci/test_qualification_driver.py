@@ -11,15 +11,14 @@ import unittest
 from unittest import mock
 
 import test_onboarding_proof as baseline_tests
+import test_proof_controller_native as fixtures
 
 
-ROOT = Path(__file__).resolve().parents[2]
-sys.path.insert(0, str(ROOT / "scripts"))
-import proof_controller_worker as worker
-
+worker = fixtures.worker
 proof = baseline_tests.proof
 
 
+@unittest.skipUnless(fixtures.model.fcntl is not None, "POSIX native controller fixtures")
 class QualificationDriverTests(baseline_tests.ProofFixture):
     def execute_admitted(self, case=None, *, expected_host=None, admission_type=None, reject=False, variant=None):
         self.path.write_bytes(proof.canonical(self.config))
@@ -115,10 +114,13 @@ class QualificationDriverTests(baseline_tests.ProofFixture):
         self.assertEqual(result["outcomes"]["preparation"]["code"], "hosted-authorization-invalid")
         self.assertEqual(self.commands.calls, [])
 
+
+class LocalQualificationDriverTests(baseline_tests.ProofFixture):
     def test_local_driver_sha_does_not_select_hold(self):
         self.request = replace(self.request, driver_sha="b" * 40)
         self.assertEqual(self.execute()["status"], "pass")
-        call, options = self.run_call()
+        call, options = next((call, options) for call, options in zip(self.commands.calls, self.commands.call_options)
+                             if len(call) > 1 and call[1] == "run")
         self.assertEqual(call[call.index("--payload") + 1], str(proof.FIXTURE / "payload.json"))
         self.assertEqual(options["timeout"], 1320)
 
@@ -141,6 +143,7 @@ class HoldFixtureTests(unittest.TestCase):
         self.assertEqual(bpy.context.object.name, "QualificationHoldCube")
 
 
+@unittest.skipUnless(fixtures.model.fcntl is not None, "POSIX native controller fixtures")
 class ActiveCheckpointTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
