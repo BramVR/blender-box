@@ -1,34 +1,36 @@
-# Explicit Windows setup
+# Owned Windows setup
 
-Windows setup previews a bounded host binary install by default and applies only the declared file, ACL, and interactive Scheduled Task under explicit authorization.
+Use the public host-local `setup inspect`, `setup install`, `setup status`, `setup stop`, and `setup remove` commands. Read `docs/windows-installation.md` and `docs/architecture/0007-windows-installation-ownership.md` before proof.
 
-## Sub-features
+## Preconditions
 
-- `setup-plan` hashes and sizes the host binary without SSH or remote writes.
-- `setup-apply` verifies the authenticated SSH SID, physical paths, ancestor replacement authority, and non-launching `blendersessiond` `blender-box-v1` capability contract, then uses the shared OS operation lock while refusing an active Host Lock, sealing existing managed state without following reparse points, publishing the non-empty bounded binary, and registering the fixed task.
-- `setup-postcheck` proves the applied root, state-tree, executable, and task contract through the read-only check, including safe controller-owned runtime state under sealed parents.
+- Explicit installation and removal authorization for an exact dedicated fixture. Baseline Run authorization is insufficient.
+- Verified physical hostname, same Windows SID, logged-in desktop, supported external Blender/Python, and no unknown active Run or Session.
+- Verified external bootstrap, candidate host/broker executables, compatible daemon wheel, manifest, and source/patch/recipe hashes.
+- Shared Host Lock namespace preserved. Existing operator runtime and tasks remain nondisposable.
+- Retain private receipts, generated original target, and local Run authority outside the runtime being removed.
 
-## How to get to it (user POV)
+## Observable coverage
 
-- Run `blender-box windows setup --target TARGET --host-binary EXE --json` for a plan.
-- Add `--apply` only after explicit host-write authorization and hostname verification.
+- Inspect and install preview report identity, selections, prerequisites, exact inventory, plan digest, and conflicts without creating files or tasks. Ambiguous Blender discovery requires explicit selection.
+- Explicit install uses the reviewed installation identity and plan digest. Require installed state, deployed hashes, required capabilities, exact limited-rights task, and generated target schema version 2. No Blender launch during setup.
+- Export or save failure remains distinct from installed state. Existing output files or names remain unchanged.
+- Read-only `windows check` passes using the generated target. A real baseline Scenario returns verified viewport evidence, then fresh status/stop/status agree with original Run and exact Session authority.
+- Repeated installation retains the same ownership and task. Interrupted publication either converges from its receipt or reports exact partial/conflicting state.
+- Lost apply response triggers fresh setup status. Exact execution stop requires its recorded token, and cancellation requested does not count as tree-exit proof. A retry receives a new execution token; stale stop must not reach it.
+- Unknown keeper or Task Scheduler mutation state preserves the pending setup fence and installation. No new Run or unrelated maintenance bypasses that fence. Worker exit alone is not known cleanup; the keeper must also prove every Job descendant exited.
+- A native startup failure before process creation records explicit `not-started` proof and permits a fresh attempt. Missing worker identity without that proof remains unknown.
+- A crash after terminal proof but before fence release reports a held fence. Exact stop reconciles only that settled fence; fresh status confirms release before new work.
+- Active Run or launch state refuses removal without stopping anything. Recover only through the original public Run/Session authority.
+- Removal preview changes nothing. Applied removal verifies recorded task and file identities/hashes, removes owned task before runtime, and preserves modified files, unknown descendants, unrelated fixtures, Blender, Python, and settings.
+- Repeated removal confirms absence. Shared root, authority directories, lock files, receipts, and tombstones remain. Replacements at old paths are not owned.
 
-## Driving it with blender-box
+## Driving proof
 
-Preconditions:
+Use `scripts/onboarding_proof.py host-install` with the separate private installation configuration in `docs/windows-onboarding-proof.md`. The fixture must already provide the verified external bootstrap and pinned bundle; proof does not bootstrap by hidden uploads. Keep failed or unknown cleanup visible.
 
-- `VERIFY_HOST_BINARY` is the Windows build from the tested commit.
-- The declared compatible `blendersessiond` and Blender executables already exist.
-- The declared work root already exists because setup does not provision `blendersessiond` inside it.
-- The exact hostname check in `SKILL.md` passed and the operator authorized setup.
+Require the actual `Windows onboarding proof` job `host-install` on the exact candidate. Local tests and cross-builds do not prove Windows installation. Hosted execution stays blocked until private recovery authority survives controller loss. Do not remove the retention guard to obtain a passing badge.
 
-- **Plan.** Run `"$VERIFY_CLIENT" windows setup --target "$BLENDER_BOX_TARGET" --host-binary "$VERIFY_HOST_BINARY" --json | tee "$VERIFY_ROOT/setup-plan.json"`. Require `jq -e '.schema_version == 1 and .status == "plan" and (.applied | not) and .host_size > 0 and (.host_sha256 | length == 64)' "$VERIFY_ROOT/setup-plan.json"`.
-- **Apply.** Run `"$VERIFY_CLIENT" windows setup --target "$BLENDER_BOX_TARGET" --host-binary "$VERIFY_HOST_BINARY" --apply --json | tee "$VERIFY_ROOT/setup-apply.json"`. Require the same size and SHA-256 as the plan plus `status: applied`.
-- **Second view.** Run `"$VERIFY_CLIENT" windows check --target "$BLENDER_BOX_TARGET" --json | tee "$VERIFY_ROOT/check-after-setup.json"` and require `jq -e '.schema_version == 1 and .status == "pass"' "$VERIFY_ROOT/check-after-setup.json"`.
+## Legacy behavior
 
-## Gotchas
-
-- `--apply` changes the declared Blender Box work root, managed executable ACLs, and exact Scheduled Task. It does not install Blender or `blendersessiond`.
-- A task-local Python virtual environment is compatible when its `blendersessiond` launcher resolves without ambient `PYTHONPATH`.
-- Never apply to a host identified only by an alias.
-- Setup does not launch Blender and does not authorize stopping an existing process.
+`windows setup --target TARGET --host-binary EXE --json` remains an offline binary preview. Adding `--apply` must fail with `legacy-setup-unowned` before SSH. Legacy resources have no installation receipt; no automatic migration or adoption is permitted.

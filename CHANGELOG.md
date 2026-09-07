@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Add owned Windows runtime installation with pinned artifact manifests, preview, durable installation receipts, bounded execution status and recovery, generated targets, repeatable removal, and maintenance fencing; refuse legacy setup apply without ownership and prepare separately authorized host-install proof.
+- Start trusted Windows installer PowerShell commands suspended with `CREATE_NO_WINDOW` to restore execution and output while generic commands remain detached and suspended; retain exact Job-member handles, including any console helper, and require complete membership and physical exit proof within one cleanup deadline before reporting tree cleanup.
 - Fix Windows named-target replacement while readers hold the previous profile open, preserving complete records and permission failures.
 - Recover exact native proof-controller receipts after helper interruption and bind baseline or named-target Windows proof to one-use native worker authority; direct hosted execution remains guarded and native qualification remains required.
 - Add fixed Linux proof-controller helper, worker, private file access, and enrollment artifacts; runtime dispatch requires matching native qualification.
@@ -9,7 +11,6 @@
 - Keep Linux daemon, Blender, and Scenario HOME-based caches under each private Run root, with prelaunch validation and exact settlement cleanup while preserving missing-home recovery.
 - Keep Linux daemon and Blender temporary files under each private Run root, with prelaunch validation and exact settlement cleanup.
 - Recover interrupted Linux setup final receipts only when prior pending hashes match both installed artifacts, and reject relative or noncanonical host paths before traversal.
-
 - Add Linux targets, read-only readiness, explicit static-user-unit setup, and fenced Scenario execution with reviewed daemon provenance; preserve Windows wire compatibility and keep native Linux and hosted proof as outstanding acceptance requirements.
 - Add platform-aware named targets with legacy Windows profile support, atomic user-local storage, and recovery bound to original Run authority; prepare named-target proof and block hosted execution until private recovery authority can be retained.
 - Preserve owned command cleanup when onboarding proof receipt or process setup fails.
