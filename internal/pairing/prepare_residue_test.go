@@ -26,6 +26,9 @@ func TestPrepareOversizedPendingNeverRetainsCredentials(t *testing.T) {
 		if _, err := os.Stat(filepath.Join(client.Root, "pairings", "work", "intent.json")); !os.IsNotExist(err) {
 			t.Fatalf("attempt %d retained an intent: %v", attempt, err)
 		}
+		if _, err := os.Stat(client.Root); !os.IsNotExist(err) {
+			t.Fatalf("attempt %d published preparation state for oversized record: %v", attempt, err)
+		}
 		keys, err := filepath.Glob(filepath.Join(client.Root, "credentials", "*", "id_ed25519"))
 		if err != nil {
 			t.Fatal(err)

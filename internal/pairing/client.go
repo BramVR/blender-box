@@ -2,7 +2,6 @@ package pairing
 
 import (
 	"context"
-	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -11,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"time"
 
 	"github.com/BramVR/blender-box/internal/privatefile"
@@ -62,8 +62,10 @@ type EnrollmentReceipt struct {
 type TrustedOffer struct{ value HostOffer }
 type TrustedReceipt struct{ value EnrollmentReceipt }
 type Client struct {
-	Root string
-	Now  func() time.Time
+	Root       string
+	Now        func() time.Time
+	checkpoint func(string) error
+	publish    func(string, string, []byte, bool) error
 }
 type pending struct {
 	SchemaVersion int              `json:"schema_version"`
@@ -178,6 +180,9 @@ func (client Client) read(name string) (pending, error) {
 	return value, nil
 }
 func (client Client) Prepare(ctx context.Context, name string, offer TrustedOffer) (EnrollmentIntent, error) {
+	if runtime.GOOS == "windows" {
+		return EnrollmentIntent{}, fmt.Errorf("SSH credential preparation is unsupported on Windows until private ACL ownership is enforced")
+	}
 	if err := target.ValidateName(name); err != nil {
 		return EnrollmentIntent{}, err
 	}
@@ -187,16 +192,26 @@ func (client Client) Prepare(ctx context.Context, name string, offer TrustedOffe
 	if !client.now().Before(offer.value.Expires) {
 		return EnrollmentIntent{}, fmt.Errorf("host offer expired")
 	}
+	if err := ctx.Err(); err != nil {
+		return EnrollmentIntent{}, err
+	}
 	existing, err := client.read(name)
 	if err == nil {
 		if existing.Intent.OfferHash != OfferDigest(offer.value) {
 			return EnrollmentIntent{}, fmt.Errorf("name already has a different pairing intent")
 		}
-		fingerprint, _ := sshkey.Fingerprint(existing.Intent.PublicKey)
-		if _, err := sshkey.Read(ctx, client.Root, fingerprint); err != nil {
-			return EnrollmentIntent{}, err
+		reservation, reserveErr := client.readPreparation(name)
+		if errors.Is(reserveErr, os.ErrNotExist) {
+			fingerprint, _ := sshkey.Fingerprint(existing.Intent.PublicKey)
+			if _, err := sshkey.Read(ctx, client.Root, fingerprint); err != nil {
+				return EnrollmentIntent{}, err
+			}
+			return existing.Intent, nil
 		}
-		return existing.Intent, nil
+		if reserveErr != nil {
+			return EnrollmentIntent{}, reserveErr
+		}
+		return client.prepareReserved(ctx, reservation)
 	}
 	if !errors.Is(err, os.ErrNotExist) {
 		return EnrollmentIntent{}, err
@@ -206,23 +221,11 @@ func (client Client) Prepare(ctx context.Context, name string, offer TrustedOffe
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return EnrollmentIntent{}, err
 	}
-	public, _, err := sshkey.Generate(ctx, client.Root)
+	reservation, err := client.reserve(name, offer.value)
 	if err != nil {
 		return EnrollmentIntent{}, err
 	}
-	ids := make([]byte, 32)
-	if _, err := rand.Read(ids); err != nil {
-		return EnrollmentIntent{}, err
-	}
-	intent := EnrollmentIntent{1, hex.EncodeToString(ids[:16]), hex.EncodeToString(ids[16:]), OfferDigest(offer.value), public, offer.value.Expires}
-	data, err := json.Marshal(pending{1, name, offer.value, intent})
-	if err != nil {
-		return EnrollmentIntent{}, err
-	}
-	if err := privatefile.Publish(client.Root, recordPath(name, "intent"), data, false); err != nil {
-		return EnrollmentIntent{}, err
-	}
-	return intent, nil
+	return client.prepareReserved(ctx, reservation)
 }
 func (client Client) Complete(ctx context.Context, name string, trusted TrustedReceipt) (target.Target, error) {
 	value, err := client.read(name)
@@ -234,8 +237,7 @@ func (client Client) Complete(ctx context.Context, name string, trusted TrustedR
 	if err != nil {
 		return target.Target{}, err
 	}
-	fingerprint, _ := sshkey.Fingerprint(value.Intent.PublicKey)
-	if _, err := sshkey.Read(ctx, client.Root, fingerprint); err != nil {
+	if err := client.verifyCredential(ctx, value); err != nil {
 		return target.Target{}, err
 	}
 	encoded, err := json.Marshal(receipt)
@@ -274,14 +276,28 @@ func (client Client) Complete(ctx context.Context, name string, trusted TrustedR
 }
 func (client Client) Inspect(ctx context.Context, name string) (PairView, error) {
 	value, err := client.read(name)
+	if errors.Is(err, os.ErrNotExist) {
+		reservation, reserveErr := client.readPreparation(name)
+		if reserveErr != nil {
+			return PairView{}, reserveErr
+		}
+		return preparationView(reservation.Intent.PairID), nil
+	}
 	if err != nil {
 		return PairView{}, err
 	}
 	view := PairView{1, value.Intent.PairID, "prepared-unconfirmed", "unchecked", "retain request and key; import the trusted host enrollment receipt"}
-	fingerprint, _ := sshkey.Fingerprint(value.Intent.PublicKey)
-	if _, err := sshkey.Read(ctx, client.Root, fingerprint); err != nil {
+	if err := client.verifyCredential(ctx, value); err != nil {
 		view.Access = "conflict"
 		view.Next = "restore the original client credential from an authorized source"
+		if errors.Is(err, os.ErrNotExist) {
+			if _, reserveErr := client.readPreparation(name); reserveErr == nil {
+				key, seedErr := sshkey.Reserved(ctx, client.Root, seedPath(name), false)
+				if seedErr == nil && key.PublicKey() == value.Intent.PublicKey {
+					return preparationView(value.Intent.PairID), nil
+				}
+			}
+		}
 		return view, nil
 	}
 	data, err := privatefile.ReadDurable(client.Root, recordPath(name, "receipt"), MaxDocumentSize)

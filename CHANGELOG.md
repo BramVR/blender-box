@@ -3,6 +3,7 @@
 ## Unreleased
 
 - Add local pairing preparation and trusted-receipt reconciliation, schema-3 targets with pinned SSH identity, shared SSH/SCP credential policy and unchanged legacy fingerprints; native enrollment, revocation, SSH preparation and Windows client credential support remain unfinished.
+- Reserve pairing recovery state before credentials so oversized requests, concurrent preparation and interrupted publication do not leave undiscoverable private keys or change the original request on retry.
 - Stop Linux qualification cases through the same owner identity as operational attempts; `descendant-stop` and `startup-withheld` no longer crash reading an operational-only receipt field during exact stop.
 - Run the hosted `baseline` onboarding job through the persistent proof controller: one owned install, baseline Run, and removal execution per dispatch, with the controller-validated outcome and viewport published; `host-install` settles that same execution instead of consuming a second fixture.
 - Add a bounded proof-controller `collect` operation that exports only root-bound baseline evidence, including passing or failed host-install executions without their private installer settlement, after exact settlement and retained viewport opt-in validation.

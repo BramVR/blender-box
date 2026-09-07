@@ -134,7 +134,7 @@ blender-box pair status studio --json
 blender-box pair complete studio --receipt /path/to/receipt.json --trust-receipt "$RECEIPT_DIGEST" --json
 ```
 
-Do not compute a digest from an untrusted file and treat that as host approval. Preparation outputs a public intent and retains its private key locally. Repeating the same operation preserves recovery state. Completion verifies the original intent and saves a schema-3 target without replacing another profile. Readiness stays unchecked until `doctor` succeeds.
+Do not compute a digest from an untrusted file and treat that as host approval. Preparation reserves recovery state before retaining a private key and outputs only the durable public intent. Oversized requests refuse before credential creation. Repeating preparation after a failure or concurrent attempt preserves the original request and key. Completion verifies the original intent and saves a schema-3 target without replacing another profile. Readiness stays unchecked until `doctor` succeeds.
 
 Paired transport pins the host's Ed25519 key and the dedicated client key for both SSH and SCP. It refuses missing or changed credentials. Windows clients refuse paired credentials until native owner and ACL checks are available. Existing alias profiles remain supported.
 
