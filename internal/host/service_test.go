@@ -51,6 +51,17 @@ type delayedDesktopCapturer struct {
 	release chan struct{}
 }
 
+type operationWaitContext struct {
+	context.Context
+	waiting chan struct{}
+	once    sync.Once
+}
+
+func (ctx *operationWaitContext) Done() <-chan struct{} {
+	ctx.once.Do(func() { close(ctx.waiting) })
+	return ctx.Context.Done()
+}
+
 func (fake *fakeDesktopCapturer) Check(context.Context) error {
 	return fake.checkErr
 }
@@ -536,7 +547,8 @@ func TestSettlementDuringDesktopCaptureWaitsForCaptureAndRemovesRunRoot(t *testi
 	root := privateTempDir(t)
 	now := time.Now().UTC()
 	desktop := &delayedDesktopCapturer{started: make(chan struct{}), release: make(chan struct{})}
-	service := NewService(Dependencies{Platform: "windows", Tasks: &fakeTaskLauncher{}, Daemon: &fakeDaemon{}, Desktop: desktop, Now: func() time.Time { return now }})
+	daemon := &fakeDaemon{}
+	service := NewService(Dependencies{Platform: "windows", Tasks: &fakeTaskLauncher{}, Daemon: daemon, Desktop: desktop, Now: func() time.Time { return now }})
 	request := stageHostScenarioTestRun(t, service, root, now, 2, payload.Scenario{
 		Script:             "scenario.py",
 		ReadTimeoutSeconds: 600,
@@ -550,27 +562,73 @@ func TestSettlementDuringDesktopCaptureWaitsForCaptureAndRemovesRunRoot(t *testi
 	<-desktop.started
 	receipt, err := service.Status(root, StatusRequest{SchemaVersion: 1, RunID: request.Claim.RunID})
 	if err != nil {
+		close(desktop.release)
+		<-executed
 		t.Fatal(err)
 	}
 	type settleResult struct {
 		cleanup orchestrator.CleanupState
 		err     error
 	}
-	settleStarted := make(chan struct{})
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	settleCtx := &operationWaitContext{Context: ctx, waiting: make(chan struct{})}
 	settled := make(chan settleResult, 1)
 	go func() {
-		close(settleStarted)
-		cleanup, err := service.Settle(context.Background(), root, settleHostRequest(receipt))
+		cleanup, err := service.Settle(settleCtx, root, settleHostRequest(receipt))
 		settled <- settleResult{cleanup: cleanup, err: err}
 	}()
-	<-settleStarted
-	close(desktop.release)
-	if err := <-executed; err != nil {
-		t.Fatalf("capture task failed before settlement: %v", err)
+	var premature *settleResult
+	select {
+	case <-settleCtx.waiting:
+	case result := <-settled:
+		premature = &result
+		t.Errorf("settlement returned before capture completed: %+v", result)
+	case <-ctx.Done():
+		t.Errorf("settlement never reached the capture's operation lock: %v", ctx.Err())
 	}
-	result := <-settled
+	if _, err := os.Stat(runPath(root, request.Claim.RunID)); err != nil {
+		t.Errorf("Run root disappeared during capture: %v", err)
+	}
+	close(desktop.release)
+	executeErr := <-executed
+	var result settleResult
+	if premature != nil {
+		result = *premature
+	} else {
+		result = <-settled
+	}
+	const settledDuringCollection = "Run was settled during evidence collection"
+	if executeErr != nil && executeErr.Error() != settledDuringCollection {
+		t.Fatalf("capture task failed: %v", executeErr)
+	}
 	if result.err != nil || !result.cleanup.Known() {
 		t.Fatalf("cleanup = %+v, error = %v", result.cleanup, result.err)
+	}
+	final, err := service.Status(root, StatusRequest{SchemaVersion: 1, RunID: request.Claim.RunID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantState := orchestrator.StateComplete
+	if executeErr != nil {
+		wantState = orchestrator.StateFailed
+	}
+	if final.State != wantState || final.Cleanup != result.cleanup || final.SessionID != receipt.SessionID || !final.Claim.Equal(receipt.Claim) {
+		t.Fatalf("settled receipt = %+v, execution error = %v", final, executeErr)
+	}
+	if err := orchestrator.ValidateEvidence(final.Evidence, request.Body.Payload.Scenario, receipt.SessionID); err != nil {
+		t.Fatalf("capture evidence was not published before settlement: %v", err)
+	}
+	if len(daemon.stops) != 1 || daemon.stops[0].SessionID != receipt.SessionID {
+		t.Fatalf("settlement stopped unexpected Sessions: %+v", daemon.stops)
+	}
+	release, _, err := service.resumeActiveExecution(context.Background(), context.Background(), root, request, receipt.SessionID, "evidence collection")
+	if release != nil {
+		release()
+		t.Fatal("settled Run resumed execution")
+	}
+	if err == nil || err.Error() != settledDuringCollection {
+		t.Fatalf("post-settlement reconciliation error = %v", err)
 	}
 	if _, err := os.Stat(runPath(root, request.Claim.RunID)); !os.IsNotExist(err) {
 		t.Fatalf("capture recreated settled Run root: %v", err)
