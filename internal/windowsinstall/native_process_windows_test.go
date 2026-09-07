@@ -493,14 +493,14 @@ func TestNativeJobCompletionObservations(t *testing.T) {
 					}
 				}
 				ready()
-				image := func(handle syscall.Handle) string {
+				image := func(handle syscall.Handle) (string, error) {
 					var buffer [1024]uint16
 					size := uint32(len(buffer))
 					ok, _, err := testQueryProcessImage.Call(uintptr(handle), 0, uintptr(unsafe.Pointer(&buffer[0])), uintptr(unsafe.Pointer(&size)))
 					if ok == 0 || size == 0 || size > uint32(len(buffer)) {
-						t.Fatalf("bounded process image query failed: ok=%d size=%d error=%v", ok, size, err)
+						return "", fmt.Errorf("bounded process image query failed: ok=%d size=%d error=%v", ok, size, err)
 					}
-					return syscall.UTF16ToString(buffer[:size])
+					return syscall.UTF16ToString(buffer[:size]), nil
 				}
 				verifyMember := func(handle syscall.Handle) {
 					var member uint32
@@ -527,7 +527,10 @@ func TestNativeJobCompletionObservations(t *testing.T) {
 					if err := syscall.GetProcessTimes(witness, &created, &exited, &kernel, &user); err != nil || created != record.Created {
 						t.Fatalf("native observation leaf creation mismatch: %v", err)
 					}
-					actualImage := image(witness)
+					actualImage, err := image(witness)
+					if err != nil {
+						t.Fatal(err)
+					}
 					if !strings.EqualFold(actualImage, executable) {
 						t.Fatal("native observation leaf executable mismatch")
 					}
@@ -557,7 +560,7 @@ func TestNativeJobCompletionObservations(t *testing.T) {
 							continue
 						}
 						wait, err := syscall.WaitForSingleObject(process.handle, 0)
-						row("phase=%s pid=%d witness=%t retained_member=%t wait=%d wait_error=%v", phase, process.pid, process.handle == witness, process.image != "", wait, err)
+						row("phase=%s pid=%d witness=%t retained_member=%t wait=%d wait_error=%v", phase, process.pid, process.handle == witness, process.created != (syscall.Filetime{}), wait, err)
 						if err != nil || (wait != syscall.WAIT_OBJECT_0 && wait != syscall.WAIT_TIMEOUT) {
 							t.Fatal("native observation signal query failed")
 						}
@@ -595,7 +598,10 @@ func TestNativeJobCompletionObservations(t *testing.T) {
 					if err := syscall.GetProcessTimes(handle, &process.created, &exited, &kernel, &user); err != nil {
 						t.Fatal(err)
 					}
-					process.image = image(handle)
+					process.image, err = image(handle)
+					if err != nil {
+						row("phase=member-image-unavailable pid=%d error=%v", pid, err)
+					}
 					wait, err := syscall.WaitForSingleObject(handle, 0)
 					row("phase=member-pinned pid=%d created=%+v image=%q wait=%d wait_error=%v member=1", pid, process.created, process.image, wait, err)
 					if err != nil || (wait != syscall.WAIT_OBJECT_0 && wait != syscall.WAIT_TIMEOUT) {
