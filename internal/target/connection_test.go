@@ -2,6 +2,7 @@ package target
 
 import (
 	"encoding/json"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -32,7 +33,7 @@ func TestPairedTargetRoundTripBothPlatformsAndStrictSchema(t *testing.T) {
 			if value, _ := original.MarshalJSON(); string(value) != string(before) || original.Fingerprint() != fingerprint {
 				t.Fatal("pairing changed original target")
 			}
-			store := Store{Root: t.TempDir() + "/private"}
+			store := Store{Root: filepath.Join(t.TempDir(), "private")}
 			if _, err := store.Save("paired", paired, false); err != nil {
 				t.Fatal(err)
 			}
