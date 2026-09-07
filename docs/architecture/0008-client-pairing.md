@@ -11,7 +11,7 @@ read_when:
 
 A paired target binds the direct endpoint, login, Ed25519 host public key and dedicated client-key fingerprint. Schema version 3 carries that connection alongside one existing Windows or Linux body. It uses the existing target store and original Run fingerprint. Alias schemas 1 and 2 retain their exact canonical bytes and fingerprints.
 
-The current implementation covers the local client. It requires a separately trusted host offer and enrollment receipt. Native offer creation, enrollment, revocation and setup-SSH return unsupported. No command turns local preparation into a successful host enrollment or readiness check.
+The local client requires a separately trusted host offer and enrollment receipt. Windows `setup ssh` also provides a read-only preparation preview through the existing installation owner. SSH apply, native offer creation, enrollment and revocation remain unsupported. No command turns local preparation into a successful host enrollment or readiness check.
 
 ## Local workflow
 
@@ -44,6 +44,12 @@ Native enrollment will use the approved single current owned store snapshot and 
 The Windows owner must prove its account-scoped authorization source, physical identities, ACLs, serialized publication, interruption recovery and preservation of unrelated access. Revocation must refuse active or unresolved Runs and distinguish exact grant removal from fresh authentication rejection. Existing authenticated SSH connections are a separate fact.
 
 SSH preparation requires an explicit owned setup operation with its own preview and authority. The current installer and proof controller do not authorize it by implication. Hosted pair-and-run must use the actual qualified controller and retain private original Run authority. Local tests, accepted receipt fixtures and this CLI slice do not satisfy native or hosted acceptance.
+
+The [Windows SSH preview](../windows-ssh-preparation.md) binds the request, installed receipt and runtime, file identities and ACL digests, account membership, configured host-key provenance, current configuration, proposed bytes and permissions, effective policies, service and firewall facts. Repeated observations reject changed dependencies. The existing owner supplies this read-only operation without extending installation execution authority. Current policy comes from the installed `sshd`; the proposed policy is predicted until apply validates the staged file natively. Preview creates no state or fence. Existing `Include` and `Match` configurations remain outside this initial subset, including the default Windows administrator block.
+
+Preview retains one Windows read scope across both observations and the final maintenance check. Canonical external paths resolve through captured fixed-volume anchors and retained parent handles; each newly discovered child requires a no-follow open. The host package supplies one maintenance policy through bounded `Stat`, `ReadDir` and `ReadFile` observations. Windows path mechanics stay in the installer. Each enumeration duplicates the retained directory handle with unchanged access and uses a fresh Go file wrapper to restart the scan. Directory handles do not freeze membership or ACLs, and repeated enumeration detects changes without proving atomic absence. Native execution must verify sharing behavior and installed-tool compatibility with the physical paths.
+
+The installed OpenSSH 9.5 parser runs with `-G -T -C` so it dumps the selected account's current configuration before loading private host keys. Native command paths use the captured physical volume; tool failure refuses preview. PowerShell module caching is disabled for those child processes. The volume query is allowed before descendant opens; this contract does not claim zero operating-system network traffic.
 
 ## Verification
 

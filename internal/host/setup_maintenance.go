@@ -9,7 +9,6 @@ import (
 
 	"encoding/json"
 	"github.com/BramVR/blender-box/internal/privatefile"
-	"github.com/BramVR/blender-box/internal/strictjson"
 )
 
 // SetupClaim fences maintenance independently of Run and Session authority.
@@ -37,18 +36,7 @@ func (c SetupClaim) Validate() error {
 }
 
 func ReadSetupClaim(root string) (SetupClaim, error) {
-	var claim SetupClaim
-	if _, err := os.Lstat(filepath.Join(root, "pending-setup.json")); err != nil {
-		return claim, err
-	}
-	data, err := readRegularFile(filepath.Join(root, "pending-setup.json"), 16<<10)
-	if err != nil {
-		return claim, err
-	}
-	if err = strictjson.Decode(data, &claim); err != nil {
-		return claim, err
-	}
-	return claim, claim.Validate()
+	return readMaintenanceSetupClaim(root, maintenanceFiles{})
 }
 
 // RejectPendingSetup rejects even malformed or dangling authority records.
@@ -62,20 +50,7 @@ func RejectPendingSetup(root string) error {
 }
 
 func inspectSetupClaim(root string, own *SetupClaim) error {
-	if own == nil {
-		return RejectPendingSetup(root)
-	}
-	if err := own.Validate(); err != nil {
-		return err
-	}
-	current, err := ReadSetupClaim(root)
-	if err != nil {
-		return err
-	}
-	if current != *own {
-		return fmt.Errorf("pending setup execution changed")
-	}
-	return nil
+	return inspectMaintenanceSetupClaim(root, own, maintenanceFiles{})
 }
 
 // PublishSetupClaim and ClearSetupClaim require the shared maintenance locks.

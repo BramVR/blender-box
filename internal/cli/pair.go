@@ -14,7 +14,7 @@ import (
 
 func pairCommand(ctx context.Context, args []string, stdout, stderr io.Writer, dependencies Dependencies) int {
 	if len(args) == 0 || args[0] == "--help" || args[0] == "-h" {
-		fmt.Fprintln(stdout, "Pairing client uses independently verified host-local offer and receipt digests.\n  pair prepare NAME --offer PATH --trust-offer SHA256 [--json]\n  pair complete NAME --receipt PATH --trust-receipt SHA256 [--json]\n  pair status NAME [--json]\nHost offer/enrollment/revoke and setup ssh are unsupported in this unit. Readiness requires a separate doctor command. Retain the request and credential while host enrollment is unconfirmed.")
+		fmt.Fprintln(stdout, "Pairing client uses independently verified host-local offer and receipt digests.\n  pair prepare NAME --offer PATH --trust-offer SHA256 [--json]\n  pair complete NAME --receipt PATH --trust-receipt SHA256 [--json]\n  pair status NAME [--json]\nHost offer/enrollment/revoke and SSH apply are unsupported. setup ssh --request PATH previews existing Windows SSH state. Readiness requires a separate doctor command. Retain the request and credential while host enrollment is unconfirmed.")
 		if len(args) == 0 {
 			return 2
 		}

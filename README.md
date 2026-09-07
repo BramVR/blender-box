@@ -124,7 +124,7 @@ Saved profiles and Run recovery records use the operating system's user configur
 
 ## Prepare local pairing
 
-The local pairing client accepts independently trusted host offers and enrollment receipts. Native offer creation, enrollment, revocation and SSH preparation are not implemented yet. This slice does not provide a complete onboarding flow or prove host readiness.
+The local pairing client accepts independently trusted host offers and enrollment receipts. Windows hosts can preview a bounded [SSH preparation plan](docs/windows-ssh-preparation.md). SSH apply, native offer creation, enrollment and revocation remain unfinished. This slice does not provide a complete onboarding flow or prove host readiness.
 
 On a POSIX client with `ssh-keygen`, an authorized test or integration can use these entrypoints with its trusted input files and independently verified digests:
 

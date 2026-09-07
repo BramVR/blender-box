@@ -662,7 +662,7 @@ scenarios:
   }
 }</code></pre>
           <p>Flat version 1 Windows targets remain accepted and normalize to the same values. Unknown versions, platforms, fields, and duplicate JSON keys fail locally. There is no implicit default target.</p>
-          <p>Paired target schema 3 binds a direct SSH endpoint, login, Ed25519 host public key and dedicated client-key fingerprint through the same original Run authority. Alias target bytes remain unchanged. The local client pairing slice keeps receipt approval and target publication separate from host readiness. Native enrollment, revocation, SSH preparation and hosted pair-and-run proof remain unfinished. See the <a href="../architecture/0008-client-pairing.md">client pairing contract</a>.</p>
+          <p>Paired target schema 3 binds a direct SSH endpoint, login, Ed25519 host public key and dedicated client-key fingerprint through the same original Run authority. Alias target bytes remain unchanged. The local client pairing slice keeps receipt approval and target publication separate from host readiness. A read-only <a href="../windows-ssh-preparation.md">Windows SSH preparation preview</a> now binds observed installation, account, file, key, service and firewall facts to an exact proposal through the existing owner. Its proposed effective policy remains a prediction until native staged-file validation. SSH apply, native enrollment, revocation and hosted pair-and-run proof remain unfinished. See the <a href="../architecture/0008-client-pairing.md">client pairing contract</a>.</p>
         </article>
       </div>
 

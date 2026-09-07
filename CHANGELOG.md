@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Keep failed native startup cleanup unknown unless the failed call returns no process identity and fresh Job accounting proves no process was created; preserve the pending setup fence when that proof is missing.
+- Fix retained Windows SSH directory enumeration by duplicating the held handle for each scan while preserving write/delete exclusion and observing fresh membership.
+- Add read-only Windows SSH preparation previews with installed-runtime, account, file, host-key, service and firewall pins plus exact proposed configuration and permissions; apply, enrollment, revocation and native acceptance remain unfinished.
 - Add local pairing preparation and trusted-receipt reconciliation, schema-3 targets with pinned SSH identity, shared SSH/SCP credential policy and unchanged legacy fingerprints; native enrollment, revocation, SSH preparation and Windows client credential support remain unfinished.
 - Reserve pairing recovery state before credentials so oversized requests, concurrent preparation and interrupted publication do not leave undiscoverable private keys or change the original request on retry.
 - Add bounded root-only proof-controller qualification cases and original-Run cleanup authority while keeping ordinary dispatch closed until all native evidence is approved.
