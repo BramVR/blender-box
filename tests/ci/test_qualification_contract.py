@@ -114,6 +114,7 @@ class QualificationContractTests(unittest.TestCase):
             self.assertEqual(native.entrypoint(["dispatch"]), 1)
         load.assert_not_called()
 
+    @unittest.skipUnless(model.fcntl is not None, "POSIX native controller fixtures")
     def test_linux_envelope_never_constructs_windows_request_or_admission(self):
         value = linux() | {"deadline_unix": 9999999999}
         intent = native.LinuxIntent.parse(value)
