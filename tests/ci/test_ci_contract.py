@@ -44,13 +44,13 @@ class CIContractTests(unittest.TestCase):
         self.assertEqual(workflow.count("./scripts/ci check"), 1)
         self.assertEqual(workflow.count("./scripts/ci test"), 1)
         self.assertEqual(workflow.count("./scripts/ci all"), 2)
-        self.assertEqual(workflow.count("fetch-depth: 0"), 4)
+        self.assertEqual(workflow.count("fetch-depth: 0"), 5)
 
     def test_every_go_backed_job_installs_pinned_go(self) -> None:
         workflow = WORKFLOW.read_text(encoding="utf-8")
 
-        self.assertEqual(workflow.count(f"uses: {SETUP_GO}"), 4)
-        self.assertEqual(workflow.count("go-version-file: go.mod"), 4)
+        self.assertEqual(workflow.count(f"uses: {SETUP_GO}"), 5)
+        self.assertEqual(workflow.count("go-version-file: go.mod"), 5)
 
     def test_go_and_shell_sources_keep_lf_checkouts(self) -> None:
         attributes = GITATTRIBUTES.read_text(encoding="utf-8").splitlines()
