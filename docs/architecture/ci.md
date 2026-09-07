@@ -95,6 +95,8 @@ After a helper crash before Invocation persistence, a matching native receipt su
 
 One immutable policy variant selects the baseline or named-target Windows driver. The root supervisor reloads qualified runtime and durable request authorization before sending the exact native receipt through the inherited socket. The worker checks the root peer and both process identities, binds the proof request and retained inputs, then consumes and closes the socket before candidate execution. This authority admits only the concrete Windows proof host. Direct hosted calls and Linux hosted proof retain their preflight refusal. Both Windows hosted jobs remain required after native process, storage, disconnect, reboot, and original-target recovery qualification.
 
+Root qualification uses the same service with three explicit selector origins. Fixed Linux cases require no Windows credentials. Windows qualification uses the existing Controller state and original Run journal, with a separate immutable origin and bounded protected authorization. Cleanup renewal binds directly to that original authority. Ordinary dispatch and operational release retain the complete achieved-qualification gate. See [native qualification](../proof-controller-qualification.md); local tests do not promote the installed controller.
+
 ## Linux proof
 
 The separate `Linux Blender proof` workflow uses the `linux-blender-proof` job and the shared evidence, fencing, and public-projection assertions. The local runner targets the documented Ubuntu GNOME Xorg configuration. Its workflow retains the unconditional `hosted-recovery-retention-unavailable` preflight before operator loading or host activity.

@@ -499,6 +499,32 @@ class NativeCLITests(unittest.TestCase):
             files.assert_not_called()
             ops.assert_not_called()
 
+    @unittest.skipUnless(model.fcntl is not None, "POSIX supervisor entrypoint")
+    def test_operational_selector_still_requires_all_eleven_before_supervisor_start(self):
+        chosen = policy()
+        request = baseline.request()
+        intent = {"schema_version": 1, "execution_id": request.execution_id, "attempt": 1,
+                  "request_digest": request.digest, "mode": "baseline"}
+        selector = native.Selector.create("operational", intent)
+        qualification = {"schema_version": 1, "qualified": True, "policy_sha256": chosen.digest,
+                         "evidence": {key: "f" * 64 for key in native.QUALIFICATIONS}}
+        for change in ({"qualified": False}, {"policy_sha256": "0" * 64},
+                       {"evidence": {key: value for key, value in qualification["evidence"].items()
+                                     if key != native.QUALIFICATIONS[0]}}):
+            with self.subTest(change=change):
+                sources = {native.RUNTIME / "pending.json": model.proof.canonical(selector.wire()),
+                           native.CONFIG / "policy.json": model.proof.canonical(chosen.value),
+                           native.CONFIG / "qualification.json": model.proof.canonical(qualification | change)}
+                with mock.patch.object(native, "protected_read", side_effect=lambda path, *a, **kw: sources[path]) as reads, \
+                     mock.patch.object(os, "getuid", return_value=0), mock.patch.object(os, "geteuid", return_value=0), \
+                     mock.patch.object(native, "RootedFiles") as files, mock.patch.object(native, "LinuxOps") as ops, \
+                     mock.patch.object(worker, "Supervisor") as supervisor:
+                    self.assertEqual(worker.main(["supervise"]), 1)
+                    self.assertEqual([call.args[0] for call in reads.call_args_list], list(sources))
+                    files.assert_not_called()
+                    ops.assert_not_called()
+                    supervisor.assert_not_called()
+
 
 @unittest.skipUnless(model.fcntl is not None, "POSIX native controller fixtures")
 class WorkerProtocolTests(unittest.TestCase):
@@ -653,7 +679,7 @@ class NativeLifecycleTests(unittest.TestCase):
 
     def start_native(self, operation):
         self.assertEqual(operation, "start")
-        pending = model.document(self.files.read(self.runtime / "pending.json"))
+        pending = native.Selector.parse(self.files.read(self.runtime / "pending.json")).intent
         root = self.fixture.control / pending["execution_id"]
         self.assertEqual(model.document(self.files.read(root / "execution.json"))["phase"], "starting")
         self.assertEqual(model.document(self.files.read(root / "intent-0001.json")), pending)
@@ -747,7 +773,7 @@ class NativeLifecycleTests(unittest.TestCase):
             self.start_native(operation)
             path = native.receipt_path(invocation())
             path.unlink()
-            intent = native.parse_intent(self.files.read(self.runtime / "pending.json"))
+            intent = native.Selector.parse(self.files.read(self.runtime / "pending.json")).intent
             failure = native.StartupFailure(intent, model.proof.digest(self.files.read(native.attempt_path(intent, "intent"))),
                                             "1" * 32, "2" * 32, 300, 3000, invocation().cgroup, 2, 3)
             self.files.publish(native.attempt_path(intent, "startup-failure"), model.proof.canonical(asdict(failure)))
@@ -827,8 +853,8 @@ class NativeLifecycleTests(unittest.TestCase):
         with self.assertRaisesRegex(model.ControllerError, "fixture-unresolved"):
             self.controller.dispatch(baseline.command("status"))
         self.files.publish(pending_path, originals[pending_path])
-        pending = model.document(originals[pending_path]) | {"execution_id": "replacement"}
-        self.files.publish(pending_path, model.proof.canonical(pending), exclusive=False)
+        pending = native.Selector.parse(originals[pending_path]).intent | {"execution_id": "replacement"}
+        self.files.publish(pending_path, model.proof.canonical(native.Selector.create("operational", pending).wire()), exclusive=False)
         with self.assertRaisesRegex(model.ControllerError, "fixture-unresolved"):
             self.controller.dispatch(baseline.command("status"))
         self.files.publish(pending_path, originals[pending_path], exclusive=False)
@@ -938,13 +964,80 @@ class NativeLifecycleTests(unittest.TestCase):
         with self.assertRaisesRegex(model.ControllerError, "native-service-unavailable"):
             native.bounded_command([sys.executable, "-c", "import os; os.write(1,b'x'*20000)"], **kwargs)
 
+    def test_supervisor_large_result_packet_preserves_operational_and_windows_budget(self):
+        import test_qualification_contract as contract
+        parent_dir = self.fixture.root / "result-cgroup"
+        parent_dir.mkdir()
+        @contextmanager
+        def group(name):
+            path = parent_dir if name == native.UNIT_CGROUP else parent_dir / name.rsplit("/", 1)[1]
+            fd = os.open(path, os.O_RDONLY | os.O_DIRECTORY)
+            try:
+                yield fd
+            finally:
+                os.close(fd)
+        for kind in ("operational", "windows-qualification", "linux-qualification"):
+            with self.subTest(kind=kind):
+                context = None
+                request = baseline.request(kind)
+                pending = {"schema_version": 1, "execution_id": request.execution_id, "attempt": 1,
+                           "request_digest": request.digest, "mode": "baseline"}
+                root = self.fixture.control / request.execution_id
+                if kind == "windows-qualification":
+                    context = native.WindowsQualification(native.QualificationAuthorization.parse(
+                        model.proof.canonical(contract.authorization())), "windows-baseline")
+                    request = baseline.request(context.execution_id)
+                    root = self.fixture.control / request.execution_id
+                    pending = context.intent(request, 1, "baseline")
+                elif kind == "linux-qualification":
+                    context = native.LinuxIntent.parse(contract.linux())
+                    root, pending = context.root, context.value
+                root.mkdir(mode=0o700, parents=True)
+                self.files.publish(self.runtime / "pending.json", model.proof.canonical(native.Selector.create(kind, pending).wire()), exclusive=False)
+                if kind == "linux-qualification":
+                    self.files.publish(root / "intent.json", model.proof.canonical(pending))
+                else:
+                    self.files.publish(root / "intent-0001.json", model.proof.canonical(pending))
+                    self.files.publish(root / "request.json", model.proof.canonical(asdict(request)))
+                ops = mock.Mock()
+                ops.group.side_effect = group
+                ops.unit.return_value = native.UnitState("active", os.getpid(), "2" * 32, native.UNIT_CGROUP)
+                ops.boot.return_value = "1" * 32
+                leaf = "attempt-" + "3" * 32
+                ops.process.side_effect = lambda pid: native.Process(pid, 1 if pid == os.getpid() else os.getpid(),
+                    123, native.UNIT_CGROUP if pid == os.getpid() else native.UNIT_CGROUP + "/" + leaf)
+                receiver, sender = socket.socketpair(socket.AF_UNIX, socket.SOCK_DGRAM)
+                receiver.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 200000)
+                sender.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 200000)
+                self.addCleanup(sender.close)
+                self.addCleanup(receiver.close)
+                sender.sendall(model.proof.canonical({"schema_version": 1, "ready": True}))
+                completed = {"schema_version": 1, "result": {"payload": "x" * 70000}}
+                sender.sendall(model.proof.canonical(completed))
+                gate = (mock.Mock(), mock.Mock())
+                with mock.patch.object(worker.socket, "socketpair", side_effect=[gate, (receiver, mock.Mock())]), \
+                     mock.patch.object(os, "fork", return_value=456), mock.patch.object(worker, "reap_child"), \
+                     mock.patch.object(worker.uuid, "uuid4", return_value=mock.Mock(hex="3" * 32)), \
+                     mock.patch.object(worker.Supervisor, "release"), \
+                     mock.patch.object(native, "qualification_context", return_value=context):
+                    if kind == "linux-qualification":
+                        with self.assertRaisesRegex(model.ControllerError, "native-message-invalid"):
+                            worker.Supervisor(policy(), self.files, ops).serve()
+                        self.assertFalse(self.files.exists(root / "result.json"))
+                    else:
+                        worker.Supervisor(policy(), self.files, ops).serve()
+                        saved = model.document(self.files.read(root / "result-0001.json"))
+                        self.assertEqual(saved["result"], completed["result"])
+                (parent_dir / leaf).rmdir()
+
     def test_membership_failure_closes_gate_and_reaps_owned_child_without_release(self):
         request = baseline.request()
         root = self.fixture.control / request.execution_id
         root.mkdir(mode=0o700)
         pending = {"schema_version": 1, "execution_id": request.execution_id, "attempt": 1,
                    "request_digest": request.digest, "mode": "baseline"}
-        for path, value in ((self.runtime / "pending.json", pending), (root / "intent-0001.json", pending),
+        for path, value in ((self.runtime / "pending.json", native.Selector.create("operational", pending).wire()),
+                            (root / "intent-0001.json", pending),
                             (root / "request.json", asdict(request))):
             self.files.publish(path, model.proof.canonical(value))
         parent_dir = self.fixture.root / "fake-cgroup"

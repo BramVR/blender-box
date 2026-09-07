@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Add bounded root-only proof-controller qualification cases and original-Run cleanup authority while keeping ordinary dispatch closed until all native evidence is approved.
 - Add owned Windows runtime installation with pinned artifact manifests, preview, durable installation receipts, bounded execution status and recovery, generated targets, repeatable removal, and maintenance fencing; refuse legacy setup apply without ownership and prepare separately authorized host-install proof.
 - Start trusted Windows installer PowerShell commands suspended with `CREATE_NO_WINDOW` to restore execution and output while generic commands remain detached and suspended; retain exact Job-member handles, including any console helper, and require complete membership and physical exit proof within one cleanup deadline before reporting tree cleanup.
 - Fix Windows named-target replacement while readers hold the previous profile open, preserving complete records and permission failures.
