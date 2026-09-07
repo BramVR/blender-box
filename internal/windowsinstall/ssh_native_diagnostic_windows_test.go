@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"syscall"
 	"testing"
@@ -55,7 +56,7 @@ func TestSSHRetainedDirectoryDiagnostic(t *testing.T) {
 		if err != nil || observed != identity {
 			t.Fatalf("%s identity: %q %v", label, observed, err)
 		}
-		handle, _, callErr := sshReopen.Call(file.Fd(), uintptr(syscall.GENERIC_READ), uintptr(syscall.FILE_SHARE_READ), uintptr(syscall.FILE_FLAG_BACKUP_SEMANTICS|syscall.FILE_FLAG_OPEN_REPARSE_POINT))
+		handle, _, callErr := sshKernel.NewProc("ReOpenFile").Call(file.Fd(), uintptr(syscall.GENERIC_READ), uintptr(syscall.FILE_SHARE_READ), uintptr(syscall.FILE_FLAG_BACKUP_SEMANTICS|syscall.FILE_FLAG_OPEN_REPARSE_POINT))
 		row := map[string]any{"kind": "directory", "origin": label, "stage": "ReOpenFile", "success": handle != ^uintptr(0), "same_identity": true}
 		if handle == ^uintptr(0) {
 			row["error"] = callErr.Error()
@@ -148,6 +149,10 @@ func TestSSHNativeLaunchPathDiagnostic(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	globalRoot, err := sshDiagnosticGlobalRoot(reader, logical)
+	if err != nil {
+		t.Fatal(err)
+	}
 	physicalEnvironment := append(environment, "PSModulePath="+modules, "PSModuleAnalysisCachePath=nul")
 	logicalEnvironment := []string{"SystemRoot=" + filepath.Dir(system), "WINDIR=" + filepath.Dir(system), "PATH=" + system, "PSModulePath=" + filepath.Join(home, "Modules"), "PSModuleAnalysisCachePath=nul"}
 	script := "$ErrorActionPreference='Stop'\n[Console]::InputEncoding=[Text.UTF8Encoding]::new($false)\n[Console]::OutputEncoding=[Text.UTF8Encoding]::new($false)\n$OutputEncoding=[Console]::OutputEncoding\n$r=ConvertFrom-Json ([Console]::In.ReadToEnd())\n" + nativeFunctions + "\n[ordered]@{value=$r.value;cache=$env:PSModuleAnalysisCachePath} | ConvertTo-Json -Compress"
@@ -168,6 +173,8 @@ func TestSSHNativeLaunchPathDiagnostic(t *testing.T) {
 		{"guid-exe_guid-cwd_dos-env", physical, filepath.Dir(physical), logicalEnvironment},
 		{"dos-exe_dos-cwd_guid-env", logical, home, physicalEnvironment},
 		{"guid-exe_guid-cwd_guid-env", physical, filepath.Dir(physical), physicalEnvironment},
+		{"globalroot-exe_guid-cwd_guid-env", globalRoot, filepath.Dir(physical), physicalEnvironment},
+		{"globalroot-exe_globalroot-cwd_guid-env", globalRoot, filepath.Dir(globalRoot), physicalEnvironment},
 	} {
 		if !t.Run(variant.name, func(t *testing.T) {
 			job, err := newNativeJob()
@@ -318,4 +325,42 @@ func sshDiagnosticStart(job *nativeJob, executable, workingDirectory string, arg
 		return spawn, fmt.Errorf("record native process creation: %w", err)
 	}
 	return spawn, nil
+}
+
+func sshDiagnosticGlobalRoot(reader *sshNativeReader, logical string) (string, error) {
+	finalPath := func(path string) (string, error) {
+		file, err := reader.open(path)
+		if err != nil {
+			return "", err
+		}
+		var buffer [32768]uint16
+		length, _, callErr := sshKernel.NewProc("GetFinalPathNameByHandleW").Call(file.(*sshWindowsFile).Fd(), uintptr(unsafe.Pointer(&buffer[0])), uintptr(len(buffer)), 2)
+		if length == 0 {
+			return "", fmt.Errorf("query retained NT device path: %w", callErr)
+		}
+		if length >= uintptr(len(buffer)) {
+			return "", fmt.Errorf("retained NT path exceeds bound")
+		}
+		return syscall.UTF16ToString(buffer[:length]), nil
+	}
+	root, err := finalPath(logical[:3])
+	if err != nil {
+		return "", err
+	}
+	root = strings.TrimSuffix(root, `\`)
+	const prefix = `\Device\HarddiskVolume`
+	if !strings.HasPrefix(root, prefix) {
+		return "", fmt.Errorf("unsupported retained NT volume")
+	}
+	if number, err := strconv.ParseUint(strings.TrimPrefix(root, prefix), 10, 32); err != nil || number == 0 {
+		return "", fmt.Errorf("invalid retained NT volume")
+	}
+	path, err := finalPath(logical)
+	if err != nil {
+		return "", err
+	}
+	if !strings.HasPrefix(path, root+`\`) {
+		return "", fmt.Errorf("executable NT path differs from retained volume")
+	}
+	return `\\?\GLOBALROOT` + path, nil
 }

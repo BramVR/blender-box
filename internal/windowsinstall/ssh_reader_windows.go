@@ -14,7 +14,6 @@ import (
 var sshKernel = syscall.NewLazyDLL("kernel32.dll")
 var sshVolumeName = sshKernel.NewProc("GetVolumeNameForVolumeMountPointW")
 var sshDriveType = sshKernel.NewProc("GetDriveTypeW")
-var sshReopen = sshKernel.NewProc("ReOpenFile")
 var sshKernelSecurity = syscall.NewLazyDLL("advapi32.dll").NewProc("GetKernelObjectSecurity")
 var sshGetAce = syscall.NewLazyDLL("advapi32.dll").NewProc("GetAce")
 var sshNtCreate = syscall.NewLazyDLL("ntdll.dll").NewProc("NtCreateFile")
@@ -105,14 +104,19 @@ func (sshWindowsBackend) child(parent sshHeldFile, name string) (sshHeldFile, er
 	return &sshWindowsFile{os.NewFile(uintptr(handle), physical), physical}, nil
 }
 func (f *sshWindowsFile) ReadDir(maximum int) ([]fs.DirEntry, error) {
-	handle, _, err := sshReopen.Call(f.Fd(), uintptr(syscall.GENERIC_READ), uintptr(syscall.FILE_SHARE_READ), uintptr(syscall.FILE_FLAG_BACKUP_SEMANTICS|syscall.FILE_FLAG_OPEN_REPARSE_POINT))
-	if handle == ^uintptr(0) {
+	self, err := syscall.GetCurrentProcess()
+	if err != nil {
 		return nil, err
 	}
-	file := os.NewFile(handle, f.physical)
+	var handle syscall.Handle
+	if err := syscall.DuplicateHandle(self, syscall.Handle(f.Fd()), self, &handle, 0, false, syscall.DUPLICATE_SAME_ACCESS); err != nil {
+		return nil, err
+	}
+	file := os.NewFile(uintptr(handle), f.physical)
 	defer file.Close()
 	return file.ReadDir(maximum)
 }
+
 func (f *sshWindowsFile) pin(path string) (SSHPathPin, error) {
 	identity, err := handleIdentity(syscall.Handle(f.Fd()))
 	if err != nil {
