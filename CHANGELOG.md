@@ -3,7 +3,7 @@
 ## Unreleased
 
 - Add owned Windows runtime installation with pinned artifact manifests, preview, durable installation receipts, bounded execution status and recovery, generated targets, repeatable removal, and maintenance fencing; refuse legacy setup apply without ownership and prepare separately authorized host-install proof.
-- Start native Windows installer commands suspended with `CREATE_NO_WINDOW` to restore PowerShell execution and output; retain exact Job-member handles, including any console helper, and require complete membership and physical exit proof within one cleanup deadline before reporting tree cleanup.
+- Start trusted Windows installer PowerShell commands suspended with `CREATE_NO_WINDOW` to restore execution and output while generic commands remain detached and suspended; retain exact Job-member handles, including any console helper, and require complete membership and physical exit proof within one cleanup deadline before reporting tree cleanup.
 - Fix Windows named-target replacement while readers hold the previous profile open, preserving complete records and permission failures.
 - Recover exact native proof-controller receipts after helper interruption and bind baseline or named-target Windows proof to one-use native worker authority; direct hosted execution remains guarded and native qualification remains required.
 - Add fixed Linux proof-controller helper, worker, private file access, and enrollment artifacts; runtime dispatch requires matching native qualification.

@@ -245,11 +245,22 @@ type nativeRunGate struct {
 	TreeExited func(nativeSpawn)
 }
 
+type nativeLaunchIntent uint8
+
+const (
+	nativeDetached nativeLaunchIntent = iota
+	nativeTrustedPowerShell
+)
+
 func runNativeJob(ctx context.Context, executable string, args []string, input []byte, environment []string) ([]byte, error) {
-	return runNativeJobGated(ctx, executable, args, input, environment, nil)
+	return runNativeJobWithIntent(ctx, nativeDetached, executable, args, input, environment, nil)
 }
 
 func runNativeJobGated(ctx context.Context, executable string, args []string, input []byte, environment []string, gate *nativeRunGate) ([]byte, error) {
+	return runNativeJobWithIntent(ctx, nativeDetached, executable, args, input, environment, gate)
+}
+
+func runNativeJobWithIntent(ctx context.Context, intent nativeLaunchIntent, executable string, args []string, input []byte, environment []string, gate *nativeRunGate) ([]byte, error) {
 	definitelyNotStarted := true
 	defer func() {
 		if gate != nil && gate.NotStarted != nil && definitelyNotStarted {
@@ -293,6 +304,13 @@ func runNativeJobGated(ctx context.Context, executable string, args []string, in
 		return nil, err
 	}
 	flags := uint32(0x00000004)
+	switch intent {
+	case nativeDetached:
+		flags |= 0x00000008
+	case nativeTrustedPowerShell:
+	default:
+		return nil, fmt.Errorf("unsupported native launch intent: %d", intent)
+	}
 	definitelyNotStarted = false
 	spawn, startErr := job.startFlags(executable, args, environment, [3]*os.File{stdinRead, stdoutWrite, stderrWrite}, flags)
 	if spawn.Info.Process == 0 && startErr != nil {
