@@ -114,6 +114,7 @@ type observedExecution struct {
 }
 
 type owner struct {
+	sshRead   sshReadBoundary
 	installer *installer
 	launch    func(context.Context, Request) (Result, error)
 	run       func(context.Context, executionRequest, func(executionOwnership) error) (workerOutcome, *treeExit, error)

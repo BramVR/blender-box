@@ -32,6 +32,7 @@ type HostService interface {
 }
 
 type Dependencies struct {
+	PreviewSSH    func(context.Context, windowsinstall.SSHPreparationRequest) (windowsinstall.SSHPreparationPreviewResult, error)
 	Setup         windowsinstall.Executor
 	SSH           windows.SetupSSH
 	Runner        RunService
@@ -86,6 +87,7 @@ func Run(ctx context.Context, args []string, stdin io.Reader, stdout io.Writer, 
 
 func printUsage(output io.Writer) {
 	fmt.Fprintln(output, "usage:")
+	fmt.Fprintln(output, "  blender-box setup ssh --request PATH [--json]")
 	fmt.Fprintln(output, "  blender-box pair prepare|complete|status NAME [--help]")
 	fmt.Fprintln(output, "  blender-box setup inspect|install|remove --platform windows --state-root PATH [--apply] [--json]")
 	fmt.Fprintln(output, "  blender-box setup manifest --host-binary PATH --broker-launcher PATH --daemon-wheel PATH --source-commit SHA --daemon-source-commit SHA --patch-sha256 SHA --recipe-sha256 SHA --out PATH")

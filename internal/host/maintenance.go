@@ -5,6 +5,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/BramVR/blender-box/internal/strictjson"
+	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -55,6 +58,33 @@ func InspectMaintenance(root string) error {
 	return InspectSetupMaintenance(root, nil)
 }
 
+// MaintenanceReader supplies bounded read-only observations to maintenance policy.
+type MaintenanceReader interface {
+	Stat(string) (fs.FileInfo, error)
+	ReadDir(string, int) ([]fs.DirEntry, error)
+	ReadFile(string, int) ([]byte, error)
+}
+
+type maintenanceFiles struct{}
+
+func (maintenanceFiles) Stat(path string) (fs.FileInfo, error) {
+	return os.Lstat(path)
+}
+func (maintenanceFiles) ReadDir(path string, maximum int) ([]fs.DirEntry, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+	entries, err := file.ReadDir(maximum + 1)
+	if err != nil && err != io.EOF {
+		return nil, err
+	}
+	return entries, nil
+}
+func (maintenanceFiles) ReadFile(path string, maximum int) ([]byte, error) {
+	return readRegularFile(path, int64(maximum))
+}
 func InspectSetupMaintenance(root string, own *SetupClaim) error {
 	if _, err := os.Lstat(root); os.IsNotExist(err) {
 		return nil
@@ -62,11 +92,26 @@ func InspectSetupMaintenance(root string, own *SetupClaim) error {
 	if err := validateRoot(root); err != nil {
 		return err
 	}
-	if err := inspectSetupClaim(root, own); err != nil {
+	return InspectSetupMaintenanceWithReader(root, own, maintenanceFiles{})
+}
+
+// InspectSetupMaintenanceWithReader applies the same authority policy through reader.
+func InspectSetupMaintenanceWithReader(root string, own *SetupClaim, reader MaintenanceReader) error {
+	info, err := reader.Stat(root)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if !filepath.IsAbs(root) || !info.IsDir() || info.Mode()&(os.ModeSymlink|os.ModeIrregular) != 0 {
+		return fmt.Errorf("state root must be an existing regular directory")
+	}
+	if err := inspectMaintenanceSetupClaim(root, own, reader); err != nil {
 		return err
 	}
 	for _, name := range []string{"host-lock.json", "pending-request.json"} {
-		if _, err := os.Lstat(filepath.Join(root, name)); err == nil {
+		if _, err := reader.Stat(filepath.Join(root, name)); err == nil {
 			return fmt.Errorf("active or unresolved host authority: %s", name)
 		} else if !os.IsNotExist(err) {
 			return err
@@ -74,7 +119,7 @@ func InspectSetupMaintenance(root string, own *SetupClaim) error {
 	}
 	for _, directory := range []string{"runs", "receipts"} {
 		path := filepath.Join(root, directory)
-		info, err := os.Lstat(path)
+		info, err := reader.Stat(path)
 		if os.IsNotExist(err) {
 			continue
 		}
@@ -84,7 +129,7 @@ func InspectSetupMaintenance(root string, own *SetupClaim) error {
 		if !info.IsDir() || info.Mode()&(os.ModeSymlink|os.ModeIrregular) != 0 {
 			return fmt.Errorf("invalid %s authority directory", directory)
 		}
-		entries, err := os.ReadDir(path)
+		entries, err := reader.ReadDir(path, 4096)
 		if err != nil {
 			return err
 		}
@@ -101,7 +146,7 @@ func InspectSetupMaintenance(root string, own *SetupClaim) error {
 			if !strings.HasSuffix(entry.Name(), ".json") {
 				return fmt.Errorf("unknown Run receipt")
 			}
-			data, err := readRegularFile(filepath.Join(path, entry.Name()), maxScenarioJSON)
+			data, err := reader.ReadFile(filepath.Join(path, entry.Name()), maxScenarioJSON)
 			if err != nil {
 				return err
 			}
@@ -119,6 +164,29 @@ func InspectSetupMaintenance(root string, own *SetupClaim) error {
 				return fmt.Errorf("invalid Session identity")
 			}
 		}
+	}
+	return nil
+}
+
+func inspectMaintenanceSetupClaim(root string, own *SetupClaim, reader MaintenanceReader) error {
+	path := filepath.Join(root, "pending-setup.json")
+	if own == nil {
+		if _, err := reader.Stat(path); os.IsNotExist(err) {
+			return nil
+		} else if err != nil {
+			return err
+		}
+		return fmt.Errorf("active or unresolved setup execution")
+	}
+	if err := own.Validate(); err != nil {
+		return err
+	}
+	current, err := readMaintenanceSetupClaim(root, reader)
+	if err != nil {
+		return err
+	}
+	if current != *own {
+		return fmt.Errorf("pending setup execution changed")
 	}
 	return nil
 }
@@ -159,4 +227,20 @@ func scanMaintenanceJSON(decoder *json.Decoder) error {
 	}
 	_, err = decoder.Token()
 	return err
+}
+
+func readMaintenanceSetupClaim(root string, reader MaintenanceReader) (SetupClaim, error) {
+	var claim SetupClaim
+	path := filepath.Join(root, "pending-setup.json")
+	if _, err := reader.Stat(path); err != nil {
+		return claim, err
+	}
+	data, err := reader.ReadFile(path, 16<<10)
+	if err != nil {
+		return claim, err
+	}
+	if err := strictjson.Decode(data, &claim); err != nil {
+		return claim, err
+	}
+	return claim, claim.Validate()
 }

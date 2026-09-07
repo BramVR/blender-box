@@ -25,6 +25,8 @@ Setup probes start in their executable directory. The daemon launcher starts Pyt
 
 Setup does not install Blender or Python, pair the host, enroll SSH or Tailscale, change the firewall, or provision credentials. It does not download artifacts. Securely transfer and verify the bootstrap and bundle through your existing operator channel before invoking setup. Read-only setup does not upload files.
 
+After installation, the separate [SSH preparation preview](windows-ssh-preparation.md) inspects existing OpenSSH state and describes an account-scoped proposal. It grants no apply authority and does not change SSH configuration.
+
 ## Build the runtime bundle
 
 Build the host and native daemon launcher from the candidate checkout:

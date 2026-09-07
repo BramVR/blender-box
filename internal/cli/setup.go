@@ -20,7 +20,7 @@ type targetPublication = windowsinstall.Publication
 
 func setupCommand(ctx context.Context, args []string, stdout, stderr io.Writer, dependencies Dependencies) int {
 	if len(args) > 0 && args[0] == "ssh" {
-		return fail(stderr, "setup ssh", fmt.Errorf("SSH preparation is unsupported; no host changes performed"))
+		return setupSSHCommand(ctx, args[1:], stdout, stderr, dependencies)
 	}
 
 	if len(args) == 0 {
@@ -28,7 +28,7 @@ func setupCommand(ctx context.Context, args []string, stdout, stderr io.Writer, 
 		return 2
 	}
 	if args[0] == "--help" || args[0] == "-h" {
-		fmt.Fprintln(stdout, "Host-local Windows setup. Use an external verified bootstrap as the logged-in interactive account.\nPrerequisites: explicit CPython 3.11 through 3.14 amd64, Blender, and a dependency-free daemon wheel.\n  setup manifest --help     Build an offline runtime manifest from exact source artifacts.\n  setup inspect --help      Inspect the account, state root and executable candidates.\n  setup install --help      Preview; repeat with --apply to install the owned runtime and task.\n  setup remove --help       Preview; repeat with --apply to remove the exact installation.\n  setup status --help       Read the exact logical setup operation.\n  setup stop --help         Cancel the exact execution with --apply.\nNo setup command edits SSH configuration or starts Blender.")
+		fmt.Fprintln(stdout, "Host-local Windows setup. Use an external verified bootstrap as the logged-in interactive account.\nPrerequisites: explicit CPython 3.11 through 3.14 amd64, Blender, and a dependency-free daemon wheel.\n  setup ssh --help          Preview exact SSH preparation from --request JSON.\n  setup manifest --help     Build an offline runtime manifest from exact source artifacts.\n  setup inspect --help      Inspect the account, state root and executable candidates.\n  setup install --help      Preview; repeat with --apply to install the owned runtime and task.\n  setup remove --help       Preview; repeat with --apply to remove the exact installation.\n  setup status --help       Read the exact logical setup operation.\n  setup stop --help         Cancel the exact execution with --apply.\nNo setup command edits SSH configuration or starts Blender.")
 		return 0
 	}
 	if args[0] == "manifest" {

@@ -87,7 +87,7 @@ func TestPairCLIExplicitTrustAndDurableReconciliation(t *testing.T) {
 	if code != 0 || view.Access != "enrolled" || view.Readiness != "unchecked" {
 		t.Fatalf("status: %d %+v %s", code, view, stderr)
 	}
-	for _, args := range [][]string{{"pair", "offer"}, {"pair", "enroll"}, {"pair", "revoke", "work"}, {"setup", "ssh"}} {
+	for _, args := range [][]string{{"pair", "offer"}, {"pair", "enroll"}, {"pair", "revoke", "work"}, {"setup", "ssh", "--apply"}} {
 		if code, _, stderr := call(args...); code != 1 || !strings.Contains(stderr, "unsupported") {
 			t.Fatalf("unsupported command %v: %d %s", args, code, stderr)
 		}
