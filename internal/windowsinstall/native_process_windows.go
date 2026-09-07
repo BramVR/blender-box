@@ -292,7 +292,7 @@ func runNativeJobGated(ctx context.Context, executable string, args []string, in
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	flags := uint32(0x00000004 | 0x00000008)
+	flags := uint32(0x00000004)
 	definitelyNotStarted = false
 	spawn, startErr := job.startFlags(executable, args, environment, [3]*os.File{stdinRead, stdoutWrite, stderrWrite}, flags)
 	if spawn.Info.Process == 0 && startErr != nil {
