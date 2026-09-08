@@ -81,6 +81,20 @@ If the supervisor published a native receipt before the helper saved its Invocat
 
 Adoption never releases the worker or replays the Scenario. `status` observes. `stop` can stop the exact adopted attempt. Once fresh evidence proves the original processes are gone and no worker release was authorized, a first attempt settles as failure. A recovery attempt retains the original Windows Run for explicit recovery. After a controller reboot, reconciliation proves service quiescence without reading or signaling old PIDs.
 
+## Collect public baseline evidence
+
+The native dispatch entry accepts a read-only collection command with exactly these fields:
+
+```json
+{"schema_version":1,"operation":"collect","execution_id":"gha_123_1"}
+```
+
+Collection succeeds only for a settled baseline execution whose controller receipt proves local termination and Windows cleanup. It revalidates the accepted request, immutable attempt-one result, final attempt identity, retained inputs, and the final native result. A recovered execution keeps the attempt-one report and its original pass or fail status; its schema version 2 `baseline-collect` envelope adds the final controller receipt plus the final recovery attempt number, exact record SHA-256, and validated cleanup map. The runner's `public/outcome.json` is never evidence authority.
+
+The response has `schema_version`, `operation`, `execution_id`, and `files`. Each file has the exact `name`, byte `size`, SHA-256, and `content_base64`. The file allowlist is `outcome.json` plus optional `viewport.png`. The root-generated outcome is limited to 1 MiB. A viewport is limited to 16 MiB, and the complete canonical response is limited to 24 MiB before base64 materialization.
+
+The retained original operator's `publish_viewport` value controls image release. When enabled, collection requires the immutable baseline report's one `screenshots/viewport.png` artifact and rechecks its type, size, remote and local hashes, offscreen capture method, dimensions, file ownership, symlink boundary, and PNG bytes. A missing, changed, planted, unapproved, or additional public file fails collection. Collection returns no private config, trust, key, journal, invocation, path, or command log.
+
 ## Run the local checks
 
 Run the controller tests and full repository gate:

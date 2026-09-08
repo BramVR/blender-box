@@ -2,6 +2,7 @@
 """Render the unqualified controller proposal or validate a bounded dispatch request."""
 
 import argparse
+import base64
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timedelta, timezone
@@ -27,6 +28,8 @@ import onboarding_proof as proof
 
 MAX_WIRE = 4096
 MAX_FILE = 1 << 20
+MAX_VIEWPORT = 16 << 20
+MAX_COLLECT_RESPONSE = 24 << 20
 EXECUTION_ID = r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}"
 PHASES = {"accepted", "starting", "running", "recovering", "unresolved", "settled"}
 PUBLIC_FIELDS = ("execution_id", "phase", "closed", "attempt", "local_termination",
@@ -101,10 +104,77 @@ def parse_command(raw):
         require(set(value) == {"schema_version", "operation", "request"}, "invalid-command")
         request = ProofExecutionRequest.parse(value["request"])
         return Command(operation, request.execution_id, request)
-    require(operation in ("status", "recover", "stop")
+    require(operation in ("status", "recover", "stop", "collect")
+            and type(value.get("schema_version")) is int and value["schema_version"] == 1
             and set(value) == {"schema_version", "operation", "execution_id"}
             and proof.matches(EXECUTION_ID, value["execution_id"]), "invalid-command")
     return Command(operation, value["execution_id"])
+
+
+def baseline_report(value, request, expected_client):
+    fields = {"schema_version", "proof", "candidate_sha", "driver_sha", "execution", "status",
+              "run", "cleanup", "outcomes", "not_exercised", "artifacts"}
+    require(isinstance(value, dict) and fields <= set(value)
+            and set(value) <= fields | {"binaries", "daemon_capabilities", "blender_version"}
+            and type(value["schema_version"]) is int and value["schema_version"] == 1
+            and value["proof"] == "windows-onboarding-baseline" and value["execution"] == "hosted"
+            and value["candidate_sha"] == request.candidate_sha and value["driver_sha"] == request.driver_sha
+            and value["status"] in ("pass", "fail")
+            and value["not_exercised"] == list(proof.WindowsProofHost.not_exercised), "collect-report-invalid")
+    outcomes = value["outcomes"]
+    require(isinstance(outcomes, dict) and set(outcomes) == set(proof.REQUIRED), "collect-report-invalid")
+    for outcome in outcomes.values():
+        require(isinstance(outcome, dict) and set(outcome) == {"status", "code"}
+                and outcome["status"] in ("pass", "fail", "not-run")
+                and proof.matches(r"[a-z][a-z0-9-]{0,127}", outcome["code"]), "collect-report-invalid")
+    require((value["status"] == "pass") == all(item["status"] == "pass" for item in outcomes.values()),
+            "collect-report-invalid")
+    run = value["run"]
+    if run is not None:
+        require(isinstance(run, dict) and set(run) in ({"run_id"}, {"run_id", "request_id", "request_hash", "session_id"})
+                and proof.matches(proof.RUN_ID, run["run_id"]), "collect-report-invalid")
+        if "request_id" in run:
+            require(proof.matches(r"req_[A-Za-z0-9_-]{16,64}", run["request_id"])
+                    and proof.matches(proof.HASH, run["request_hash"])
+                    and (run["session_id"] is None or proof.matches(r"bss_[A-Za-z0-9_-]{16,128}", run["session_id"])),
+                    "collect-report-invalid")
+    if value["cleanup"] is not None:
+        proof.verify_cleanup(value)
+    if "binaries" in value:
+        binaries = value["binaries"]
+        require(isinstance(binaries, dict) and set(binaries) == {"host_sha256", "host_size", "client_sha256"}
+                and proof.matches(proof.HASH, binaries["host_sha256"])
+                and type(binaries["host_size"]) is int and 0 < binaries["host_size"] <= 128 << 20
+                and binaries["client_sha256"] == expected_client, "collect-report-invalid")
+    require(("daemon_capabilities" in value) == ("blender_version" in value), "collect-report-invalid")
+    if "daemon_capabilities" in value:
+        require(value["daemon_capabilities"] == list(proof.CAPABILITIES)
+                and proof.matches(r"\d+\.\d+(?:\.\d+)?", value["blender_version"]), "collect-report-invalid")
+    artifacts = value["artifacts"]
+    require(isinstance(artifacts, list) and len(artifacts) in (0, 2), "collect-artifact-invalid")
+    seen = set()
+    for artifact in artifacts:
+        require(isinstance(artifact, dict) and set(artifact) == set(proof.VerifiedArtifact.__dataclass_fields__),
+                "collect-artifact-invalid")
+        kind = artifact["type"]
+        require(kind in ("scenario-result", "viewport") and kind not in seen
+                and artifact["path"] == ("screenshots/viewport.png" if kind == "viewport" else "result/scenario-result.json")
+                and type(artifact["size"]) is int and 0 < artifact["size"] <= MAX_VIEWPORT
+                and proof.matches(proof.HASH, artifact["remote_sha256"])
+                and artifact["remote_sha256"] == artifact["local_sha256"], "collect-artifact-invalid")
+        seen.add(kind)
+        if kind == "viewport":
+            require(artifact["capture_method"] == "offscreen"
+                    and all(type(artifact[key]) is int and 0 < artifact[key] <= 8192 for key in ("width", "height")),
+                    "collect-artifact-invalid")
+        else:
+            require(all(artifact[key] is None for key in ("capture_method", "width", "height")),
+                    "collect-artifact-invalid")
+    require(value["status"] != "pass" or (len(artifacts) == 2 and run is not None
+            and set(run) == {"run_id", "request_id", "request_hash", "session_id"}
+            and run["session_id"] is not None and value["cleanup"] is not None
+            and {"binaries", "daemon_capabilities", "blender_version"} <= set(value)), "collect-report-invalid")
+    return value
 
 
 def no_links(path):
@@ -474,7 +544,7 @@ class Controller:
 
     def dispatch(self, command):
         require(isinstance(command, Command) and proof.matches(EXECUTION_ID, command.execution_id)
-                and command.operation in ("start", "status", "stop", "recover"), "invalid-command")
+                and command.operation in ("start", "status", "stop", "recover", "collect"), "invalid-command")
         if self.admission is not None:
             self.admission(command)
         with self.locked():
@@ -497,6 +567,8 @@ class Controller:
                 return self.start(control, command.request)
             require(self.files.exists(control), "execution-not-found")
             state = self.load(control)
+            if command.operation == "collect":
+                return self.collect(control, state)
             if command.operation in ("recover", "stop") and state["phase"] != "settled":
                 state = self.recover(control, state)
             elif command.operation == "status" and state["phase"] != "settled":
@@ -506,6 +578,112 @@ class Controller:
     @staticmethod
     def receipt(state):
         return {"schema_version": 1, **{name: state[name] for name in PUBLIC_FIELDS}}
+
+    def collection_record(self, control, request, attempt, mode):
+        try:
+            raw = self.files.read(control / f"result-{attempt:04d}.json", MAX_FILE)
+            record = document(raw)
+            require(set(record) == {"schema_version", "invocation", "mode", "result"}
+                    and type(record["schema_version"]) is int and record["schema_version"] == 1
+                    and record["mode"] == mode, "collect-record-invalid")
+            invocation = Invocation.parse(record["invocation"])
+            require((invocation.execution_id, invocation.attempt, invocation.request_digest) ==
+                    (request.execution_id, attempt, request.digest), "collect-record-invalid")
+            intent = document(self.files.read(control / f"intent-{attempt:04d}.json"))
+            require(intent == {"schema_version": 1, "execution_id": request.execution_id, "attempt": attempt,
+                               "request_digest": request.digest, "mode": mode}, "collect-record-invalid")
+            authorization = document(self.files.read(control / f"authorization-{attempt:04d}.json"))
+            require(authorization == {"schema_version": 1, "invocation": asdict(invocation), "mode": mode}
+                    and self.service.result(invocation) == record, "collect-record-invalid")
+            return raw, record
+        except FileNotFoundError as error:
+            raise ControllerError("collect-record-missing") from error
+
+    def collect(self, control, state):
+        require(state["phase"] == "settled" and state["closed"] and state["local_termination"] == "proven"
+                and state["windows_cleanup"] == "proven", "collect-unsettled")
+        job = self.job(control, state)
+        require(job.request.variant == "baseline" and self.qualification is None, "collect-variant-unavailable")
+        verify_inputs(control, job, state["inputs_digest"], self.files)
+        baseline_raw, baseline = self.collection_record(control, job.request, 1, "baseline")
+        try:
+            report = baseline_report(baseline["result"], job.request, job.expected_client_sha256)
+        except proof.ProofError as error:
+            raise ControllerError("collect-report-invalid") from error
+        require(report["status"] == state["proof_result"], "collect-result-changed")
+        retained = state["recovery_inputs"]
+        if retained is not None:
+            require(report["run"] is not None and report["run"]["run_id"] == retained["run_id"],
+                    "collect-run-changed")
+        recovery = None
+        final = baseline
+        if state["attempt"] == 1:
+            try:
+                proof.verify_cleanup(report)
+            except proof.ProofError as error:
+                raise ControllerError("collect-cleanup-invalid") from error
+        else:
+            require(retained is not None, "collect-recovery-unavailable")
+            recovery_raw, final = self.collection_record(control, job.request, state["attempt"], "recover")
+            try:
+                cleanup = proof.verify_cleanup({"cleanup": final["result"]})
+            except proof.ProofError as error:
+                raise ControllerError("collect-cleanup-invalid") from error
+            recovery = {"attempt": state["attempt"], "record_sha256": proof.digest(recovery_raw),
+                        "cleanup": cleanup}
+        require(final["invocation"] == state["invocation"], "collect-record-invalid")
+        attempt = self.bound_attempt(control, state)
+        if attempt is not None:
+            require(asdict(attempt.invocation) == state["invocation"] and attempt.process == "gone"
+                    and attempt.release == "result" and attempt.mode == final["mode"], "collect-termination-unknown")
+        else:
+            observed = self.observe()
+            expected = Invocation.parse(state["invocation"])
+            require(observed.empty and (observed.invocation == expected if observed.boot_id == expected.boot_id
+                    else observed.invocation is None), "collect-termination-unknown")
+        envelope = {"schema_version": 2, "kind": "baseline-collect",
+                    "request": {"execution_id": job.request.execution_id, "request_sha256": job.request.digest,
+                                "candidate_sha": job.request.candidate_sha, "driver_sha": job.request.driver_sha,
+                                "variant": "baseline"},
+                    "baseline": {"record_sha256": proof.digest(baseline_raw), "report": report},
+                    "settlement": {"receipt": self.receipt(state), "recovery": recovery}}
+        outcome = proof.canonical(envelope)
+        require(len(outcome) <= MAX_FILE, "collect-outcome-too-large")
+        contents = [("outcome.json", outcome)]
+        original = document(self.files.read(control / "inputs/original-operator.json", 64 << 10))
+        publish_viewport = original.get("publish_viewport", False)
+        require(type(publish_viewport) is bool, "collect-publication-invalid")
+        public = job.root / "baseline/public"
+        self.files.directory(public)
+        names = set()
+        with self.files.scan(public) as entries:
+            for entry in entries:
+                require(len(names) < 2, "collect-public-file-unapproved")
+                names.add(entry.name)
+        require(names <= {"outcome.json", "viewport.png"}, "collect-public-file-unapproved")
+        if "outcome.json" in names:
+            self.files.read(public / "outcome.json", MAX_FILE)
+        viewport = next((item for item in report["artifacts"] if item["type"] == "viewport"), None)
+        if "viewport.png" in names:
+            require(publish_viewport and viewport is not None, "collect-viewport-unapproved")
+            content = self.files.read(public / "viewport.png", MAX_VIEWPORT)
+            require(len(content) == viewport["size"] and proof.digest(content) == viewport["local_sha256"],
+                    "collect-viewport-changed")
+            try:
+                proof.verify_png(content, viewport["width"], viewport["height"])
+            except proof.ProofError as error:
+                raise ControllerError("collect-viewport-invalid") from error
+            contents.append(("viewport.png", content))
+        else:
+            require(not publish_viewport or viewport is None, "collect-viewport-missing")
+        response = {"schema_version": 1, "operation": "collect", "execution_id": job.request.execution_id,
+                    "files": [{"name": name, "size": len(content), "sha256": proof.digest(content), "content_base64": ""}
+                              for name, content in contents]}
+        encoded_size = len(proof.canonical(response)) + sum(4 * ((len(content) + 2) // 3) for _, content in contents)
+        require(encoded_size <= MAX_COLLECT_RESPONSE, "collect-response-too-large")
+        for item, (_, content) in zip(response["files"], contents):
+            item["content_base64"] = base64.b64encode(content).decode("ascii")
+        return response
 
     def load(self, control):
         try:
@@ -861,7 +1039,7 @@ ReadWritePaths=/var/lib/blender-box-proof/jobs
               "expected_client_sha256": None,
               "proposed_privilege_rule": {"helper": "/usr/local/libexec/blender-box-proof-helper",
                                            "service": "blender-box-proof.service",
-                                           "operations": ["start", "status", "recover", "stop"],
+                                           "operations": ["start", "status", "recover", "stop", "collect"],
                                            "arbitrary_commands": False, "qualified": False}}
     return {"schema_version": 1, "status": "unqualified", "installable": False,
             "resources": [{"kind": "account", "name": "blender-box-proof-control", "uid": None, "password_login": "disabled"},
