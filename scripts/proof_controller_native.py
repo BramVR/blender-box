@@ -1999,7 +1999,12 @@ def entrypoint(argv=None):
         controller = model.Controller(CONTROL, JOBS, policy.controller, NativeService(policy, files, ops),
                                       files=files, admission=policy.admit)
         result = controller.dispatch(command)
-        print(model.proof.canonical(result).decode())
+        raw = model.proof.canonical(result)
+        if command.operation == "collect":
+            model.require(len(raw) <= model.MAX_COLLECT_RESPONSE, "collect-response-too-large")
+            sys.stdout.buffer.write(raw)
+        else:
+            print(raw.decode())
         return 0
     except (OSError, model.ControllerError, model.proof.ProofError, subprocess.SubprocessError, KeyError, TypeError, ValueError) as error:
         code = error.code if isinstance(error, model.ControllerError) else "native-unavailable"

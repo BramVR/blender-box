@@ -1,4 +1,5 @@
 import copy
+import base64
 from contextlib import contextmanager, ExitStack
 import socket
 import struct
@@ -22,6 +23,7 @@ spec = importlib.util.spec_from_file_location("proof_controller", ROOT / "script
 controller = importlib.util.module_from_spec(spec)
 sys.modules[spec.name] = controller
 spec.loader.exec_module(controller)
+import proof_controller_store as store
 proof = controller.proof
 SHA = "a" * 40
 DRIVER = "b" * 40
@@ -151,6 +153,8 @@ class FakeService:
             result = admitted_baseline(worker, job) if mode == "baseline" else worker.recover(job, retained)
             self.completed[invocation.invocation_id] = {"schema_version": 1, "invocation": asdict(invocation),
                                                        "mode": mode, "result": result}
+            controller.publish(self.control / invocation.execution_id / f"result-{invocation.attempt:04d}.json",
+                               proof.canonical(self.completed[invocation.invocation_id]))
         finally:
             self.empty = True
 
@@ -223,6 +227,13 @@ class WireAndCLITests(unittest.TestCase):
             with self.subTest(raw=raw[:90]), self.assertRaises(controller.ControllerError):
                 controller.parse_command(raw)
         self.assertEqual(command("status").operation, "status")
+        self.assertEqual(command("collect").operation, "collect")
+        for raw in (b'{"schema_version":2,"operation":"collect","execution_id":"gha_123_1"}',
+                    b'{"schema_version":true,"operation":"collect","execution_id":"gha_123_1"}'):
+            with self.subTest(raw=raw), self.assertRaisesRegex(controller.ControllerError, "invalid-document"):
+                controller.parse_command(raw)
+        with self.assertRaisesRegex(controller.ControllerError, "invalid-command"):
+            controller.parse_command(b'{"schema_version":1,"operation":"collect","execution_id":"gha_123_1","path":"public"}')
         self.assertEqual(request(variant="named-target").variant, "named-target")
 
     def test_dispatch_never_reflects_input_or_starts_anything(self):
@@ -332,6 +343,220 @@ class ControllerTests(unittest.TestCase):
         for planted in ("PRIVATE_KEY_SENTINEL", "PRIVATE_TRUST_SENTINEL", "PRIVATE_LOG_SENTINEL", "TEST-HOST", str(self.root)):
             self.assertNotIn(planted.encode(), public)
         self.assertEqual(self.reopen().dispatch(command("status")), result)
+
+    def collected(self):
+        response = self.reopen().dispatch(command("collect"))
+        self.assertEqual(set(response), {"schema_version", "operation", "execution_id", "files"})
+        self.assertEqual((response["schema_version"], response["operation"], response["execution_id"]),
+                         (1, "collect", "gha_123_1"))
+        files = {}
+        for item in response["files"]:
+            self.assertEqual(set(item), {"name", "size", "sha256", "content_base64"})
+            raw = base64.b64decode(item["content_base64"], validate=True)
+            self.assertEqual((len(raw), proof.digest(raw)), (item["size"], item["sha256"]))
+            files[item["name"]] = raw
+        self.assertLessEqual(len(proof.canonical(response)), controller.MAX_COLLECT_RESPONSE)
+        return json.loads(files["outcome.json"]), files
+
+    def rewrite_result(self, change, attempt=1):
+        path = self.control / "gha_123_1" / f"result-{attempt:04d}.json"
+        record = json.loads(path.read_bytes())
+        change(record)
+        private_file(path, proof.canonical(record))
+        self.service.completed[record["invocation"]["invocation_id"]] = record
+
+    def test_collect_root_outcome_preserves_receipt_and_excludes_private_files(self):
+        receipt = self.baseline()
+        before = proof.canonical(self.reopen().dispatch(command("status")))
+        public = self.jobs / "gha_123_1/baseline/public"
+        private_file(public / "outcome.json", b"PRIVATE_PLANTED_OUTCOME_SENTINEL")
+        envelope, files = self.collected()
+        self.assertEqual(set(files), {"outcome.json"})
+        self.assertEqual(set(envelope), {"schema_version", "kind", "request", "baseline", "settlement"})
+        self.assertEqual((envelope["schema_version"], envelope["kind"]), (2, "baseline-collect"))
+        self.assertEqual(envelope["request"], {"execution_id": request().execution_id, "request_sha256": request().digest,
+            "candidate_sha": SHA, "driver_sha": DRIVER, "variant": "baseline"})
+        original = (self.control / "gha_123_1/result-0001.json").read_bytes()
+        self.assertEqual(envelope["baseline"], {"record_sha256": proof.digest(original), "report": json.loads(original)["result"]})
+        self.assertEqual(envelope["settlement"], {"receipt": receipt, "recovery": None})
+        self.assertEqual(proof.canonical(self.reopen().dispatch(command("status"))), before)
+        self.assertEqual(self.collected(), (envelope, files))
+        for sentinel in (b"PRIVATE_", str(self.root).encode(), b"TEST-HOST"):
+            self.assertNotIn(sentinel, files["outcome.json"])
+        self.assertEqual(len(self.service.starts), 1)
+        self.assertFalse(self.service.stops)
+
+    def test_collect_recovery_keeps_failed_baseline(self):
+        self.fail_baseline()
+        baseline = (self.control / "gha_123_1/result-0001.json").read_bytes()
+        self.reopen().dispatch(command("recover"))
+        self.service.complete(self.worker)
+        receipt = self.reopen().dispatch(command("status"))
+        self.assertEqual(receipt["phase"], "settled")
+        envelope, _ = self.collected()
+        self.assertEqual(envelope["baseline"]["report"], json.loads(baseline)["result"])
+        self.assertEqual(envelope["baseline"]["report"]["status"], "fail")
+        self.assertIsNone(envelope["baseline"]["report"]["cleanup"])
+        raw = (self.control / "gha_123_1/result-0002.json").read_bytes()
+        self.assertEqual(envelope["settlement"], {"receipt": receipt, "recovery": {"attempt": 2,
+                         "record_sha256": proof.digest(raw), "cleanup": {key: True for key in proof.CLEANUP}}})
+        self.rewrite_result(lambda record: record["result"].update(lock_released=False), attempt=2)
+        with self.assertRaisesRegex(controller.ControllerError, "collect-cleanup-invalid"):
+            self.collected()
+
+    def test_collect_recovery_record_cannot_substitute_for_baseline(self):
+        self.fail_baseline()
+        self.reopen().dispatch(command("recover"))
+        self.service.complete(self.worker)
+        self.reopen().dispatch(command("status"))
+        control = self.control / "gha_123_1"
+        recovery = (control / "result-0002.json").read_bytes()
+        private_file(control / "result-0001.json", recovery)
+        with self.assertRaisesRegex(controller.ControllerError, "collect-record-invalid"):
+            self.collected()
+
+    def test_collect_requires_settlement_and_fresh_local_termination(self):
+        self.reopen().dispatch(command())
+        with self.assertRaisesRegex(controller.ControllerError, "collect-unsettled"):
+            self.collected()
+        self.service.complete(self.worker)
+        with self.assertRaisesRegex(controller.ControllerError, "collect-unsettled"):
+            self.collected()
+        self.reopen().dispatch(command("status"))
+        self.service.empty = False
+        with self.assertRaisesRegex(controller.ControllerError, "collect-termination-unknown"):
+            self.collected()
+        self.service.empty = True
+        self.service.invocation = replace(self.service.invocation, leader_start_ticks=999)
+        with self.assertRaisesRegex(controller.ControllerError, "collect-termination-unknown"):
+            self.collected()
+        self.assertFalse(self.service.stops)
+
+    def test_collect_missing_and_mismatched_records(self):
+        self.baseline()
+        control = self.control / "gha_123_1"
+        for name in ("result-0001.json", "intent-0001.json", "authorization-0001.json"):
+            path = control / name
+            raw = path.read_bytes()
+            path.rename(control / "held.json")
+            with self.subTest(missing=name), self.assertRaisesRegex(controller.ControllerError, "collect-record-missing"):
+                self.collected()
+            (control / "held.json").rename(path)
+            value = json.loads(raw)
+            value["mode"] = "recover"
+            private_file(path, proof.canonical(value))
+            with self.subTest(mode=name), self.assertRaisesRegex(controller.ControllerError, "collect-record-invalid"):
+                self.collected()
+            private_file(path, raw)
+        path = control / "result-0001.json"
+        raw = path.read_bytes()
+        for key, value in (("attempt", 2), ("request_digest", "f" * 64), ("execution_id", "other"), ("leader_start_ticks", 999)):
+            record = json.loads(raw)
+            record["invocation"][key] = value
+            private_file(path, proof.canonical(record))
+            with self.subTest(key=key), self.assertRaisesRegex(controller.ControllerError, "collect-record-invalid"):
+                self.collected()
+        private_file(path, raw)
+
+    def test_collect_rejects_private_extra_fields_in_retained_report(self):
+        self.baseline()
+        path = self.control / "gha_123_1/result-0001.json"
+        original = json.loads(path.read_bytes())
+        for section in (None, "run", "binaries", "cleanup", "outcomes", "artifact", "outcome"):
+            record = copy.deepcopy(original)
+            report = record["result"]
+            target = (report if section is None else report["artifacts"][0] if section == "artifact"
+                      else report["outcomes"]["scenario"] if section == "outcome" else report[section])
+            target["private"] = "PRIVATE_RETAINED_SENTINEL"
+            private_file(path, proof.canonical(record))
+            self.service.completed[record["invocation"]["invocation_id"]] = record
+            with self.subTest(section=section), self.assertRaises((controller.ControllerError, proof.ProofError)):
+                self.collected()
+
+    def test_collect_publication_false_rejects_planted_png_and_extra_file(self):
+        self.baseline()
+        public = self.jobs / "gha_123_1/baseline/public"
+        private_file(public / "viewport.png", baseline_tests.png())
+        with self.assertRaisesRegex(controller.ControllerError, "collect-viewport-unapproved"):
+            self.collected()
+        (public / "viewport.png").rename(public / "private.txt")
+        with self.assertRaisesRegex(controller.ControllerError, "collect-public-file-unapproved"):
+            self.collected()
+
+    def test_collect_stops_public_directory_scan_at_third_name(self):
+        self.baseline()
+        public = self.jobs / "gha_123_1/baseline/public"
+        for name in ("extra-a", "extra-b", "extra-c"):
+            private_file(public / name, b"extra")
+        original = os.scandir
+        consumed = []
+
+        class GuardedScan:
+            def __init__(self, source):
+                self.source = source
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_):
+                self.source.close()
+
+            def __iter__(self):
+                return self
+
+            def __next__(self):
+                if len(consumed) == 3:
+                    raise AssertionError("fourth-directory-entry-consumed")
+                entry = next(self.source)
+                consumed.append(entry.name)
+                return entry
+
+        with mock.patch.object(store.os, "scandir", side_effect=lambda fd: GuardedScan(original(fd))):
+            with self.assertRaisesRegex(controller.ControllerError, "collect-public-file-unapproved"):
+                self.collected()
+        self.assertEqual(len(consumed), 3)
+
+    def test_collect_opted_in_viewport_requires_original_bytes_dimensions_and_safe_file(self):
+        self.config["publish_viewport"] = True
+        private_file(self.operator, proof.canonical(self.config))
+        self.baseline()
+        public = self.jobs / "gha_123_1/baseline/public"
+        image = public / "viewport.png"
+        image.chmod(0o600)
+        original = image.read_bytes()
+        _, files = self.collected()
+        self.assertEqual(files["viewport.png"], original)
+        private_file(self.operator, proof.canonical({**self.config, "publish_viewport": False}))
+        self.assertEqual(self.collected()[1]["viewport.png"], original)
+        private_file(image, baseline_tests.png(raw=b"\x00" + b"\x01" * 6 + b"\x00" + b"\x01" * 6))
+        with self.assertRaisesRegex(controller.ControllerError, "collect-viewport-changed"):
+            self.collected()
+        private_file(image, original)
+        self.rewrite_result(lambda record: next(item for item in record["result"]["artifacts"]
+                                               if item["type"] == "viewport").update(width=3))
+        with self.assertRaisesRegex(controller.ControllerError, "collect-viewport-invalid"):
+            self.collected()
+        image.rename(public / "retained.png")
+        (public / "retained.png").rename(self.root / "retained.png")
+        with self.assertRaisesRegex(controller.ControllerError, "collect-viewport-missing"):
+            self.collected()
+        image.symlink_to(self.root / "retained.png")
+        with self.assertRaises((controller.ControllerError, OSError)):
+            self.collected()
+
+    def test_collect_bounds_before_base64_materialization(self):
+        self.baseline()
+        with mock.patch.object(controller, "MAX_COLLECT_RESPONSE", 10), mock.patch.object(base64, "b64encode") as encode:
+            with self.assertRaisesRegex(controller.ControllerError, "collect-response-too-large"):
+                self.collected()
+            encode.assert_not_called()
+        with mock.patch.object(controller, "MAX_FILE", 10), mock.patch.object(base64, "b64encode") as encode:
+            with self.assertRaises(controller.ControllerError):
+                self.collected()
+            encode.assert_not_called()
+        self.rewrite_result(lambda record: record["result"]["artifacts"][0].update(size=controller.MAX_VIEWPORT + 1))
+        with self.assertRaisesRegex(controller.ControllerError, "collect-artifact-invalid"):
+            self.collected()
 
     def test_duplicate_conflict_closed_and_expired_do_not_relaunch(self):
         first = self.baseline()

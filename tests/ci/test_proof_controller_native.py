@@ -3,6 +3,7 @@ from dataclasses import asdict, replace
 from datetime import datetime, timedelta, timezone
 import errno
 import base64
+import io
 import json
 import os
 from pathlib import Path
@@ -398,6 +399,33 @@ class NativeCLITests(unittest.TestCase):
             result = self.invoke("proof_controller_native.py", "dispatch", extra, raw=raw)
             self.assertEqual(json.loads(result.stdout)["code"], "invalid-command")
 
+    def test_collect_entry_writes_one_bounded_canonical_document_without_newline(self):
+        raw = model.proof.canonical({"schema_version": 1, "operation": "collect", "execution_id": "gha_123_1"})
+        response = {"schema_version": 1, "operation": "collect", "execution_id": "gha_123_1", "files": []}
+        loaded_policy, files, ops = mock.Mock(), mock.Mock(), mock.Mock()
+        dispatched = mock.Mock()
+        dispatched.dispatch.return_value = response
+
+        def invoke(limit):
+            source = io.TextIOWrapper(io.BytesIO(raw), encoding="utf-8")
+            target = io.BytesIO()
+            output = io.TextIOWrapper(target, encoding="utf-8")
+            with mock.patch.object(sys, "stdin", source), mock.patch.object(sys, "stdout", output), \
+                 mock.patch.object(native, "load_runtime", return_value=(loaded_policy, files)), \
+                 mock.patch.object(native, "LinuxOps", return_value=ops), \
+                 mock.patch.object(model, "Controller", return_value=dispatched), \
+                 mock.patch.object(model, "MAX_COLLECT_RESPONSE", limit):
+                code = native.entrypoint(["dispatch"])
+                output.flush()
+                return code, target.getvalue()
+
+        code, output = invoke(model.MAX_COLLECT_RESPONSE)
+        self.assertEqual((code, output), (0, model.proof.canonical(response)))
+        code, output = invoke(10)
+        self.assertEqual(code, 1)
+        self.assertEqual(json.loads(output), {"schema_version": 1, "status": "error",
+                                              "code": "collect-response-too-large"})
+
     def test_scp_pin_and_tmpfiles_binding_are_required(self):
         without_scp = spec()
         del without_scp["tool_sha256"]["/usr/bin/scp"]
@@ -725,6 +753,11 @@ class NativeLifecycleTests(unittest.TestCase):
         self.assertTrue(retained["journal"].startswith(str(job.config / "runs")))
         self.assertEqual(retained, model.recovery_inputs(job, self.files))
         self.assertEqual(self.native_service.observe().invocation, invocation())
+        collected = self.controller.dispatch(baseline.command("collect"))
+        self.assertEqual([item["name"] for item in collected["files"]], ["outcome.json"])
+        envelope = json.loads(base64.b64decode(collected["files"][0]["content_base64"], validate=True))
+        self.assertEqual(envelope["settlement"], {"receipt": settled, "recovery": None})
+        self.assertEqual(self.controller.dispatch(baseline.command("status")), settled)
 
     def test_native_receipt_waits_through_real_two_link_publication(self):
         request = baseline.request()
