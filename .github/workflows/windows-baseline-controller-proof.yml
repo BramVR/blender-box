@@ -1,0 +1,288 @@
+name: Windows baseline controller proof
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: Start a new baseline or recover the exact original execution
+        required: true
+        type: choice
+        options:
+          - run
+          - recover
+      candidate_sha:
+        description: Full candidate commit SHA from the approved enrollment packet
+        required: true
+        type: string
+      policy_driver_sha:
+        description: Full installed controller-policy driver SHA from the approved enrollment packet
+        required: true
+        type: string
+      execution_id:
+        description: Recovery only; exact original execution ID printed by the dispatcher
+        required: false
+        default: ""
+        type: string
+      request_sha256:
+        description: Recovery only; exact original request SHA-256 printed by the dispatcher
+        required: false
+        default: ""
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-onboarding-prepared-v1
+  cancel-in-progress: false
+
+jobs:
+  request:
+    name: request
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      mode: ${{ steps.validate.outputs.mode }}
+      candidate_sha: ${{ steps.validate.outputs.candidate_sha }}
+      policy_driver_sha: ${{ steps.validate.outputs.policy_driver_sha }}
+      dispatcher_sha: ${{ steps.validate.outputs.dispatcher_sha }}
+      execution_id: ${{ steps.validate.outputs.execution_id }}
+      request_sha256: ${{ steps.validate.outputs.request_sha256 }}
+    steps:
+      - name: Validate public request before protected access
+        id: validate
+        env:
+          MODE: ${{ inputs.mode }}
+          CANDIDATE_SHA: ${{ inputs.candidate_sha }}
+          POLICY_DRIVER_SHA: ${{ inputs.policy_driver_sha }}
+          DISPATCHER_SHA: 2269a19e09680fde3cb02dbfa3ca83b5a93f63c6
+          ORIGINAL_EXECUTION_ID: ${{ inputs.execution_id }}
+          ORIGINAL_REQUEST_SHA256: ${{ inputs.request_sha256 }}
+          EVENT_NAME: ${{ github.event_name }}
+          REQUEST_REPOSITORY: ${{ github.repository }}
+          REQUEST_REF: ${{ github.ref }}
+          REQUEST_ACTOR: ${{ github.actor }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          readonly EXPECTED_REPOSITORY=BramVR/blender-box
+          readonly EXPECTED_DISPATCHER_SHA=2269a19e09680fde3cb02dbfa3ca83b5a93f63c6
+          [[ "$EVENT_NAME" == workflow_dispatch ]] || exit 1
+          [[ "$REQUEST_REPOSITORY" == "$EXPECTED_REPOSITORY" ]] || exit 1
+          [[ "$REQUEST_ACTOR" == BramVR && "$RUN_ATTEMPT" == 1 ]] || exit 1
+          [[ "$CANDIDATE_SHA" =~ ^[0-9a-f]{40}$ ]] || exit 1
+          [[ "$POLICY_DRIVER_SHA" =~ ^[0-9a-f]{40}$ ]] || exit 1
+          [[ "$DISPATCHER_SHA" == "$EXPECTED_DISPATCHER_SHA" ]] || exit 1
+
+          default_branch=$(gh api "repos/$EXPECTED_REPOSITORY" --jq .default_branch)
+          [[ "$default_branch" =~ ^[A-Za-z0-9._/-]+$ ]] || exit 1
+          [[ "$REQUEST_REF" == "refs/heads/$default_branch" ]] || exit 1
+          resolved_candidate=$(gh api "repos/$EXPECTED_REPOSITORY/commits/$CANDIDATE_SHA" --jq .sha)
+          [[ "$resolved_candidate" == "$CANDIDATE_SHA" ]] || exit 1
+
+          case "$MODE" in
+            run)
+              [[ -z "$ORIGINAL_EXECUTION_ID" && -z "$ORIGINAL_REQUEST_SHA256" ]] || exit 1
+              ;;
+            recover)
+              [[ "$ORIGINAL_EXECUTION_ID" =~ ^gha_[1-9][0-9]{0,19}_1$ ]] || exit 1
+              [[ "$ORIGINAL_REQUEST_SHA256" =~ ^[0-9a-f]{64}$ ]] || exit 1
+              ;;
+            *)
+              exit 1
+              ;;
+          esac
+
+          {
+            printf 'mode=%s\n' "$MODE"
+            printf 'candidate_sha=%s\n' "$CANDIDATE_SHA"
+            printf 'policy_driver_sha=%s\n' "$POLICY_DRIVER_SHA"
+            printf 'dispatcher_sha=%s\n' "$DISPATCHER_SHA"
+            printf 'execution_id=%s\n' "$ORIGINAL_EXECUTION_ID"
+            printf 'request_sha256=%s\n' "$ORIGINAL_REQUEST_SHA256"
+          } >> "$GITHUB_OUTPUT"
+
+  authorize:
+    name: authorize
+    needs: request
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    environment: windows-onboarding-approval
+    steps:
+      - name: Bind approval to the validated request
+        env:
+          MODE: ${{ needs.request.outputs.mode }}
+          CANDIDATE_SHA: ${{ needs.request.outputs.candidate_sha }}
+          POLICY_DRIVER_SHA: ${{ needs.request.outputs.policy_driver_sha }}
+          DISPATCHER_SHA: ${{ needs.request.outputs.dispatcher_sha }}
+          ORIGINAL_EXECUTION_ID: ${{ needs.request.outputs.execution_id }}
+          ORIGINAL_REQUEST_SHA256: ${{ needs.request.outputs.request_sha256 }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$RUN_ATTEMPT" == 1 ]] || exit 1
+          [[ "$CANDIDATE_SHA" =~ ^[0-9a-f]{40}$ ]] || exit 1
+          [[ "$POLICY_DRIVER_SHA" =~ ^[0-9a-f]{40}$ ]] || exit 1
+          [[ "$DISPATCHER_SHA" == 2269a19e09680fde3cb02dbfa3ca83b5a93f63c6 ]] || exit 1
+          if [[ "$MODE" == run ]]; then
+            [[ -z "$ORIGINAL_EXECUTION_ID" && -z "$ORIGINAL_REQUEST_SHA256" ]] || exit 1
+          else
+            [[ "$MODE" == recover ]] || exit 1
+            [[ "$ORIGINAL_EXECUTION_ID" =~ ^gha_[1-9][0-9]{0,19}_1$ ]] || exit 1
+            [[ "$ORIGINAL_REQUEST_SHA256" =~ ^[0-9a-f]{64}$ ]] || exit 1
+          fi
+          {
+            printf 'Approved %s for candidate %s with policy driver %s and dispatcher %s.\n' \
+              "$MODE" "$CANDIDATE_SHA" "$POLICY_DRIVER_SHA" "$DISPATCHER_SHA"
+            if [[ "$MODE" == recover ]]; then
+              printf 'Recovery is bound to execution %s and request %s.\n' \
+                "$ORIGINAL_EXECUTION_ID" "$ORIGINAL_REQUEST_SHA256"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  baseline:
+    name: baseline
+    needs: [request, authorize]
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: windows-onboarding-controller
+    env:
+      MODE: ${{ needs.request.outputs.mode }}
+      CANDIDATE_SHA: ${{ needs.request.outputs.candidate_sha }}
+      POLICY_DRIVER_SHA: ${{ needs.request.outputs.policy_driver_sha }}
+      ORIGINAL_EXECUTION_ID: ${{ needs.request.outputs.execution_id }}
+      ORIGINAL_REQUEST_SHA256: ${{ needs.request.outputs.request_sha256 }}
+      DISPATCHER_SHA: ${{ needs.request.outputs.dispatcher_sha }}
+      PRIVATE_NAME: proof-controller-${{ github.run_id }}-${{ github.run_attempt }}
+    steps:
+      - name: Recheck approved pins before source checkout
+        env:
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+          REQUEST_REF: ${{ github.ref }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$RUN_ATTEMPT" == 1 && "$REQUEST_REF" == refs/heads/* ]] || exit 1
+          [[ "$CANDIDATE_SHA" =~ ^[0-9a-f]{40}$ ]] || exit 1
+          [[ "$POLICY_DRIVER_SHA" =~ ^[0-9a-f]{40}$ ]] || exit 1
+          [[ "$MODE" == run || "$MODE" == recover ]] || exit 1
+      - name: Check out reviewed dispatcher source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: 2269a19e09680fde3cb02dbfa3ca83b5a93f63c6
+          path: driver
+          persist-credentials: false
+      - name: Verify reviewed dispatcher source
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$(git -C driver rev-parse HEAD)" == "$DISPATCHER_SHA" ]] || exit 1
+      - name: Set up reviewed dispatcher runtime
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      - name: Prepare fresh private controller connection
+        env:
+          CONTROLLER_HOST: ${{ vars.PROOF_CONTROLLER_HOST }}
+          CONTROLLER_PORT: ${{ vars.PROOF_CONTROLLER_PORT }}
+          CONTROLLER_USER: ${{ vars.PROOF_CONTROLLER_USER }}
+          CONTROLLER_SSH_KEY: ${{ secrets.PROOF_CONTROLLER_SSH_KEY }}
+          CONTROLLER_KNOWN_HOSTS: ${{ secrets.PROOF_CONTROLLER_KNOWN_HOSTS }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 077
+          private_parent="$RUNNER_TEMP/$PRIVATE_NAME"
+          dispatch_state="$private_parent/private"
+          public_output="$private_parent/public"
+          ssh_config="$private_parent/ssh/config"
+          [[ "$CONTROLLER_HOST" =~ ^[A-Za-z0-9][A-Za-z0-9.-]{0,252}$ ]] || exit 1
+          [[ "$CONTROLLER_PORT" =~ ^[1-9][0-9]{0,4}$ ]] || exit 1
+          (( CONTROLLER_PORT <= 65535 )) || exit 1
+          [[ "$CONTROLLER_USER" =~ ^[a-z_][a-z0-9_-]{0,31}$ ]] || exit 1
+          [[ "$CONTROLLER_SSH_KEY" == "-----BEGIN OPENSSH PRIVATE KEY-----"* ]] || exit 1
+          [[ -n "$CONTROLLER_KNOWN_HOSTS" ]] || exit 1
+          [[ ! -e "$private_parent" ]] || exit 1
+          mkdir -m 700 "$private_parent"
+          mkdir -m 700 "$private_parent/ssh"
+          printf '%s\n' "$CONTROLLER_SSH_KEY" > "$private_parent/ssh/key"
+          printf '%s\n' "$CONTROLLER_KNOWN_HOSTS" > "$private_parent/ssh/known_hosts"
+          {
+            printf 'Host blender-box-proof-controller\n'
+            printf '  HostName %s\n' "$CONTROLLER_HOST"
+            printf '  Port %s\n' "$CONTROLLER_PORT"
+            printf '  User %s\n' "$CONTROLLER_USER"
+            printf '  IdentityFile "%s"\n' "$private_parent/ssh/key"
+            printf '  UserKnownHostsFile "%s"\n' "$private_parent/ssh/known_hosts"
+            printf '  IdentitiesOnly yes\n'
+          } > "$ssh_config"
+          chmod 600 "$private_parent/ssh/key" "$private_parent/ssh/known_hosts" "$ssh_config"
+          [[ ! -e "$dispatch_state" && ! -e "$public_output" ]] || exit 1
+      - name: Dispatch approved baseline request
+        id: dispatch
+        shell: bash
+        run: |
+          set -euo pipefail
+          private_parent="$RUNNER_TEMP/$PRIVATE_NAME"
+          dispatch_state="$private_parent/private"
+          public_output="$private_parent/public"
+          ssh_config="$private_parent/ssh/config"
+          if [[ "$MODE" == run ]]; then
+            expires_at=$(date -u -d "@$(( $(date -u +%s) + 1200 ))" '+%Y-%m-%dT%H:%M:%SZ')
+            exec python3 driver/scripts/proof_controller_dispatch.py run \
+              --github-run-id "$GITHUB_RUN_ID" \
+              --github-run-attempt "$GITHUB_RUN_ATTEMPT" \
+              --candidate-sha "$CANDIDATE_SHA" \
+              --policy-driver-sha "$POLICY_DRIVER_SHA" \
+              --expires-at "$expires_at" \
+              --ssh-config "$ssh_config" \
+              --controller blender-box-proof-controller \
+              --state "$dispatch_state" \
+              --output "$public_output" \
+              --budget-seconds 900
+          fi
+          exec python3 driver/scripts/proof_controller_dispatch.py recover \
+            --execution-id "$ORIGINAL_EXECUTION_ID" \
+            --request-sha256 "$ORIGINAL_REQUEST_SHA256" \
+            --candidate-sha "$CANDIDATE_SHA" \
+            --policy-driver-sha "$POLICY_DRIVER_SHA" \
+            --ssh-config "$ssh_config" \
+            --controller blender-box-proof-controller \
+            --state "$dispatch_state" \
+            --output "$public_output" \
+            --budget-seconds 300
+      - name: Require validated public outcome
+        if: ${{ always() }}
+        shell: bash
+        run: test -s "$RUNNER_TEMP/$PRIVATE_NAME/public/outcome.json"
+      - name: Upload allowlisted controller proof
+        if: ${{ always() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: windows-baseline-controller-${{ inputs.mode }}-${{ inputs.candidate_sha }}
+          if-no-files-found: error
+          retention-days: 14
+          path: |
+            ${{ runner.temp }}/proof-controller-${{ github.run_id }}-${{ github.run_attempt }}/public/outcome.json
+            ${{ runner.temp }}/proof-controller-${{ github.run_id }}-${{ github.run_attempt }}/public/viewport.png
+      - name: Remove only this runner's controller credentials
+        if: ${{ always() }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          private_parent="$RUNNER_TEMP/$PRIVATE_NAME"
+          ssh_root="$private_parent/ssh"
+          [[ "$private_parent" == "$RUNNER_TEMP/proof-controller-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" ]] || exit 1
+          if [[ -e "$ssh_root" || -L "$ssh_root" ]]; then
+            [[ -d "$ssh_root" && ! -L "$ssh_root" && -O "$ssh_root" ]] || exit 1
+            for credential in "$ssh_root/key" "$ssh_root/known_hosts" "$ssh_root/config"; do
+              rm -f -- "$credential"
+            done
+            rmdir -- "$ssh_root"
+          fi
+          if [[ -d "$private_parent" && ! -L "$private_parent" && -O "$private_parent" ]]; then
+            rmdir -- "$private_parent" 2>/dev/null || true
+          fi

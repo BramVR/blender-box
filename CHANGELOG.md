@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Add a separately approved manual workflow for baseline proof and exact recovery through the persistent controller, with immutable dispatcher source, fixed private SSH configuration, serialized fixture access, and allowlisted public evidence.
 - Add a bounded hosted baseline dispatcher with attempt-one identity, uncertain-start reconciliation, fresh-runner recovery pins, exact SSH process cleanup, and validated allowlisted evidence publication.
 - Add a bounded proof-controller `collect` operation that exports only root-bound baseline evidence after exact settlement and retained viewport opt-in validation.
 - Add bounded root-only proof-controller qualification cases and original-Run cleanup authority while keeping ordinary dispatch closed until all native evidence is approved.

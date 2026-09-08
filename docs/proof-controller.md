@@ -77,6 +77,24 @@ Keep unresolved jobs. This controller adds no deletion or historical ownership-r
 
 Use `proof_controller_dispatch.py` from a hosted workflow whose checkout and installed controller policy are already approved. A fresh run accepts only GitHub attempt `1` and derives `gha_<github-run-id>_1`.
 
+The manual `Windows baseline controller proof` workflow wraps this interface without changing the older onboarding workflow. It validates a `run` or `recover` request in an unprotected job, resolves the candidate commit in `BramVR/blender-box`, and requires an attempt-one dispatch from the repository's current default branch by `BramVR`. The existing `windows-onboarding-approval` environment then binds an approval to the candidate SHA, installed policy-driver SHA, and literal dispatcher SHA. Only after that approval does the `windows-onboarding-controller` environment expose the dedicated controller connection.
+
+Configure `windows-onboarding-controller` with these environment-scoped values:
+
+- Variables `PROOF_CONTROLLER_HOST`, `PROOF_CONTROLLER_PORT`, and `PROOF_CONTROLLER_USER` identify the fixed controller SSH endpoint. The workflow accepts a DNS name or IPv4 literal, a numeric port, and a simple POSIX account name.
+- Secret `PROOF_CONTROLLER_SSH_KEY` is the dedicated controller private key.
+- Secret `PROOF_CONTROLLER_KNOWN_HOSTS` is the dedicated, pinned SSH trust file.
+
+Restrict both environments to the default branch and configure required reviewers according to the enrollment review. The workflow and repository tests cannot prove those GitHub settings. The controller policy, native qualification, network reachability, dedicated Windows fixture, and restoration procedure must already match the reviewed enrollment packet.
+
+For `run`, supply the packet's exact candidate and installed policy-driver SHAs and leave both recovery fields empty. The wrapper checks out only dispatcher source commit `2269a19e09680fde3cb02dbfa3ca83b5a93f63c6`, verifies `HEAD`, creates a fresh mode-`0700` parent, writes a fixed SSH config from the protected values, and gives the dispatcher a 20-minute expiry with a 900-second budget. It neither checks out candidate code nor receives Windows operator configuration.
+
+For `recover`, start a new workflow run with the same candidate and policy-driver SHAs plus the exact `execution_id` and `request_sha256` printed by the original dispatcher. Recovery uses fresh local private state, starts with the dispatcher's recovery-only interface, and has a 300-second budget. A recovery cannot start a new execution, and a successful cleanup cannot change a failed baseline into a pass.
+
+The dispatcher runs in the foreground without a pipe or output capture. Its flushed recovery metadata and final result remain in the GitHub job log, and its exit status remains the dispatch step status. The job always requires validated `outcome.json` and uploads that file plus optional `viewport.png`, including a settled failed proof. Missing collection fails. Private exchange records, request documents, and journals stay under the runner's private temporary parent and are not uploaded. After publication, an unconditional step removes only that runner's named SSH key, trust file, and config, then removes the owned SSH and private parent directories only when empty. Abrupt runner loss can still require the explicit later recovery dispatch.
+
+The new workflow uses concurrency group `windows-onboarding-prepared-v1`, shared with the older onboarding workflow, and never cancels an in-progress use of the fixed Windows fixture. It does not invoke onboarding, install controller resources, collect through an alternate path, or choose Windows paths and commands. Registering the workflow on the default branch and configuring its environments remain separate operator actions.
+
 ```sh
 python3 scripts/proof_controller_dispatch.py run \
   --github-run-id "$GITHUB_RUN_ID" \
