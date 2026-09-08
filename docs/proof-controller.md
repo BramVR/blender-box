@@ -73,6 +73,51 @@ Recovery uses the retained target, client, and live config with fresh per-attemp
 
 Keep unresolved jobs. This controller adds no deletion or historical ownership-rewriting policy.
 
+## Dispatch a hosted baseline
+
+Use `proof_controller_dispatch.py` from a hosted workflow whose checkout and installed controller policy are already approved. A fresh run accepts only GitHub attempt `1` and derives `gha_<github-run-id>_1`.
+
+```sh
+python3 scripts/proof_controller_dispatch.py run \
+  --github-run-id "$GITHUB_RUN_ID" \
+  --github-run-attempt "$GITHUB_RUN_ATTEMPT" \
+  --candidate-sha "$APPROVED_CANDIDATE_SHA" \
+  --policy-driver-sha "$INSTALLED_POLICY_DRIVER_SHA" \
+  --expires-at "$FIXED_EXPIRY" \
+  --ssh-config "$PRIVATE_CONTROLLER_CONFIG" \
+  --controller "$CONTROLLER_ALIAS" \
+  --state "$RUNNER_TEMP/proof-controller-private" \
+  --output "$RUNNER_TEMP/proof-controller-public" \
+  --budget-seconds 900
+```
+
+Both `--state` and `--output` must name absent absolute paths below a private directory. The SSH config must be a regular file owned by the current user with no group or other permission bits. The dispatcher uses `/usr/bin/ssh` with one fixed option set, no remote command, no forwarding, no agent, no password prompt, no multiplexing, and no local command.
+
+Before SSH starts, the dispatcher stores and flushes the exact canonical start document in the private state directory. It also writes one canonical recovery metadata line to stdout. That line contains only `execution_id`, `request_sha256`, `candidate_sha`, and `policy_driver_sha`, plus its schema and kind. Preserve those four values with the hosted job record.
+
+An uncertain start always leads to `status`. Only an exact `execution-not-found` error from that status permits one retry of the same start bytes. Any valid receipt closes the retry path. Active receipts are polled at a bounded cadence until settlement or the observation deadline. SIGINT or SIGTERM wakes that wait immediately. Start reconciliation leaves time reserved for `recover` against the original execution ID. If local SSH process cleanup cannot be proved, the dispatcher fails closed without another controller call.
+
+To recover after the first runner is gone, use a new private state directory and the four published values:
+
+```sh
+python3 scripts/proof_controller_dispatch.py recover \
+  --execution-id "$ORIGINAL_EXECUTION_ID" \
+  --candidate-sha "$APPROVED_CANDIDATE_SHA" \
+  --policy-driver-sha "$INSTALLED_POLICY_DRIVER_SHA" \
+  --request-sha256 "$ORIGINAL_REQUEST_SHA256" \
+  --ssh-config "$PRIVATE_CONTROLLER_CONFIG" \
+  --controller "$CONTROLLER_ALIAS" \
+  --state "$RUNNER_TEMP/proof-controller-recovery-private" \
+  --output "$RUNNER_TEMP/proof-controller-recovery-public" \
+  --budget-seconds 300
+```
+
+Recovery begins with `status`. It sends `recover` once for an unsettled execution, then observes the valid recovery receipt through paced `status` calls inside the reserved wall-clock budget. The dispatcher retains one final exchange and part of the remaining time for `collect`; it has no `start` transition. The four arguments pin the collected schema version 2 envelope to the original execution. Recovery does not need the first runner's state directory or the original expiry.
+
+The dispatcher retains each bounded request, stdout, stderr, result digest, and owned process record in its private state directory. It drains stdout and stderr together. It retains the spawned leader identity until every exact process-group signal finishes, including when a child closes its output pipes and outlives the leader. Timeout, cancellation, output overflow, and normal leader exit cannot leave that child running. If cleanup cannot be proved, captured output and the failed exchange remain private and the dispatcher makes no later controller call.
+
+The dispatcher validates the whole collection response before it creates the output directory. It checks the receipt, request pins, baseline report, settlement, recovery record, artifacts, hashes, base64 sizes, and PNG bytes. It writes an optional `viewport.png` first and `outcome.json` last. A failed baseline stays failed after successful recovery. If a settled failure has no attempt-one collection record, the dispatcher returns failure and keeps the controller receipt in private state.
+
 A supervisor failure before worker release has a separate recovery path. It requires an exact, root-owned failure receipt after owned child cleanup, a completed start-command receipt, no release authorization or native receipt, and fresh proof that the unit has no queued job or remaining processes. Missing files alone never prove that a launch failed. The helper records this decision under the fixture lock, and later startup or release for that attempt must refuse it.
 
 A proven failure of the first baseline attempt settles as failure because no Windows operation was admitted. A failed recovery attempt keeps the original Run, target, client, and journal; Windows cleanup remains unresolved until an explicit recovery succeeds. Unknown starts and uncertain cleanup stay fenced.

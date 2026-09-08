@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Add a bounded hosted baseline dispatcher with attempt-one identity, uncertain-start reconciliation, fresh-runner recovery pins, exact SSH process cleanup, and validated allowlisted evidence publication.
 - Add a bounded proof-controller `collect` operation that exports only root-bound baseline evidence after exact settlement and retained viewport opt-in validation.
 - Add bounded root-only proof-controller qualification cases and original-Run cleanup authority while keeping ordinary dispatch closed until all native evidence is approved.
 - Add owned Windows runtime installation with pinned artifact manifests, preview, durable installation receipts, bounded execution status and recovery, generated targets, repeatable removal, and maintenance fencing; refuse legacy setup apply without ownership and prepare separately authorized host-install proof.
