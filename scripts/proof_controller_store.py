@@ -22,6 +22,20 @@ class LocalFiles:
     def entries(path):
         return list(path.iterdir())
 
+    @staticmethod
+    @contextmanager
+    def scan(path):
+        model.no_links(path)
+        fd = os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        try:
+            info = os.fstat(fd)
+            model.require(stat.S_ISDIR(info.st_mode) and info.st_uid == os.getuid()
+                          and info.st_mode & 0o077 == 0, "private-directory-permissions")
+            with os.scandir(fd) as entries:
+                yield entries
+        finally:
+            os.close(fd)
+
     @contextmanager
     def locked(self, root):
         self.directory(root)
@@ -178,6 +192,12 @@ class RootedFiles:
             return [Path(path) / name for name in os.listdir(fd)]
 
     @contextmanager
+    def scan(self, path):
+        with self.opened(self.relative(path)) as fd:
+            with os.scandir(fd) as entries:
+                yield entries
+
+    @contextmanager
     def locked(self, root):
         model.require(root == self.root and self.uid == os.getuid(), "private-directory-permissions")
         with self.opened(()) as parent:
@@ -217,6 +237,9 @@ class FixtureFiles:
 
     def entries(self, path):
         return self.capability(path).entries(path)
+
+    def scan(self, path):
+        return self.capability(path).scan(path)
 
     def locked(self, root):
         return self.capability(root).locked(root)

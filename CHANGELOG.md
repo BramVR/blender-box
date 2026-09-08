@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Add a bounded proof-controller `collect` operation that exports only root-bound baseline evidence after exact settlement and retained viewport opt-in validation.
 - Add bounded root-only proof-controller qualification cases and original-Run cleanup authority while keeping ordinary dispatch closed until all native evidence is approved.
 - Retain Windows installation and original Run authority on the persistent proof controller across hosted job loss; require durable checkpoint acknowledgement before mutations and exact cleanup before settlement. Render disabled SSH commands as OpenSSH sentinels and restore SSH key terminal newlines stripped by secret storage so hosted proof can authenticate.
 
