@@ -94,6 +94,7 @@ class ProofControllerWorkflowTests(unittest.TestCase):
         env.update(changes or {})
         return run_bash(self.validate, cwd=root, env=env), output, log
 
+    @unittest.skipIf(os.name == "nt", "POSIX workflow shell fixtures")
     def test_invalid_public_requests_fail_in_the_unprotected_job(self):
         invalid = (
             {"REQUEST_ACTOR": "other"},
@@ -113,10 +114,7 @@ class ProofControllerWorkflowTests(unittest.TestCase):
         result, _, _ = self.validation_case(resolved_candidate="d" * 40)
         self.assertNotEqual(result.returncode, 0)
 
-        request_job = self.workflow.split("  request:\n", 1)[1].split("  authorize:\n", 1)[0]
-        self.assertNotIn("environment:", request_job)
-        self.assertNotIn("secrets.", request_job)
-
+    @unittest.skipIf(os.name == "nt", "POSIX workflow shell fixtures")
     def test_valid_run_and_recovery_publish_the_exact_public_pins(self):
         result, output, _ = self.validation_case()
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -139,6 +137,7 @@ class ProofControllerWorkflowTests(unittest.TestCase):
         self.assertEqual(recovery["execution_id"], "gha_123_1")
         self.assertEqual(recovery["request_sha256"], REQUEST_SHA)
 
+    @unittest.skipIf(os.name == "nt", "POSIX workflow shell fixtures")
     def test_approval_record_names_candidate_policy_dispatcher_and_recovery_identity(self):
         with tempfile.TemporaryDirectory() as directory:
             summary = pathlib.Path(directory) / "summary"
@@ -213,6 +212,7 @@ class ProofControllerWorkflowTests(unittest.TestCase):
         result = run_bash(self.dispatch, cwd=root, env=env)
         return result, json.loads(log.read_text(encoding="utf-8")), fake_expiry
 
+    @unittest.skipIf(os.name == "nt", "POSIX workflow shell fixtures")
     def test_run_and_recovery_execute_the_approved_arguments_in_the_foreground(self):
         result, argv, expected_expiry = self.fake_dispatch_case("run")
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -239,11 +239,13 @@ class ProofControllerWorkflowTests(unittest.TestCase):
         self.assertNotIn("--github-run-id", arguments)
         self.assertNotIn("--expires-at", arguments)
 
+    @unittest.skipIf(os.name == "nt", "POSIX workflow shell fixtures")
     def test_dispatcher_failure_is_the_dispatch_step_failure(self):
         result, _, _ = self.fake_dispatch_case("run", exit_code=23)
         self.assertEqual(result.returncode, 23)
         self.assertEqual(result.stdout, "original-public-recovery-metadata\nfinal-dispatch-result\n")
 
+    @unittest.skipIf(os.name == "nt", "POSIX workflow shell fixtures")
     def test_private_ssh_files_are_created_then_only_credentials_are_removed(self):
         with tempfile.TemporaryDirectory() as directory:
             runner_temp = pathlib.Path(directory) / "runner"
@@ -281,6 +283,9 @@ class ProofControllerWorkflowTests(unittest.TestCase):
             self.assertEqual((private_parent / "public" / "outcome.json").read_text(), "public")
 
     def test_protected_job_order_source_pin_and_publication_allowlist(self):
+        request_job = self.workflow.split("  request:\n", 1)[1].split("  authorize:\n", 1)[0]
+        self.assertNotIn("environment:", request_job)
+        self.assertNotIn("secrets.", request_job)
         self.assertIn("environment: windows-onboarding-approval", self.workflow)
         self.assertIn("environment: windows-onboarding-controller", self.workflow)
         self.assertIn("group: windows-onboarding-prepared-v1", self.workflow)

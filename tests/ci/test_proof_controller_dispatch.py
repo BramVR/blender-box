@@ -155,6 +155,7 @@ class TrackingPipe:
         return self.source.close()
 
 
+@unittest.skipUnless(os.name == "posix", "POSIX controller dispatcher fixtures")
 class DispatcherTest(unittest.TestCase):
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()
@@ -771,6 +772,7 @@ class DispatcherTest(unittest.TestCase):
             self.assertEqual(transport.calls, [])
 
 
+@unittest.skipUnless(os.name == "posix", "POSIX controller dispatcher fixtures")
 class SSHTransportTest(unittest.TestCase):
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()
