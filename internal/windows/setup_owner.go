@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/BramVR/blender-box/internal/target"
+	"github.com/BramVR/blender-box/internal/windowstarget"
 )
 
 const (
@@ -101,7 +102,7 @@ func setupOwnerID(prefix string) (string, error) {
 }
 
 func setupOwnerRoot(selected target.Target) string {
-	return selected.WorkRoot + `\` + setupOwnerStateDirectory
+	return selected.Windows().WorkRoot + `\` + setupOwnerStateDirectory
 }
 
 func setupOwnerScriptPath(selected target.Target, attemptID string) string {
@@ -260,8 +261,8 @@ func invokeSetupOwner(ctx context.Context, ssh SetupSSH, selected target.Target,
 	arguments := []string{"setup-owner", operation}
 	arguments = append(arguments, fence...)
 	arguments = append(arguments, "--json")
-	command := setupOwnerCommand(selected, arguments, input)
-	output, err := ssh.Run(ctx, selected.SSHAlias, powerShellArguments(command), nil)
+	command := setupOwnerCommand(selected.Windows(), arguments, input)
+	output, err := ssh.Run(ctx, selected.SSHAlias(), powerShellArguments(command), nil)
 	if err != nil {
 		return setupOwnerView{}, fmt.Errorf("setup owner %s: %w", operation, err)
 	}
@@ -287,9 +288,9 @@ func invokeSetupOwner(ctx context.Context, ssh SetupSSH, selected target.Target,
 	return view, nil
 }
 
-func setupOwnerCommand(selected target.Target, arguments []string, input []byte) string {
+func setupOwnerCommand(selected windowstarget.Config, arguments []string, input []byte) string {
 	if len(input) == 0 {
-		command := "$ErrorActionPreference = 'Stop'\n$env:BLENDERSESSIOND_STATE_DIR = " + powerShellLiteral(setupOwnerRoot(selected)) + "\n& " + powerShellLiteral(selected.SessionBrokerExecutable)
+		command := "$ErrorActionPreference = 'Stop'\n$env:BLENDERSESSIOND_STATE_DIR = " + powerShellLiteral(selected.WorkRoot+`\`+setupOwnerStateDirectory) + "\n& " + powerShellLiteral(selected.SessionBrokerExecutable)
 		for _, argument := range arguments {
 			command += " " + powerShellLiteral(argument)
 		}
@@ -349,7 +350,7 @@ try {
     if (-not $p.HasExited) { $p.Kill(); $p.WaitForExit() }
     throw
 } finally { $p.Dispose() }
-exit 0`, powerShellLiteral(base64.StdEncoding.EncodeToString(input)), powerShellLiteral(selected.SessionBrokerExecutable), powerShellLiteral(strings.Join(arguments, " ")), powerShellLiteral(setupOwnerRoot(selected)), maxSetupOwnerResponse, maxSetupOwnerResponse)
+exit 0`, powerShellLiteral(base64.StdEncoding.EncodeToString(input)), powerShellLiteral(selected.SessionBrokerExecutable), powerShellLiteral(strings.Join(arguments, " ")), powerShellLiteral(selected.WorkRoot+`\`+setupOwnerStateDirectory), maxSetupOwnerResponse, maxSetupOwnerResponse)
 	command = strings.ReplaceAll(command, "\n        ", "\n")
 	return strings.ReplaceAll(command, "\n    ", "\n")
 }

@@ -9,6 +9,7 @@ import (
 	"github.com/BramVR/blender-box/internal/host"
 	"github.com/BramVR/blender-box/internal/orchestrator"
 	sshtransport "github.com/BramVR/blender-box/internal/ssh"
+	"github.com/BramVR/blender-box/internal/target"
 	"github.com/BramVR/blender-box/internal/windows"
 )
 
@@ -16,6 +17,7 @@ func main() {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer cancel()
 	sshRunner := sshtransport.Runner{}
+	configRoot, _ := target.ConfigDir()
 	runtime := host.NewRuntime(host.ExecProcessRunner{})
 	hostService := host.NewService(host.Dependencies{Tasks: runtime, Daemon: runtime, Desktop: runtime, UIActor: runtime})
 	os.Exit(cli.Run(
@@ -26,7 +28,7 @@ func main() {
 		os.Stderr,
 		cli.Dependencies{
 			SSH:    sshRunner,
-			Runner: orchestrator.New(windows.NewAdapter(sshRunner)),
+			Runner: orchestrator.New(windows.NewAdapter(sshRunner), configRoot),
 			Host:   hostService,
 		},
 	))
