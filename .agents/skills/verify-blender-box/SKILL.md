@@ -119,6 +119,8 @@ Artifacts are ignored product evidence, not scratch. Keep them until proof is re
 
 ## Helpers
 
-No verification-only helper wraps the product. Drive `blender-box` directly, use `jq` for typed assertions, `ssh` only for the read-only hostname check, and use the public `status`/`stop` commands for host recovery and cleanup.
+For repeatable onboarding baseline proof, use `scripts/onboarding_proof.py` with the private operator configuration described in `docs/windows-onboarding-proof.md`. It drives the public CLI and shares evidence and recovery assertions with later proof jobs. It does not grant setup, fixture reset, or hosted dispatch permission. Distinguish a real local result from the required hosted `Windows onboarding proof` / `baseline` result.
+
+For focused manual proof, drive `blender-box` directly using the recipe above. Use the public `status`/`stop` commands for host recovery and cleanup. Do not infer fixture ownership from a path or task name.
 
 Read `README.md` and the matching `docs/architecture/` contract before exercising a user path.
