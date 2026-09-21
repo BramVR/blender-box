@@ -18,6 +18,7 @@ import (
 	"github.com/BramVR/blender-box/internal/orchestrator"
 	"github.com/BramVR/blender-box/internal/payload"
 	"github.com/BramVR/blender-box/internal/target"
+	"github.com/BramVR/blender-box/internal/windowstarget"
 )
 
 type scriptedSSH struct {
@@ -227,7 +228,7 @@ func TestAdapterCarriesTypedAuthorityAcrossEveryHostOperation(t *testing.T) {
 	wantOperations := []string{"acquire", "stage", "start", "start", "status", "fetch", "settle"}
 	for index, want := range wantOperations {
 		script := decodedAdapterScript(t, fake.arguments[index])
-		if !strings.Contains(script, "'host' '"+want+"'") || !strings.Contains(script, selected.HostExecutable) || !strings.Contains(script, selected.WorkRoot) {
+		if !strings.Contains(script, "'host' '"+want+"'") || !strings.Contains(script, selected.Windows().HostExecutable) || !strings.Contains(script, selected.Windows().WorkRoot) {
 			t.Fatalf("operation %d script = %q", index, script)
 		}
 	}
@@ -245,39 +246,23 @@ func TestAdapterCarriesTypedAuthorityAcrossEveryHostOperation(t *testing.T) {
 	if settlement.Receipt.SessionID != running.SessionID || settlement.Receipt.Claim != claim {
 		t.Fatalf("settlement authority changed: %+v", settlement)
 	}
-	if settlement.SessionBrokerExecutable != selected.SessionBrokerExecutable || settlement.SessionName != orchestrator.SessionNameForRun(claim.RunID) {
+	if settlement.SessionBrokerExecutable != selected.Windows().SessionBrokerExecutable || settlement.SessionName != orchestrator.SessionNameForRun(claim.RunID) {
 		t.Fatalf("settlement daemon authority changed: %+v", settlement)
 	}
 }
 
-func TestAdapterEscapesTargetPathsAsPowerShellLiterals(t *testing.T) {
-	selected := adapterTarget()
-	selected.WorkRoot = `C:\Operator's Box`
-	selected.HostExecutable = `C:\Operator's Box\bin\blender-box.exe`
-	fake := &scriptedSSH{outputs: [][]byte{mustJSON(t, host.Acknowledgement{SchemaVersion: 1, Status: "acquired"})}}
-	claim := orchestrator.LockClaim{
-		SchemaVersion: 1,
-		RunID:         "bbx_01QUOTEDPATHRUNIDENTITY0000",
-		RequestID:     "req_01QUOTEDPATHREQUESTIDENTITY",
-		ControllerID:  "ctl_quoted-path-test",
-		Deadline:      time.Now().Add(time.Hour).UTC(),
-		RequestHash:   strings.Repeat("a", 64),
-		TaskName:      selected.TaskName,
+func TestAdapterRejectsInvalidTargetBeforeSSH(t *testing.T) {
+	fake := &scriptedSSH{}
+	if err := NewAdapter(fake).Acquire(context.Background(), target.Target{}, orchestrator.LockClaim{}); err == nil {
+		t.Fatal("zero target accepted")
 	}
-
-	if err := NewAdapter(fake).Acquire(context.Background(), selected, claim); err != nil {
-		t.Fatal(err)
-	}
-	script := decodedAdapterScript(t, fake.arguments[0])
-	if !strings.Contains(script, `& 'C:\Operator''s Box\bin\blender-box.exe'`) || !strings.Contains(script, `'--state-root' 'C:\Operator''s Box'`) {
-		t.Fatalf("target paths are not safe PowerShell literals: %s", script)
+	if len(fake.arguments) != 0 {
+		t.Fatal("invalid target reached SSH")
 	}
 }
 
 func adapterTarget() target.Target {
-	return target.Target{
-		SchemaVersion:           1,
-		SSHAlias:                "windows-test",
+	selected, err := target.NewWindows("windows-test", windowstarget.Config{
 		SSHUser:                 "test-user",
 		WorkRoot:                `C:\BlenderBoxTest`,
 		InteractiveUser:         "test-user",
@@ -285,7 +270,11 @@ func adapterTarget() target.Target {
 		BlenderExecutable:       `C:\Program Files\Blender Foundation\Blender 5.2\blender.exe`,
 		SessionBrokerExecutable: `C:\BlenderBoxTest\bin\blendersessiond.exe`,
 		HostExecutable:          `C:\BlenderBoxTest\bin\blender-box.exe`,
+	})
+	if err != nil {
+		panic(err)
 	}
+	return selected
 }
 
 func adapterPayload(t *testing.T) payload.Payload {
@@ -333,4 +322,69 @@ func decodedAdapterScript(t *testing.T, arguments []string) string {
 	}
 	t.Fatal("missing encoded command")
 	return ""
+}
+
+func TestEveryAdapterBoundaryRejectsZeroTargetBeforeEffects(t *testing.T) {
+	fake := &scriptedSSH{}
+	adapter := NewAdapter(fake)
+	ctx := context.Background()
+	selected := target.Target{}
+	checks := []func() error{
+		func() error { _, err := adapter.Inspect(ctx, selected, orchestrator.HostRequirements{}); return err },
+		func() error { return adapter.Acquire(ctx, selected, orchestrator.LockClaim{}) },
+		func() error { return adapter.Stage(ctx, selected, orchestrator.LockClaim{}, adapterPayload(t)) },
+		func() error { _, err := adapter.Start(ctx, selected, orchestrator.RunRequest{}); return err },
+		func() error { _, err := adapter.Observe(ctx, selected, "bbx_invalid-target-run-123456"); return err },
+		func() error {
+			_, err := adapter.Fetch(ctx, selected, orchestrator.RunReceipt{}, orchestrator.EvidenceFile{})
+			return err
+		},
+		func() error { _, err := adapter.Settle(ctx, selected, orchestrator.RunReceipt{}); return err },
+	}
+	for _, check := range checks {
+		if err := check(); err == nil {
+			t.Fatal("zero target accepted")
+		}
+	}
+	if len(fake.arguments) != 0 || len(fake.uploads) != 0 {
+		t.Fatal("invalid target reached SSH")
+	}
+}
+func TestAdapterStartRejectsChangedIntermediateClaimBeforeReplay(t *testing.T) {
+	claim := orchestrator.LockClaim{SchemaVersion: 1, RunID: "bbx_intermediate-run-identity-123456", RequestID: "req_intermediate-request-identity-123456", ControllerID: "controller", Deadline: time.Now().Add(time.Hour).UTC(), RequestHash: strings.Repeat("a", 64), TaskName: "BlenderBoxTest"}
+	changed := claim
+	changed.ControllerID = "other-controller"
+	for _, receipt := range []orchestrator.RunReceipt{
+		{SchemaVersion: 1, Claim: changed, State: orchestrator.StateStarting},
+		{SchemaVersion: 1, Claim: claim, State: "unknown"},
+		{SchemaVersion: 1, Claim: claim, State: orchestrator.StateRunning},
+	} {
+		fake := &scriptedSSH{outputs: [][]byte{mustJSON(t, receipt)}}
+		if _, err := NewAdapter(fake).Start(context.Background(), adapterTarget(), orchestrator.RunRequest{Claim: claim}); err == nil {
+			t.Fatal("invalid intermediate receipt accepted")
+		}
+		if len(fake.arguments) != 1 {
+			t.Fatal("invalid intermediate receipt replayed")
+		}
+	}
+}
+
+func TestStartDoesNotReturnPartiallyDecodedReceipt(t *testing.T) {
+	claim := orchestrator.LockClaim{SchemaVersion: 1, RunID: "bbx_partial-start-run-123456", RequestID: "req_partial-start-request-123456", ControllerID: "controller", Deadline: time.Now().Add(time.Hour).UTC(), RequestHash: strings.Repeat("a", 64), TaskName: "BlenderBoxTest"}
+	for _, replay := range []bool{false, true} {
+		t.Run(fmt.Sprint(replay), func(t *testing.T) {
+			data := mustJSON(t, orchestrator.RunReceipt{SchemaVersion: 1, Claim: claim, State: orchestrator.StateStarting, SessionID: "bss_partial-start-session-123456"})
+			data = append(data[:len(data)-1], []byte(`,"unknown":true}`)...)
+			outputs := [][]byte{data}
+			if replay {
+				outputs = append([][]byte{mustJSON(t, orchestrator.RunReceipt{SchemaVersion: 1, Claim: claim, State: orchestrator.StateStarting})}, outputs...)
+			}
+			adapter := NewAdapter(&scriptedSSH{outputs: outputs})
+			adapter.pollInterval = 0
+			receipt, err := adapter.Start(context.Background(), adapterTarget(), orchestrator.RunRequest{Claim: claim})
+			if err == nil || receipt.Claim != (orchestrator.LockClaim{}) || receipt.SessionID != "" {
+				t.Fatalf("partially decoded authority escaped: %+v %v", receipt, err)
+			}
+		})
+	}
 }

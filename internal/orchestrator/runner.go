@@ -20,6 +20,7 @@ import (
 	"github.com/BramVR/blender-box/internal/safepath"
 	"github.com/BramVR/blender-box/internal/target"
 	"github.com/BramVR/blender-box/internal/uiaction"
+	"github.com/BramVR/blender-box/internal/windowstarget"
 )
 
 const (
@@ -132,7 +133,7 @@ func (request RunRequest) Validate() error {
 	if request.Body.SessionName != SessionNameForRun(request.Claim.RunID) {
 		return fmt.Errorf("request Session name does not match Run ID")
 	}
-	if !target.ValidateWindowsPath(request.Body.BlenderExecutable) || !target.ValidateWindowsPath(request.Body.SessionBrokerExecutable) {
+	if !windowstarget.ValidateWindowsPath(request.Body.BlenderExecutable) || !windowstarget.ValidateWindowsPath(request.Body.SessionBrokerExecutable) {
 		return fmt.Errorf("request body contains an unsafe Windows executable path")
 	}
 	if err := request.Body.Payload.ValidateManifest(); err != nil {
@@ -261,6 +262,7 @@ type HostAdapter interface {
 
 type Runner struct {
 	host              HostAdapter
+	journal           journal
 	settlementTimeout time.Duration
 }
 
@@ -277,36 +279,58 @@ func IsPreflightError(err error) bool {
 	return errors.As(err, &failure)
 }
 
-func New(host HostAdapter) *Runner {
-	return &Runner{host: host, settlementTimeout: defaultSettleTTL}
+func New(host HostAdapter, configRoot string) *Runner {
+	return &Runner{host: host, journal: journal{root: configRoot}, settlementTimeout: defaultSettleTTL}
 }
 
 // Status reads and validates the host-owned receipt for one exact Run ID.
 func (runner *Runner) Status(ctx context.Context, selected target.Target, runID RunID) (StatusResult, error) {
-	receipt, err := runner.recoverReceipt(ctx, selected, runID)
+	receipt, err := runner.recoverReceipt(ctx, selected, runID, "")
 	if err != nil {
 		return StatusResult{}, err
 	}
 	return statusFromReceipt(receipt), nil
 }
 
-func (runner *Runner) recoverReceipt(ctx context.Context, selected target.Target, runID RunID) (RunReceipt, error) {
-	if err := runID.Validate(); err != nil {
+func (runner *Runner) recoverReceipt(ctx context.Context, selected target.Target, runID RunID, expectedSession SessionID) (RunReceipt, error) {
+	record, pinned, err := runner.journal.load(selected, runID)
+	if err != nil {
 		return RunReceipt{}, err
 	}
-	receipt, err := runner.host.Observe(ctx, selected, runID)
-	if err != nil {
-		return RunReceipt{}, fmt.Errorf("observe Run: %w", err)
+	if expectedSession != "" && pinned != expectedSession {
+		return RunReceipt{}, authorityFailure("Session identity is not pinned")
 	}
-	if err := validateRecoveredReceipt(receipt, selected, runID); err != nil {
-		return RunReceipt{}, fmt.Errorf("status receipt: %w", err)
+	receipt, observeErr := runner.host.Observe(ctx, selected, runID)
+	authority, authorityErr := runner.journal.settlement(selected, RunReceipt{Claim: record.Claim, SessionID: pinned})
+	if observeErr != nil {
+		return authority, errors.Join(fmt.Errorf("observe Run: %w", observeErr), authorityErr)
+	}
+	if authorityErr != nil {
+		return RunReceipt{}, authorityErr
+	}
+	if !record.Claim.Equal(receipt.Claim) {
+		return RunReceipt{}, authorityFailure("Host Lock claim changed")
+	}
+	if authority.SessionID != "" && receipt.SessionID != authority.SessionID {
+		return RunReceipt{}, authorityFailure("Session identity changed")
+	}
+	if err := receipt.ValidateForClaim(record.Claim); err != nil {
+		return receipt, fmt.Errorf("status receipt: %w", err)
+	}
+	if authority.SessionID != "" {
+		_, err = runner.journal.settlement(selected, receipt)
+	} else {
+		err = runner.journal.accept(selected, receipt)
+	}
+	if err != nil {
+		return RunReceipt{}, err
 	}
 	return receipt, nil
 }
 
 // Stop settles only the exact authority recovered from the host-owned receipt.
 func (runner *Runner) Stop(ctx context.Context, selected target.Target, runID RunID) (StopResult, error) {
-	receipt, err := runner.recoverReceipt(ctx, selected, runID)
+	receipt, err := runner.recoverReceipt(ctx, selected, runID, "")
 	if err != nil {
 		return StopResult{}, err
 	}
@@ -319,7 +343,7 @@ func (runner *Runner) Stop(ctx context.Context, selected target.Target, runID Ru
 	}
 	reconcileCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), runner.settlementTTL())
 	defer cancel()
-	settledReceipt, err := runner.recoverReceipt(reconcileCtx, selected, runID)
+	settledReceipt, err := runner.recoverReceipt(reconcileCtx, selected, runID, receipt.SessionID)
 	if err != nil {
 		return StopResult{}, fmt.Errorf("observe settled Run: %w", err)
 	}
@@ -373,6 +397,9 @@ func (runner *Runner) Run(ctx context.Context, intent RunIntent) (result RunResu
 	if err != nil {
 		return RunResult{}, &preflightError{cause: fmt.Errorf("prepare evidence directory: %w", err)}
 	}
+	if err := runner.journal.record(intent.Target, request.Claim); err != nil {
+		return RunResult{}, &preflightError{cause: err}
+	}
 	runCtx, cancelRun := context.WithDeadline(ctx, intent.Deadline)
 	defer cancelRun()
 	inspection, err := runner.host.Inspect(runCtx, intent.Target, hostRequirements(plan))
@@ -403,12 +430,15 @@ func (runner *Runner) Run(ctx context.Context, intent RunIntent) (result RunResu
 
 	settled := false
 	defer func() {
-		if settled {
+		if settled || IsAuthorityError(resultErr) {
 			return
 		}
 		if intent.Payload.Scenario.UIActions != nil {
-			recovered, didSettle, recoveryErr := runner.recoverUIFailure(ctx, intent, receipt, evidenceRoot)
+			recovered, didSettle, recoveryErr := runner.recoverUIFailure(ctx, intent, &receipt, evidenceRoot)
 			resultErr = errors.Join(resultErr, recoveryErr)
+			if IsAuthorityError(recoveryErr) {
+				return
+			}
 			if didSettle {
 				result = recovered
 				settled = true
@@ -429,21 +459,42 @@ func (runner *Runner) Run(ctx context.Context, intent RunIntent) (result RunResu
 		return RunResult{}, fmt.Errorf("stage Run Payload: %w", err)
 	}
 	receipt.State = StateStaged
-	startedReceipt, err := runner.host.Start(runCtx, intent.Target, request)
-	if err != nil {
-		return RunResult{}, fmt.Errorf("start Run: %w", err)
+	startedReceipt, startErr := runner.host.Start(runCtx, intent.Target, request)
+	if startErr != nil && startedReceipt.Claim == (LockClaim{}) && startedReceipt.SessionID == "" {
+		return RunResult{}, fmt.Errorf("start Run: %w", startErr)
 	}
-	if err := validateReceipt(startedReceipt, request.Claim, "", receipt.State); err != nil {
+	if startedReceipt.Claim.Equal(request.Claim) && startedReceipt.SessionID != "" {
+		receipt.SessionID = startedReceipt.SessionID
+	}
+	_, pinned, err := runner.journal.load(intent.Target, intent.RunID)
+	if err != nil {
+		return RunResult{}, err
+	}
+	if err := validateReceipt(startedReceipt, request.Claim, pinned, receipt.State); err != nil {
 		return RunResult{}, fmt.Errorf("start receipt: %w", err)
 	}
-	if err := validateUIBatchReceipt(startedReceipt, intent.Payload.Scenario.UIActions); err != nil {
+	if startErr != nil {
+		return RunResult{}, fmt.Errorf("start Run: %w", startErr)
+	}
+	if pinned != "" {
+		_, err = runner.journal.settlement(intent.Target, startedReceipt)
+	} else {
+		err = runner.journal.accept(intent.Target, startedReceipt)
+	}
+	if err != nil {
 		return RunResult{}, err
 	}
 	receipt = startedReceipt
+	if err := validateUIBatchReceipt(receipt, intent.Payload.Scenario.UIActions); err != nil {
+		return RunResult{}, err
+	}
 	sessionID := receipt.SessionID
 
 	for !receipt.State.terminal() {
 		if err := waitForPoll(runCtx, intent.Deadline); err != nil {
+			return RunResult{}, err
+		}
+		if _, err := runner.journal.settlement(intent.Target, receipt); err != nil {
 			return RunResult{}, err
 		}
 		observedReceipt, err := runner.host.Observe(runCtx, intent.Target, intent.RunID)
@@ -457,6 +508,9 @@ func (runner *Runner) Run(ctx context.Context, intent RunIntent) (result RunResu
 			return RunResult{}, err
 		}
 		if err := validateUIBatchReceipt(observedReceipt, intent.Payload.Scenario.UIActions); err != nil {
+			return RunResult{}, err
+		}
+		if _, err := runner.journal.settlement(intent.Target, observedReceipt); err != nil {
 			return RunResult{}, err
 		}
 		receipt = observedReceipt
@@ -488,6 +542,9 @@ func (runner *Runner) Run(ctx context.Context, intent RunIntent) (result RunResu
 		UIActions:     receipt.UIActions,
 		Error:         receipt.Error,
 	}
+	if _, err := runner.journal.settlement(intent.Target, receipt); err != nil {
+		return RunResult{}, err
+	}
 	if err := publishBundleMetadata(evidenceRoot, result); err != nil {
 		return RunResult{}, fmt.Errorf("publish Evidence Bundle metadata: %w", err)
 	}
@@ -496,6 +553,9 @@ func (runner *Runner) Run(ctx context.Context, intent RunIntent) (result RunResu
 }
 
 func buildRequest(intent RunIntent) (RunRequest, error) {
+	if err := intent.Target.Validate(); err != nil {
+		return RunRequest{}, err
+	}
 	if err := intent.RunID.Validate(); err != nil {
 		return RunRequest{}, err
 	}
@@ -514,8 +574,8 @@ func buildRequest(intent RunIntent) (RunRequest, error) {
 	body := RequestBody{
 		SchemaVersion:           1,
 		SessionName:             SessionNameForRun(intent.RunID),
-		BlenderExecutable:       intent.Target.BlenderExecutable,
-		SessionBrokerExecutable: intent.Target.SessionBrokerExecutable,
+		BlenderExecutable:       intent.Target.Windows().BlenderExecutable,
+		SessionBrokerExecutable: intent.Target.Windows().SessionBrokerExecutable,
 		Payload:                 intent.Payload,
 	}
 	requestHash, err := requestBodyHash(body)
@@ -529,7 +589,7 @@ func buildRequest(intent RunIntent) (RunRequest, error) {
 		ControllerID:  intent.ControllerID,
 		Deadline:      intent.Deadline.UTC(),
 		RequestHash:   requestHash,
-		TaskName:      intent.Target.TaskName,
+		TaskName:      intent.Target.Windows().TaskName,
 	}
 	return RunRequest{Claim: claim, Body: body}, nil
 }
@@ -550,11 +610,14 @@ func SessionNameForRun(runID RunID) string {
 }
 
 func validateReceipt(receipt RunReceipt, claim LockClaim, expectedSession SessionID, previousState RunState) error {
+	if !receipt.Claim.Equal(claim) {
+		return authorityFailure("Host Lock claim changed")
+	}
+	if expectedSession != "" && receipt.SessionID != expectedSession {
+		return authorityFailure("Session identity changed")
+	}
 	if receipt.SchemaVersion != 1 {
 		return fmt.Errorf("unsupported schema version %d", receipt.SchemaVersion)
-	}
-	if !claimsEqual(receipt.Claim, claim) {
-		return fmt.Errorf("Host Lock claim changed")
 	}
 	if receipt.UIActions != nil {
 		if err := receipt.UIActions.Validate(string(receipt.SessionID)); err != nil {
@@ -570,25 +633,19 @@ func validateReceipt(receipt RunReceipt, claim LockClaim, expectedSession Sessio
 	if !sessionIDPattern.MatchString(string(receipt.SessionID)) {
 		return fmt.Errorf("invalid Session identity")
 	}
-	if expectedSession != "" && receipt.SessionID != expectedSession {
-		return fmt.Errorf("Session identity changed")
-	}
 	return nil
 }
 
-func validateRecoveredReceipt(receipt RunReceipt, selected target.Target, runID RunID) error {
+func (receipt RunReceipt) ValidateForClaim(expected LockClaim) error {
+	if !receipt.Claim.Equal(expected) {
+		return authorityFailure("Host Lock claim changed")
+	}
 	if receipt.SchemaVersion != 1 || receipt.Claim.SchemaVersion != 1 {
 		return fmt.Errorf("unsupported schema version")
 	}
 	claim := receipt.Claim
-	if claim.RunID != runID {
-		return fmt.Errorf("Run ID changed")
-	}
 	if !requestIDPattern.MatchString(string(claim.RequestID)) || strings.TrimSpace(claim.ControllerID) == "" || claim.Deadline.IsZero() || !hashPattern.MatchString(claim.RequestHash) {
 		return fmt.Errorf("invalid Host Lock claim")
-	}
-	if claim.TaskName != selected.TaskName {
-		return fmt.Errorf("Scheduled Task identity changed")
 	}
 	if receipt.UIActions != nil {
 		if err := receipt.UIActions.Validate(string(receipt.SessionID)); err != nil {
@@ -677,9 +734,16 @@ func validTransition(previous, next RunState) bool {
 }
 
 func (runner *Runner) settle(parent context.Context, target target.Target, receipt RunReceipt) (CleanupState, error) {
+	var err error
+	receipt, err = runner.journal.settlement(target, receipt)
+	if err != nil {
+		return CleanupState{}, err
+	}
 	settleCtx, cancel := context.WithTimeout(context.WithoutCancel(parent), runner.settlementTTL())
 	defer cancel()
-	return runner.host.Settle(settleCtx, target, receipt)
+	cleanup, settleErr := runner.host.Settle(settleCtx, target, receipt)
+	_, authorityErr := runner.journal.settlement(target, receipt)
+	return cleanup, errors.Join(settleErr, authorityErr)
 }
 
 func (runner *Runner) settlementTTL() time.Duration {
@@ -727,6 +791,9 @@ func (runner *Runner) collectEvidence(ctx context.Context, intent RunIntent, rec
 		}
 	}
 	for _, file := range manifest.Files {
+		if _, err := runner.journal.settlement(intent.Target, receipt); err != nil {
+			return err
+		}
 		content, err := runner.host.Fetch(ctx, intent.Target, receipt, file)
 		if err != nil {
 			return fmt.Errorf("fetch evidence %q: %w", file.Path, err)
@@ -759,6 +826,9 @@ func (runner *Runner) collectEvidence(ctx context.Context, intent RunIntent, rec
 			if configuration.Width != file.Width || configuration.Height != file.Height {
 				return fmt.Errorf("evidence %q: PNG dimensions changed", file.Path)
 			}
+		}
+		if _, err := runner.journal.settlement(intent.Target, receipt); err != nil {
+			return err
 		}
 		if err := writeEvidence(evidenceRoot, file.Path, content); err != nil {
 			return fmt.Errorf("store evidence %q: %w", file.Path, err)

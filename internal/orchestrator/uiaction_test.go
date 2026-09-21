@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"slices"
@@ -28,7 +29,7 @@ func TestUIPlanRedactsAndDoctorRejectsMissingCapability(t *testing.T) {
 	intent.Payload.Scenario.CaptureViewport = false
 	intent.Payload.Scenario.CaptureBlenderWindow = true
 	intent.Payload.Scenario.UIActions = testUIBatch(t)
-	plan, err := New(nil).Plan(PlanIntent{Target: intent.Target, Payload: intent.Payload})
+	plan, err := New(nil, filepath.Join(t.TempDir(), "private")).Plan(PlanIntent{Target: intent.Target, Payload: intent.Payload})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -42,7 +43,7 @@ func TestUIPlanRedactsAndDoctorRejectsMissingCapability(t *testing.T) {
 	if strings.Contains(string(encoded), "private value") {
 		t.Fatal("plan leaked text")
 	}
-	result, err := New(&fakeHost{}).Doctor(context.Background(), PlanIntent{Target: intent.Target, Payload: intent.Payload})
+	result, err := New(&fakeHost{}, filepath.Join(t.TempDir(), "private")).Doctor(context.Background(), PlanIntent{Target: intent.Target, Payload: intent.Payload})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -94,7 +95,7 @@ func TestFailedUIRunReturnsAvailableBundleBeforeCleanup(t *testing.T) {
 	file.MediaType = "application/json"
 	file.SessionID = session
 	h := &terminalUIHost{fakeHost: &fakeHost{inspection: HostInspection{SchemaVersion: 1, Status: "pass", UIActions: &UIActionSupport{Capability: uiaction.Capability, Supported: true}}, evidence: map[string][]byte{uiaction.EvidencePath: content}}, terminal: RunReceipt{SchemaVersion: 1, SessionID: session, State: StateFailed, UIActions: journal, Evidence: EvidenceManifest{SchemaVersion: 3, Files: []EvidenceFile{file}}, Error: "UI action batch failed"}}
-	result, err := New(h).Run(context.Background(), intent)
+	result, err := New(h, filepath.Join(t.TempDir(), "private")).Run(context.Background(), intent)
 	if err == nil {
 		t.Fatal("failed run returned success")
 	}
@@ -178,7 +179,7 @@ func TestCancelledUIRunRecoversTerminalJournalFromReceiptAfterCleanup(t *testing
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	host := &cancelledUIHost{fakeHost: &fakeHost{inspection: HostInspection{SchemaVersion: 1, Status: "pass", UIActions: &UIActionSupport{Capability: uiaction.Capability, Supported: true}}}, cancel: cancel}
-	result, err := New(host).Run(ctx, intent)
+	result, err := New(host, filepath.Join(t.TempDir(), "private")).Run(ctx, intent)
 	if err == nil {
 		t.Fatal("cancelled Run succeeded")
 	}
@@ -198,7 +199,7 @@ func TestSchemaThreeWithoutBatchFailsBeforeHostContact(t *testing.T) {
 	intent := testIntent(t)
 	intent.Payload.SchemaVersion = 3
 	host := &fakeHost{}
-	runner := New(host)
+	runner := New(host, filepath.Join(t.TempDir(), "private"))
 	planIntent := PlanIntent{Target: intent.Target, Payload: intent.Payload}
 	if _, err := runner.Plan(planIntent); err == nil {
 		t.Fatal("plan accepted schema3 without a batch")
@@ -215,6 +216,9 @@ func TestSchemaThreeWithoutBatchFailsBeforeHostContact(t *testing.T) {
 	if _, err := os.Stat(intent.EvidenceDir); !os.IsNotExist(err) {
 		t.Fatalf("invalid payload created evidence root: %v", err)
 	}
+	if _, err := os.Stat(runner.journal.root); !os.IsNotExist(err) {
+		t.Fatalf("invalid UI payload created authority storage: %v", err)
+	}
 	for _, version := range []int{1, 2} {
 		intent.Payload.SchemaVersion = version
 		if err := intent.Payload.ValidateManifest(); err != nil {
@@ -228,7 +232,7 @@ func TestUIPreparationFailurePreservesReasonWithoutManifest(t *testing.T) {
 	intent.Payload.SchemaVersion = 3
 	intent.Payload.Scenario.UIActions = testUIBatch(t)
 	host := &terminalUIHost{fakeHost: &fakeHost{inspection: HostInspection{SchemaVersion: 1, Status: "pass", Captures: []CaptureSupport{{Kind: "viewport", Capability: "capture-viewport-v1", Supported: true}}, UIActions: &UIActionSupport{Capability: uiaction.Capability, Supported: true}}}, terminal: RunReceipt{SchemaVersion: 1, SessionID: "bss_exact-fake-session-identity-123456", State: StateFailed, Error: "Scenario call failed"}}
-	result, err := New(host).Run(context.Background(), intent)
+	result, err := New(host, filepath.Join(t.TempDir(), "private")).Run(context.Background(), intent)
 	if err == nil || !strings.Contains(err.Error(), "Scenario call failed") || strings.Contains(err.Error(), "evidence schema") {
 		t.Fatalf("error %v", err)
 	}
@@ -262,7 +266,7 @@ func TestUIEvidenceCollectionErrorKeepsTerminalRunReason(t *testing.T) {
 	file.MediaType = "application/json"
 	file.SessionID = session
 	host := &terminalUIHost{fakeHost: &fakeHost{inspection: HostInspection{SchemaVersion: 1, Status: "pass", UIActions: &UIActionSupport{Capability: uiaction.Capability, Supported: true}}, evidence: map[string][]byte{file.Path: []byte("truncated")}}, terminal: RunReceipt{SchemaVersion: 1, SessionID: session, State: StateFailed, Error: "UI action batch failed", Evidence: EvidenceManifest{SchemaVersion: 3, Files: []EvidenceFile{file}}}}
-	_, err := New(host).Run(context.Background(), intent)
+	_, err := New(host, filepath.Join(t.TempDir(), "private")).Run(context.Background(), intent)
 	if err == nil || !strings.Contains(err.Error(), "UI action batch failed") || !strings.Contains(err.Error(), "size changed") {
 		t.Fatalf("error %v", err)
 	}
@@ -299,7 +303,7 @@ func TestFailedUIRunRecoversJournalPublishedOnlyDuringSettlement(t *testing.T) {
 	h := &settlementJournalUIHost{terminalUIHost: &terminalUIHost{
 		fakeHost: &fakeHost{evidence: map[string][]byte{scenarioFile.Path: scenario}, inspection: HostInspection{SchemaVersion: 1, Status: "pass", UIActions: &UIActionSupport{Capability: uiaction.Capability, Supported: true}}},
 		terminal: RunReceipt{SchemaVersion: 1, SessionID: session, State: StateFailed, Error: "UI action batch failed", UIActions: journal, Evidence: EvidenceManifest{SchemaVersion: 3, Files: []EvidenceFile{scenarioFile}}}}}
-	result, err := New(h).Run(context.Background(), intent)
+	result, err := New(h, filepath.Join(t.TempDir(), "private")).Run(context.Background(), intent)
 	if err == nil || !strings.Contains(err.Error(), "UI action batch failed") || result.Error != "UI action batch failed" {
 		t.Fatalf("result %+v error %v", result, err)
 	}
@@ -318,5 +322,235 @@ func TestFailedUIRunRecoversJournalPublishedOnlyDuringSettlement(t *testing.T) {
 	}
 	if slices.Contains(h.operations, "fetch:"+uiaction.EvidencePath) {
 		t.Fatalf("journal was fetched after cleanup: %v", h.operations)
+	}
+}
+
+func TestUIRecoveryRejectsChangedTargetBeforeContact(t *testing.T) {
+	intent := testIntent(t)
+	intent.Payload.SchemaVersion = 3
+	intent.Payload.Scenario.CaptureViewport = false
+	intent.Payload.Scenario.UIActions = testUIBatch(t)
+	request, err := buildRequest(intent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	host := &fakeHost{}
+	runner := recoveryRunner(t, host, request.Claim)
+	changed, err := target.NewWindows("replacement", intent.Target.Windows())
+	if err != nil {
+		t.Fatal(err)
+	}
+	intent.Target = changed
+	_, settled, err := runner.recoverUIFailure(context.Background(), intent, &RunReceipt{Claim: request.Claim}, t.TempDir())
+	if !IsAuthorityError(err) || settled || len(host.operations) != 0 {
+		t.Fatalf("changed target recovery err=%v settled=%v effects=%v", err, settled, host.operations)
+	}
+}
+
+func TestUIRecoveryRetainsPinPublishedDuringFailedObservation(t *testing.T) {
+	intent := testIntent(t)
+	request, err := buildRequest(intent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	host := &recoveryAuthorityHost{}
+	runner := recoveryRunner(t, host, request.Claim)
+	pinned := RunReceipt{SchemaVersion: 1, Claim: request.Claim, State: StateRunning, SessionID: "bss_concurrent-trusted-session-123456"}
+	observeErr := errors.New("Observe transport failed")
+	host.observe = func() (RunReceipt, error) {
+		if err := runner.journal.accept(intent.Target, pinned); err != nil {
+			t.Fatal(err)
+		}
+		return RunReceipt{SessionID: "untrusted-partial"}, observeErr
+	}
+	previous := RunReceipt{Claim: request.Claim}
+	_, settled, err := runner.recoverUIFailure(context.Background(), intent, &previous, t.TempDir())
+	if !errors.Is(err, observeErr) || IsAuthorityError(err) || settled || previous.SessionID != pinned.SessionID {
+		t.Fatalf("UI fallback discarded trusted concurrent authority or trusted partial receipt: %+v %v", previous, err)
+	}
+}
+
+func TestEvidenceCollectionRequiresOriginalAuthorityBeforeFetch(t *testing.T) {
+	intent := testIntent(t)
+	intent.Payload.SchemaVersion = 3
+	intent.Payload.Scenario.CaptureViewport = false
+	intent.Payload.Scenario.UIActions = testUIBatch(t)
+	request, err := buildRequest(intent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	session := SessionID("bss_exact-fake-session-identity-123456")
+	content := []byte(`{"status":"pass"}`)
+	file := evidenceFileV2("result/scenario-result.json", EvidenceScenarioResult, content, "application/json", "", 0, 0, session)
+	receipt := RunReceipt{SchemaVersion: 1, Claim: request.Claim, SessionID: session, State: StateFailed, Evidence: EvidenceManifest{SchemaVersion: 3, Files: []EvidenceFile{file}}}
+	for _, mode := range []string{"missing", "changed-target", "changed-session"} {
+		t.Run(mode, func(t *testing.T) {
+			host := &fakeHost{evidence: map[string][]byte{file.Path: content}}
+			runner := New(host, filepath.Join(t.TempDir(), "private"))
+			selected := intent
+			if mode != "missing" {
+				if err := runner.journal.record(intent.Target, request.Claim); err != nil {
+					t.Fatal(err)
+				}
+				pinned := receipt
+				if mode == "changed-session" {
+					pinned.SessionID = "bss_original-pinned-session-123456"
+				}
+				if err := runner.journal.accept(intent.Target, pinned); err != nil {
+					t.Fatal(err)
+				}
+				if mode == "changed-target" {
+					selected.Target, err = target.NewWindows("replacement", intent.Target.Windows())
+					if err != nil {
+						t.Fatal(err)
+					}
+				}
+			}
+			destination := t.TempDir()
+			err := runner.collectEvidence(context.Background(), selected, receipt, destination)
+			if !IsAuthorityError(err) || len(host.operations) != 0 {
+				t.Fatalf("err=%v effects=%v", err, host.operations)
+			}
+			if _, err := os.Stat(filepath.Join(destination, file.Path)); !os.IsNotExist(err) {
+				t.Fatalf("evidence written without authority: %v", err)
+			}
+		})
+	}
+}
+
+type replacedRecoveryUIHost struct {
+	*cancelledUIHost
+	replacement string
+}
+
+func (h *replacedRecoveryUIHost) Observe(_ context.Context, _ target.Target, _ RunID) (RunReceipt, error) {
+	h.operations = append(h.operations, "observe-replacement")
+	receipt := RunReceipt{SchemaVersion: 1, Claim: h.receipt.Claim, State: StateFailed, SessionID: h.receipt.SessionID}
+	if h.replacement == "claim" {
+		receipt.Claim.ControllerID = "replacement-controller"
+	} else if h.replacement == "erased-session" {
+		receipt = h.receipt
+		receipt.SessionID = ""
+	} else {
+		receipt.SessionID = "bss_replacement-session-identity-123456"
+	}
+	return receipt, nil
+}
+
+func TestCancelledUIRecoveryDoesNotSettleAfterAuthorityReplacement(t *testing.T) {
+	for _, replacement := range []string{"claim", "session", "erased-session"} {
+		t.Run(replacement, func(t *testing.T) {
+			intent := testIntent(t)
+			intent.Payload.SchemaVersion = 3
+			intent.Payload.Scenario.CaptureViewport = false
+			intent.Payload.Scenario.UIActions = testUIBatch(t)
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			host := &replacedRecoveryUIHost{cancelledUIHost: &cancelledUIHost{fakeHost: &fakeHost{inspection: HostInspection{SchemaVersion: 1, Status: "pass", UIActions: &UIActionSupport{Capability: uiaction.Capability, Supported: true}}}, cancel: cancel}, replacement: replacement}
+			runner := New(host, filepath.Join(t.TempDir(), "private"))
+			_, err := runner.Run(ctx, intent)
+			if !IsAuthorityError(err) {
+				t.Fatalf("replacement authority error lost: %v", err)
+			}
+			for _, operation := range host.operations {
+				if operation == "settle" || strings.HasPrefix(operation, "fetch:") {
+					t.Fatalf("replacement recovery caused effects: %v", host.operations)
+				}
+			}
+			record, pin, err := runner.journal.load(intent.Target, intent.RunID)
+			if err != nil || !record.Claim.Equal(host.receipt.Claim) || pin != host.receipt.SessionID {
+				t.Fatalf("original claim/pin changed: %+v %q %v", record, pin, err)
+			}
+		})
+	}
+}
+
+type corruptAuthorityFetchHost struct {
+	*fakeHost
+	claimFile string
+}
+
+func (h *corruptAuthorityFetchHost) Fetch(ctx context.Context, selected target.Target, receipt RunReceipt, file EvidenceFile) ([]byte, error) {
+	content, err := h.fakeHost.Fetch(ctx, selected, receipt, file)
+	if err != nil {
+		return nil, err
+	}
+	if err := os.WriteFile(h.claimFile, []byte(`{}`), 0o600); err != nil {
+		return nil, err
+	}
+	return content, nil
+}
+
+func TestEvidenceAuthorityLossDuringFetchPreventsPublicationAndCleanup(t *testing.T) {
+	intent := testIntent(t)
+	host := &corruptAuthorityFetchHost{fakeHost: &fakeHost{evidence: testEvidence()}}
+	runner := New(host, filepath.Join(t.TempDir(), "private"))
+	host.claimFile = filepath.Join(runner.journal.root, claimPath(intent.RunID))
+	_, err := runner.Run(context.Background(), intent)
+	if !IsAuthorityError(err) {
+		t.Fatalf("authority loss error=%v", err)
+	}
+	if slices.Contains(host.operations, "settle") {
+		t.Fatalf("cleanup after authority loss: %v", host.operations)
+	}
+	entries, err := os.ReadDir(intent.EvidenceDir)
+	if err != nil || len(entries) != 0 {
+		t.Fatalf("published evidence after authority loss: %v %v", entries, err)
+	}
+}
+
+type lostPinUIHost struct {
+	*cancelledUIHost
+	pinFile      string
+	loseAt       string
+	observations int
+}
+
+func (host *lostPinUIHost) Observe(ctx context.Context, selected target.Target, runID RunID) (RunReceipt, error) {
+	host.observations++
+	receipt, err := host.cancelledUIHost.Observe(ctx, selected, runID)
+	if err == nil && receipt.Cleanup.Known() && host.loseAt == "observe" {
+		err = os.Remove(host.pinFile)
+	}
+	return receipt, err
+}
+func (host *lostPinUIHost) Settle(ctx context.Context, selected target.Target, receipt RunReceipt) (CleanupState, error) {
+	cleanup, err := host.cancelledUIHost.Settle(ctx, selected, receipt)
+	if err == nil && host.loseAt == "settle" {
+		err = os.Remove(host.pinFile)
+	}
+	return cleanup, err
+}
+func TestUIJournalReconstructionRequiresRetainedSessionPin(t *testing.T) {
+	for _, boundary := range []string{"observe", "settle"} {
+		t.Run(boundary, func(t *testing.T) {
+			intent := testIntent(t)
+			intent.Payload.SchemaVersion = 3
+			intent.Payload.Scenario.CaptureViewport = false
+			intent.Payload.Scenario.UIActions = testUIBatch(t)
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			root := filepath.Join(t.TempDir(), "private")
+			host := &lostPinUIHost{cancelledUIHost: &cancelledUIHost{fakeHost: &fakeHost{inspection: HostInspection{SchemaVersion: 1, Status: "pass", UIActions: &UIActionSupport{Capability: uiaction.Capability, Supported: true}}}, cancel: cancel}, pinFile: filepath.Join(root, pinPath(intent.RunID)), loseAt: boundary}
+			result, err := New(host, root).Run(ctx, intent)
+			if !IsAuthorityError(err) || result.UIJournalRecoveredFromReceipt {
+				t.Fatalf("lost UI pin result=%+v err=%v", result, err)
+			}
+			if _, err := os.Stat(host.pinFile); !os.IsNotExist(err) {
+				t.Fatalf("UI recovery recreated pin: %v", err)
+			}
+			for _, path := range []string{uiaction.EvidencePath, "evidence.json"} {
+				if _, err := os.Stat(filepath.Join(intent.EvidenceDir, path)); !os.IsNotExist(err) {
+					t.Fatalf("UI publication after pin loss %s: %v", path, err)
+				}
+			}
+			wantObservations := 2
+			if boundary == "settle" {
+				wantObservations = 1
+			}
+			if host.observations != wantObservations {
+				t.Fatalf("UI observe after known pin loss: %d", host.observations)
+			}
+		})
 	}
 }

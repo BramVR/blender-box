@@ -5,8 +5,6 @@ import (
 	"strings"
 	"testing"
 	"time"
-
-	"github.com/BramVR/blender-box/internal/target"
 )
 
 type checkSSH struct {
@@ -57,7 +55,7 @@ func TestCheckRejectsMalformedOrContradictoryEvidence(t *testing.T) {
 
 	for name, output := range cases {
 		t.Run(name, func(t *testing.T) {
-			_, err := Check(context.Background(), &checkSSH{output: output}, target.Target{})
+			_, err := Check(context.Background(), &checkSSH{output: output}, adapterTarget())
 			if err == nil || !strings.Contains(err.Error(), "invalid contract") {
 				t.Fatalf("Check() error = %v, want invalid contract", err)
 			}
@@ -79,7 +77,7 @@ func TestCheckAcceptsCompleteFailedEvidence(t *testing.T) {
 {"id":"task.interactive","passed":false,"required":true}]}`
 
 	fake := &checkSSH{output: output}
-	result, err := Check(context.Background(), fake, target.Target{})
+	result, err := Check(context.Background(), fake, adapterTarget())
 	if err != nil {
 		t.Fatal(err)
 	}
