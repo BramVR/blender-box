@@ -687,6 +687,16 @@ blender-box targets forget studio --json</code></pre>
         <p class="note">Implemented setup ownership: <code>windows setup --apply</code> stages its bounded program under a private setup-owner root and launches it through <code>blendersessiond</code> with immutable Attempt, Launch, request-hash, and deadline fences. Lost responses reconcile through the same fence; failure cleanup removes staged files only after the daemon proves the exact process tree is gone.</p>
       </div>
 
+      <article class="card mt-14">
+        <h3>Implemented Linux adapter boundary</h3>
+        <p>Linux now uses the same Run state machine, original-target recovery record, Host Lock, exact Session pin, and evidence validation. Version 2 targets accept a strict Linux body for Ubuntu 24.04 GNOME on Xorg, systemd 255 with unified cgroup v2, CPython 3.12, and Blender 5.2.0. Windows target bytes and schema 1 request and settlement encoding remain unchanged.</p>
+        <p>The client shares typed planning and host inspection across platforms. Linux supports viewport capture and rejects Blender-window capture, desktop capture, and UI batches before host contact. Direct Linux host requests reject those requirements before mutation or daemon launch. The original claim and separate Session pin retain the same recovery rules, including negative authority from fully decoded malformed receipts.</p>
+        <p>A static systemd user service replaces the Windows desktop bridge. Fresh launch preparation requires an inactive unit before pending authority is published. Cgroup lifetime prevents silent overlap, while only exact daemon settlement authorizes process stop. The unit is never automatically stopped, restarted, enabled, or treated as cleanup evidence. Status and settlement do not require a live desktop.</p>
+        <p>Each Linux Run supplies private, prelaunch-validated <code>HOME</code> and <code>TMPDIR</code> directories to daemon and Blender descendants, with exact Run cleanup and missing-directory recovery; the operator passwd home and desktop environment remain separate.</p>
+        <p>Linux setup previews exact binary and unit bytes, hashes, and destinations without SSH. Explicit apply publishes only managed binary, state, and unit files under scoped ownership. The runtime gate verifies a sealed copied venv against the complete reviewed daemon manifest before every operation. The currently available wheel lacks that POSIX correction and is rejected. Corrected runtime provisioning, native Linux and Blender behavior, and hosted recovery retention remain acceptance gaps.</p>
+        <p>The prior Windows-only implementation assumption is superseded by this concrete adapter. This does not add attach, keep, a host pool, or another application protocol. See the <a href="../architecture/0006-linux-host.md">Linux host boundary</a> and <a href="../linux.md">Linux operator guide</a>.</p>
+      </article>
+
       <div class="grid three mt-14">
         <article class="card">
           <h3>Python helper</h3>

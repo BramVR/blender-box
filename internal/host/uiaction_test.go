@@ -40,11 +40,11 @@ func uiTestBatch(t *testing.T) *uiaction.Batch {
 	return &b
 }
 func TestUIBatchPersistsPendingBeforeInputAndReturnsBoundedEvidence(t *testing.T) {
-	root := t.TempDir()
+	root := privateTempDir(t)
 	now := time.Now().UTC()
 	actor := &fakeUIActor{}
 	daemon := &fakeDaemon{}
-	service := NewService(Dependencies{Tasks: &fakeTaskLauncher{}, Daemon: daemon, UIActor: actor})
+	service := NewService(Dependencies{Platform: "windows", Tasks: &fakeTaskLauncher{}, Daemon: daemon, UIActor: actor})
 	request := stageHostScenarioTestRun(t, service, root, now, 3, payload.Scenario{Script: "scenario.py", ReadTimeoutSeconds: 180, CaptureBlenderWindow: true, UIActions: uiTestBatch(t)})
 	if _, err := service.Start(context.Background(), root, request); err != nil {
 		t.Fatal(err)
@@ -93,9 +93,9 @@ func TestUIBatchPersistsPendingBeforeInputAndReturnsBoundedEvidence(t *testing.T
 func TestUIFailureStopsBatchAndPreservesJournal(t *testing.T) {
 	for _, outcome := range []uiaction.Outcome{uiaction.Rejected, uiaction.Uncertain} {
 		t.Run(string(outcome), func(t *testing.T) {
-			root := t.TempDir()
+			root := privateTempDir(t)
 			actor := &fakeUIActor{}
-			service := NewService(Dependencies{Tasks: &fakeTaskLauncher{}, Daemon: &fakeDaemon{}, UIActor: actor})
+			service := NewService(Dependencies{Platform: "windows", Tasks: &fakeTaskLauncher{}, Daemon: &fakeDaemon{}, UIActor: actor})
 			request := stageHostScenarioTestRun(t, service, root, time.Now(), 3, payload.Scenario{Script: "scenario.py", ReadTimeoutSeconds: 180, UIActions: uiTestBatch(t)})
 			if _, err := service.Start(context.Background(), root, request); err != nil {
 				t.Fatal(err)
@@ -130,9 +130,9 @@ func TestUIFailureStopsBatchAndPreservesJournal(t *testing.T) {
 	}
 }
 func TestRestartMakesPendingUIActionUncertain(t *testing.T) {
-	root := t.TempDir()
+	root := privateTempDir(t)
 	actor := &fakeUIActor{}
-	service := NewService(Dependencies{Tasks: &fakeTaskLauncher{}, Daemon: &fakeDaemon{}, UIActor: actor})
+	service := NewService(Dependencies{Platform: "windows", Tasks: &fakeTaskLauncher{}, Daemon: &fakeDaemon{}, UIActor: actor})
 	request := stageHostScenarioTestRun(t, service, root, time.Now(), 3, payload.Scenario{Script: "scenario.py", ReadTimeoutSeconds: 180, UIActions: uiTestBatch(t)})
 	if _, err := service.Start(context.Background(), root, request); err != nil {
 		t.Fatal(err)
@@ -163,7 +163,7 @@ func TestRestartMakesPendingUIActionUncertain(t *testing.T) {
 func TestCapabilitiesFailClosedWithoutUIActor(t *testing.T) {
 	request := CapabilitiesRequest{SchemaVersion: 1, UIActions: true, BlenderExecutable: `C:\Program Files\Blender\blender.exe`, SessionBrokerExecutable: `C:\Test\blendersessiond.exe`}
 	for _, actor := range []*fakeUIActor{nil, {checkErr: errors.New("old daemon")}, {}} {
-		service := NewService(Dependencies{})
+		service := NewService(Dependencies{Platform: "windows"})
 		if actor != nil {
 			service.uiActor = actor
 		}
@@ -181,9 +181,9 @@ func TestCapabilitiesFailClosedWithoutUIActor(t *testing.T) {
 func TestUIActionDeadlinesKeepTypedCauseAndRedactedReceipt(t *testing.T) {
 	for _, variant := range []string{"typed", "backend-rejected", "backend-uncertain"} {
 		t.Run(variant, func(t *testing.T) {
-			root := t.TempDir()
+			root := privateTempDir(t)
 			actor := &fakeUIActor{}
-			service := NewService(Dependencies{Tasks: &fakeTaskLauncher{}, Daemon: &fakeDaemon{}, UIActor: actor})
+			service := NewService(Dependencies{Platform: "windows", Tasks: &fakeTaskLauncher{}, Daemon: &fakeDaemon{}, UIActor: actor})
 			request := stageHostScenarioTestRun(t, service, root, time.Now(), 3, payload.Scenario{Script: "scenario.py", ReadTimeoutSeconds: 180, UIActions: uiTestBatch(t)})
 			if _, err := service.Start(context.Background(), root, request); err != nil {
 				t.Fatal(err)
@@ -222,9 +222,9 @@ func (d *captureDeadlineDaemon) Call(ctx context.Context, r DaemonCall) (json.Ra
 	return d.fakeDaemon.Call(ctx, r)
 }
 func TestUIBeforeCaptureDeadlineTerminalizesWithoutInput(t *testing.T) {
-	root := t.TempDir()
+	root := privateTempDir(t)
 	actor := &fakeUIActor{}
-	service := NewService(Dependencies{Tasks: &fakeTaskLauncher{}, Daemon: &captureDeadlineDaemon{}, UIActor: actor})
+	service := NewService(Dependencies{Platform: "windows", Tasks: &fakeTaskLauncher{}, Daemon: &captureDeadlineDaemon{}, UIActor: actor})
 	request := stageHostScenarioTestRun(t, service, root, time.Now(), 3, payload.Scenario{Script: "scenario.py", ReadTimeoutSeconds: 180, CaptureBlenderWindow: true, UIActions: uiTestBatch(t)})
 	if _, err := service.Start(context.Background(), root, request); err != nil {
 		t.Fatal(err)
@@ -262,9 +262,9 @@ func stagePendingUIReceipt(t *testing.T, service *Service, root string) (orchest
 	return request, receipt
 }
 func TestExpiredUIBatchReconcilesWithFreshContext(t *testing.T) {
-	root := t.TempDir()
+	root := privateTempDir(t)
 	actor := &fakeUIActor{}
-	service := NewService(Dependencies{Tasks: &fakeTaskLauncher{}, Daemon: &fakeDaemon{}, UIActor: actor})
+	service := NewService(Dependencies{Platform: "windows", Tasks: &fakeTaskLauncher{}, Daemon: &fakeDaemon{}, UIActor: actor})
 	request, receipt := stagePendingUIReceipt(t, service, root)
 	expired, cancel := context.WithDeadline(context.Background(), time.Unix(0, 0))
 	defer cancel()
@@ -284,9 +284,9 @@ func TestExpiredUIBatchReconcilesWithFreshContext(t *testing.T) {
 	}
 }
 func TestSettleStopsExactSessionBeforeJournalPublicationFailure(t *testing.T) {
-	root := t.TempDir()
+	root := privateTempDir(t)
 	daemon := &fakeDaemon{}
-	service := NewService(Dependencies{Tasks: &fakeTaskLauncher{}, Daemon: daemon})
+	service := NewService(Dependencies{Platform: "windows", Tasks: &fakeTaskLauncher{}, Daemon: daemon})
 	request, receipt := stagePendingUIReceipt(t, service, root)
 	blockedPath := filepath.Join(runPath(root, request.Claim.RunID), "evidence", uiaction.EvidencePath)
 	if err := os.Mkdir(blockedPath, 0o700); err != nil {

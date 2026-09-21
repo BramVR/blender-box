@@ -14,7 +14,7 @@ This map covers the public slice 0 CLI against an explicitly authorized owned Wi
 
 - Run commands from the repository root.
 - Treat stderr `RUN_ID=` as the pre-work recovery handle and stdout as one versioned result document.
-- Use only public `windows check`, `windows setup`, `run`, `status`, and `stop` entry points.
+- Use public `windows check`, `windows setup`, `plan`, `doctor`, `run`, `status`, and `stop` entry points.
 - A Session name routes; only the opaque `session_id` is authority.
 - Never remove remote state manually or stop a process by name, port, path, or guessed PID.
 
@@ -37,3 +37,5 @@ Each feature file uses the public CLI, names its observable result, and lists co
 - [Scenario run and evidence](./scenario-run.md) covers payload transfer, interactive launch, bounded drive, Evidence Bundle return, and known cleanup.
 - [Recovery status and exact stop](./recovery-stop.md) covers reconnect observation and idempotent exact cleanup.
 - [Named targets](./named-targets.md) covers local import, platform migration, named selection, and replacement-safe recovery.
+
+For explicitly authorized Linux proof, follow [Linux Blender proof](../../../../docs/linux-proof.md). Exercise `plan` and `doctor` with viewport requirements. Require local refusal of Blender-window, desktop, and UI requests before transport. Linux uses its static user unit and reviewed runtime; Windows setup recipes do not apply.

@@ -375,6 +375,9 @@ type CheckEvidence struct {
 }
 
 func Check(ctx context.Context, ssh SSH, selected target.Target) (CheckResult, error) {
+	if selected.Platform() != "windows" {
+		return CheckResult{}, fmt.Errorf("Windows command requires windows platform")
+	}
 	if err := selected.Validate(); err != nil {
 		return CheckResult{}, err
 	}

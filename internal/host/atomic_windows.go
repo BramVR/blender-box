@@ -3,6 +3,7 @@
 package host
 
 import (
+	"os"
 	"syscall"
 	"unsafe"
 )
@@ -33,3 +34,7 @@ func replaceFile(source, destination string) error {
 	}
 	return nil
 }
+
+func syncDirectoryHierarchy(string) error           { return nil }
+func validateNativePath(string, bool) error         { return nil }
+func openRegularRead(path string) (*os.File, error) { return os.Open(path) }

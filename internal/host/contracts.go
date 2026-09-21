@@ -1,6 +1,9 @@
 package host
 
-import "github.com/BramVR/blender-box/internal/orchestrator"
+import (
+	"github.com/BramVR/blender-box/internal/linuxtarget"
+	"github.com/BramVR/blender-box/internal/orchestrator"
+)
 
 type Acknowledgement struct {
 	SchemaVersion int    `json:"schema_version"`
@@ -56,10 +59,11 @@ type FetchResponse struct {
 }
 
 type SettleRequest struct {
-	SchemaVersion           int                     `json:"schema_version"`
-	Receipt                 orchestrator.RunReceipt `json:"receipt"`
-	SessionBrokerExecutable string                  `json:"session_broker_executable"`
-	SessionName             string                  `json:"session_name"`
+	SchemaVersion           int                        `json:"schema_version"`
+	Receipt                 orchestrator.RunReceipt    `json:"receipt"`
+	SessionBrokerExecutable string                     `json:"session_broker_executable"`
+	SessionName             string                     `json:"session_name"`
+	Linux                   *linuxtarget.DaemonRuntime `json:"linux,omitempty"`
 }
 
 type SettleResponse struct {

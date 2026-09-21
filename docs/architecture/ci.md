@@ -76,3 +76,9 @@ The workflow file and local tests cannot prove GitHub environment settings, netw
 ## Proof design decision
 
 One standard-library Python runner keeps the local and hosted interfaces identical without adding a product command or changing Run architecture. Independent design comparison selected this shape over a new Go proof package with a fixture leasing protocol. The explicit required-outcome set and separate generic assertions came from that alternative. Fixture leasing was rejected because no concrete restoration mechanism exists to justify another protocol.
+
+## Linux proof
+
+The separate `Linux Blender proof` workflow uses the `linux-blender-proof` job and the shared evidence, fencing, and public-projection assertions. The local runner targets the documented Ubuntu GNOME Xorg configuration. Its workflow retains the unconditional `hosted-recovery-retention-unavailable` preflight before operator loading or host activity.
+
+Default Go tests exercise Linux orchestration through fake external boundaries. POSIX bootstrap tests and recursive Python import tests skip Windows while the Windows build and existing runtime tests preserve compatibility. These tests do not establish native Linux, Blender, or hosted acceptance. See [Linux Blender proof](../linux-proof.md).

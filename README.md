@@ -2,17 +2,17 @@
 
 ![Blender Box sends a Run Payload to a remote Blender host and returns viewport evidence](docs/assets/blender-box-banner.png)
 
-Run declared Blender Scenarios on an owned Windows desktop from a developer checkout.
+Run declared Blender Scenarios on an owned desktop from a developer checkout. Windows uses an interactive Scheduled Task. The Linux adapter targets a fixed Ubuntu GNOME Xorg configuration.
 
-Blender Box sends a bounded Run Payload over SSH and starts Blender through a fixed interactive Scheduled Task. A host-local [`blendersessiond`](https://github.com/BramVR/blendersessiond) owns the Blender process. The client returns a verified Evidence Bundle, then cleans up the exact Session that it started.
+Blender Box sends a bounded Run Payload over SSH and starts the host entry point through the platform desktop launcher. A host-local [`blendersessiond`](https://github.com/BramVR/blendersessiond) owns the Blender process. The client returns a verified Evidence Bundle, then cleans up the exact Session that it started.
 
-Tailscale can provide private reachability, but Blender Box connects through a configured SSH alias. Blender's MCP add-on stays bound to Windows loopback.
+Tailscale can provide private reachability, but Blender Box connects through a configured SSH alias. Blender's MCP add-on stays bound to host loopback.
 
 ## Project status
 
-The first end-to-end slice supports read-only host checks, explicit setup, local planning, capture-aware host diagnosis, remote Scenario runs, reconnect status, exact stop, and local Evidence Bundles. A Scenario can request distinct viewport, Blender-window, and opt-in Windows-desktop captures.
+The first end-to-end slice supports read-only host checks, explicit setup, local planning, capture-aware host diagnosis, remote Scenario runs, reconnect status, exact stop, and local Evidence Bundles. Windows Scenarios can request distinct viewport, Blender-window, and opt-in Windows-desktop captures. Linux supports viewport capture.
 
-The default test suite replaces SSH, the Scheduled Task, `blendersessiond`, the filesystem, and Blender with fakes. Proof against a real Windows Blender host is opt-in.
+The default test suite replaces SSH, the Scheduled Task, `blendersessiond`, the filesystem, and Blender with fakes. Proof against a real Blender host is opt-in. The [Linux host path](docs/linux.md) requires an externally provisioned reviewed daemon runtime; the current wheel is rejected. Native Linux, Blender, and hosted acceptance remain outstanding.
 
 The repository also supplies a reusable [Windows onboarding baseline](docs/windows-onboarding-proof.md) and a separate `Windows onboarding proof` workflow. Its `baseline` job requires an authorized exact candidate and private host configuration. A local pass does not replace the required hosted job.
 
@@ -43,6 +43,8 @@ Payload schema 3 requires one `ui_actions` batch after the preparation script de
 
 Choose coordinates for your Blender layout. Coordinates are physical client pixels from the top-left, bounded by the verified window. The preparation script runs first and must return the ordinary passing Scenario Result. The batch then runs in the foreground Blender window owned by that exact Session.
 
+UI action batches require a Windows target. Linux targets refuse them before host contact.
+
 Run `plan` to inspect the redacted batch and capture paths. Its `expected_evidence` field lists each evidence type once; `captures` lists individual files, including both Blender-window images. Run `doctor` before launching. UI actions require an updated host and a daemon advertising `blender-ui-events-v1`, plus Blender support for `--enable-event-simulate`. The host opts that Session into event simulation with `--enable-ui-events`. Blender's `--enable-event-simulate` mode disables real physical mouse and keyboard input in that Session.
 
 The action vocabulary and limits are:
@@ -62,7 +64,7 @@ The [UI action contract](docs/architecture/0005-session-local-ui-actions.md) des
 
 ## Requirements
 
-You need:
+For Windows, you need:
 
 - Go 1.23 or later on the developer machine.
 - An owned Windows host with OpenSSH and an interactive user who is logged in.
@@ -97,7 +99,7 @@ Keep credentials, hostnames, IP addresses, and private network details out of th
 
 Both `session_broker_executable` and `host_executable` must be inside `work_root` and below a dedicated executable directory. Blender may be installed elsewhere. The work root must be an ASCII drive path without spaces because setup supports legacy SCP.
 
-Windows is the only supported host platform. Existing flat schema version 1 Windows files remain valid input. Unknown platforms and malformed documents fail before a connection or setup change.
+Version 2 also accepts a strict `linux` body for Ubuntu 24.04 GNOME on Xorg. Follow the [Linux host guide](docs/linux.md) for its UID, desktop, static unit, and reviewed runtime requirements. Existing flat schema version 1 Windows files remain valid input with unchanged normalized bytes and fingerprints. Unsupported platforms and malformed documents fail before a connection or setup change.
 
 ## Save a named target
 
@@ -115,7 +117,7 @@ Names start with a lowercase ASCII letter and contain at most 63 lowercase lette
 
 Import, list, show, and forget work offline. Forget removes only the saved local profile. It does not revoke SSH access, stop a Session, or delete Run recovery records.
 
-All seven target-taking commands accept either `--target-name NAME` or `--target PATH`. Supply exactly one. There is no default target or automatic fallback. The examples below use `studio`; explicit file selection remains available.
+Every target-taking command accepts either `--target-name NAME` or `--target PATH`. Supply exactly one. There is no default target or automatic fallback. The examples below use `studio`; explicit file selection remains available.
 
 Saved profiles and Run recovery records use the operating system's user configuration directory under `blender-box`. Set `BLENDER_BOX_CONFIG_DIR` to an absolute, operator-owned directory to isolate another configuration. Preserve that directory for later recovery, even when using a custom Evidence Bundle directory.
 
@@ -183,7 +185,7 @@ Create `payload.json` next to `scenario.py`:
 }
 ```
 
-The Scenario call must return one JSON document with `schema_version: 1` and `status: "pass"`. Payload schema 1 remains valid for the existing viewport-only contract. Blender-window and desktop captures require payload schema 2.
+The Scenario call must return one JSON document with `schema_version: 1` and `status: "pass"`. Payload schema 1 remains valid for the existing viewport-only contract. Blender-window and desktop captures require payload schema 2 and a Windows target. Linux `plan`, `doctor`, and `run` refuse those captures before acquiring a Host Lock.
 
 - `capture_viewport` records scene pixels through the daemon's offscreen or window-grab path.
 - `capture_blender_window` records the full Blender window, including its UI chrome, through `bpy.ops.screen.screenshot` on the exact Session.
@@ -214,7 +216,7 @@ go run ./cmd/blender-box run \
 
 `run` writes `RUN_ID=bbx_...` to stderr before validation or remote work. With `--json`, stdout contains one versioned success or failure result.
 
-The client acquires the Host Lock, stages and verifies the Run Payload, starts the fixed Scheduled Task, and records the exact `blendersessiond` Session identity. It fetches and verifies evidence before it stops that Session and removes the remote Run files.
+The client acquires the Host Lock, stages and verifies the Run Payload, starts the fixed desktop launcher, and records the exact `blendersessiond` Session identity. It fetches and verifies evidence before it stops that Session and removes the remote Run files.
 
 ## Recover or stop a Run
 
@@ -269,7 +271,7 @@ Schema 2 manifest entries record the capture type, method, dimensions, media typ
 ## Ownership boundaries
 
 - `blender-box` owns SSH, host checks, setup, Host Locks, payload transfer, Scenario orchestration, evidence verification, and cleanup.
-- `blendersessiond` owns Blender discovery, launch, health checks, MCP calls, and exact process-tree stop on Windows.
+- `blendersessiond` owns Blender discovery, launch, health checks, MCP calls, and exact process-tree stop on the host.
 - Consuming repositories own Blender scripts, add-ons, scenes, expected outputs, and domain assertions.
 
 SSH is the control and file-transfer channel. Blender Box never exposes or forwards Blender's loopback MCP port.
@@ -290,4 +292,5 @@ The gate runs on Linux, macOS, and Windows without contacting a Blender host. Se
 - [Target contract](docs/architecture/target-contract.md) defines named profiles, platform versions, and original-target recovery.
 - [Windows identity boundary](docs/architecture/0002-slice-0-windows-identity.md) explains why the current slice uses one Windows SID.
 - [`blendersessiond` capability gate](docs/architecture/0003-session-broker-capability-gate.md) defines the daemon contract required before launch.
+- [Linux host boundary](docs/architecture/0006-linux-host.md) defines desktop service lifetime, reviewed daemon imports, setup, and acceptance gaps.
 - [Research brief](docs/research/blender-box-research.html) records the broader product research and proposed contracts.

@@ -1,0 +1,69 @@
+name: Linux Blender proof
+
+on:
+  workflow_dispatch:
+    inputs:
+      candidate_sha:
+        description: Full candidate commit SHA for the prepared Linux fixture
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: linux-blender-prepared-v1
+  cancel-in-progress: false
+
+jobs:
+  linux-blender-proof:
+    name: linux-blender-proof
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      CANDIDATE_SHA: ${{ inputs.candidate_sha }}
+      DRIVER_SHA: ${{ github.workflow_sha }}
+    steps:
+      - name: Validate dispatch before candidate or host activity
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          REQUEST_REF: ${{ github.ref }}
+          REQUEST_ACTOR: ${{ github.actor }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$EVENT_NAME" == workflow_dispatch && "$REQUEST_REF" == refs/heads/main ]]
+          [[ "$REQUEST_ACTOR" == BramVR && "$RUN_ATTEMPT" == 1 ]]
+          [[ "$CANDIDATE_SHA" =~ ^[0-9a-f]{40}$ && "$DRIVER_SHA" =~ ^[0-9a-f]{40}$ ]]
+      - name: Check out trusted proof driver
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.workflow_sha }}
+          path: driver
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      - name: Refuse hosted execution without private recovery retention
+        id: proof
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 077
+          [[ "$(git -C driver rev-parse HEAD)" == "$DRIVER_SHA" ]]
+          python3 driver/scripts/linux_blender_proof.py baseline \
+            --candidate "$CANDIDATE_SHA" \
+            --candidate-checkout "$RUNNER_TEMP/unavailable-linux-candidate" \
+            --operator-config "$RUNNER_TEMP/unavailable-linux-operator.json" \
+            --output "$RUNNER_TEMP/linux-blender-proof" \
+            --execution hosted \
+            --driver-sha "$DRIVER_SHA"
+      - name: Upload allowlisted proof outcome
+        if: ${{ always() && steps.proof.outcome != 'skipped' }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: linux-blender-proof-${{ inputs.candidate_sha }}
+          path: ${{ runner.temp }}/linux-blender-proof/public/outcome.json
+          if-no-files-found: error
+          retention-days: 14
