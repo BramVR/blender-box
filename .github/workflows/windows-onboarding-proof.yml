@@ -1,0 +1,175 @@
+name: Windows onboarding proof
+
+on:
+  workflow_dispatch:
+    inputs:
+      candidate_sha:
+        description: Full candidate commit SHA approved for the prepared fixture
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-onboarding-prepared-v1
+  cancel-in-progress: false
+
+jobs:
+  candidate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      sha: ${{ steps.validate.outputs.sha }}
+    steps:
+      - name: Validate immutable candidate without host access
+        id: validate
+        env:
+          CANDIDATE_SHA: ${{ inputs.candidate_sha }}
+          EVENT_NAME: ${{ github.event_name }}
+          REQUEST_REF: ${{ github.ref }}
+          REQUEST_ACTOR: ${{ github.actor }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$EVENT_NAME" == workflow_dispatch && "$REQUEST_REF" == refs/heads/main ]]
+          [[ "$REQUEST_ACTOR" == BramVR && "$RUN_ATTEMPT" == 1 ]]
+          [[ "$CANDIDATE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          resolved=$(gh api "repos/$GITHUB_REPOSITORY/commits/$CANDIDATE_SHA" --jq .sha)
+          [[ "$resolved" == "$CANDIDATE_SHA" ]]
+          printf 'sha=%s\n' "$CANDIDATE_SHA" >> "$GITHUB_OUTPUT"
+          printf 'Approve candidate [%s](https://github.com/%s/commit/%s) for prepared fixture windows-onboarding-prepared-v1. Permitted operations are the declared baseline Run and exact recovery. Setup requires separately bound operator authorization. Reruns are refused; dispatch a fresh approval.\n' "$CANDIDATE_SHA" "$GITHUB_REPOSITORY" "$CANDIDATE_SHA" >> "$GITHUB_STEP_SUMMARY"
+
+  authorize:
+    needs: candidate
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    environment: windows-onboarding-approval
+    steps:
+      - name: Bind protected environment approval to this candidate
+        env:
+          CANDIDATE_SHA: ${{ needs.candidate.outputs.sha }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$RUN_ATTEMPT" == 1 && "$CANDIDATE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          printf 'Authorized candidate %s.\n' "$CANDIDATE_SHA" >> "$GITHUB_STEP_SUMMARY"
+
+  baseline:
+    name: baseline
+    needs: [candidate, authorize]
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    environment: windows-onboarding-host
+    env:
+      CANDIDATE_SHA: ${{ needs.candidate.outputs.sha }}
+      DRIVER_SHA: ${{ github.workflow_sha }}
+    steps:
+      - name: Reject reruns before credentials or candidate code
+        env:
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+          REQUEST_REF: ${{ github.ref }}
+        run: |
+          set -euo pipefail
+          [[ "$RUN_ATTEMPT" == 1 && "$REQUEST_REF" == refs/heads/main ]]
+          [[ "$CANDIDATE_SHA" =~ ^[0-9a-f]{40}$ && "$DRIVER_SHA" =~ ^[0-9a-f]{40}$ ]]
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.workflow_sha }}
+          path: driver
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.candidate.outputs.sha }}
+          path: candidate
+          persist-credentials: false
+      - name: Verify both checkouts
+        run: |
+          set -euo pipefail
+          [[ "$(git -C driver rev-parse HEAD)" == "$DRIVER_SHA" ]]
+          [[ "$(git -C candidate rev-parse HEAD)" == "$CANDIDATE_SHA" ]]
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: candidate/go.mod
+          cache: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      - name: Prepare task-local SSH credentials
+        env:
+          OPERATOR_CONFIG: ${{ secrets.ONBOARDING_OPERATOR_CONFIG }}
+          SSH_KEY: ${{ secrets.ONBOARDING_SSH_KEY }}
+          KNOWN_HOSTS: ${{ secrets.ONBOARDING_KNOWN_HOSTS }}
+          SSH_HOSTNAME: ${{ secrets.ONBOARDING_SSH_HOSTNAME }}
+          TS_CLIENT_ID: ${{ secrets.ONBOARDING_TS_CLIENT_ID }}
+          TS_CLIENT_SECRET: ${{ secrets.ONBOARDING_TS_CLIENT_SECRET }}
+        run: |
+          set -euo pipefail
+          umask 077
+          python3 - <<'PY'
+          import json, os, pathlib, re
+          for key in ("OPERATOR_CONFIG", "SSH_KEY", "KNOWN_HOSTS", "SSH_HOSTNAME", "TS_CLIENT_ID", "TS_CLIENT_SECRET"):
+              if not os.environ.get(key):
+                  raise SystemExit("Required onboarding credential missing.")
+          root = pathlib.Path(os.environ["RUNNER_TEMP"]) / "onboarding-credentials"
+          root.mkdir(mode=0o700)
+          config = json.loads(os.environ["OPERATOR_CONFIG"])
+          if config["fixture"] != {"id": "windows-onboarding-prepared-v1", "kind": "dedicated", "state": "prepared"}:
+              raise SystemExit("Wrong fixture contract.")
+          if config["authorization"]["candidate_sha"] != "protected-environment-approval":
+              raise SystemExit("Hosted operator contract must delegate candidate selection to environment approval.")
+          config["authorization"]["candidate_sha"] = os.environ["CANDIDATE_SHA"]
+          alias, user, host = config["target"]["ssh_alias"], config["target"]["ssh_user"], os.environ["SSH_HOSTNAME"]
+          if not re.fullmatch(r"[A-Za-z0-9_.-]+", alias) or not re.fullmatch(r"[A-Za-z0-9_.:-]+", host):
+              raise SystemExit("Invalid SSH endpoint.")
+          if not re.fullmatch(r"[A-Za-z0-9_.@\\-]+", user):
+              raise SystemExit("Invalid SSH user.")
+          (root / "key").write_text(os.environ["SSH_KEY"])
+          (root / "known_hosts").write_text(os.environ["KNOWN_HOSTS"])
+          ssh = root / "config"
+          ssh.write_text(f'Host {alias}\n  HostName {host}\n  User "{user.replace(chr(92), chr(92)*2)}"\n  IdentityFile "{root}/key"\n  UserKnownHostsFile "{root}/known_hosts"\n  IdentitiesOnly yes\n  BatchMode yes\n  StrictHostKeyChecking yes\n  ForwardAgent no\n  ClearAllForwardings yes\n')
+          config["ssh_config"] = str(ssh)
+          (root / "operator.json").write_text(json.dumps(config))
+          PY
+      - name: Connect ephemeral controller
+        uses: tailscale/github-action@53acf823325fe9ca47f4cdaa951f90b4b0de5bb9 # v4.1.1
+        with:
+          oauth-client-id: ${{ secrets.ONBOARDING_TS_CLIENT_ID }}
+          oauth-secret: ${{ secrets.ONBOARDING_TS_CLIENT_SECRET }}
+          tags: tag:blender-box-onboarding
+          use-cache: false
+          hostname: blender-box-proof-${{ github.run_id }}
+      - name: Run the approved baseline
+        run: |
+          set -euo pipefail
+          python3 driver/scripts/onboarding_proof.py baseline \
+            --candidate "$CANDIDATE_SHA" \
+            --candidate-checkout "$GITHUB_WORKSPACE/candidate" \
+            --operator-config "$RUNNER_TEMP/onboarding-credentials/operator.json" \
+            --output "$RUNNER_TEMP/onboarding-proof" \
+            --execution hosted --driver-sha "$DRIVER_SHA"
+      - name: Require a public result
+        if: always()
+        run: test -f "$RUNNER_TEMP/onboarding-proof/public/outcome.json"
+      - name: Upload allowlisted proof
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: windows-onboarding-${{ needs.candidate.outputs.sha }}
+          if-no-files-found: error
+          retention-days: 14
+          path: |
+            ${{ runner.temp }}/onboarding-proof/public/outcome.json
+            ${{ runner.temp }}/onboarding-proof/public/viewport.png
+      - name: Remove only this job's credentials
+        if: always()
+        run: |
+          python3 - <<'PY'
+          import os, pathlib
+          root = pathlib.Path(os.environ["RUNNER_TEMP"]) / "onboarding-credentials"
+          for name in ("key", "known_hosts", "config", "operator.json"):
+              (root / name).unlink(missing_ok=True)
+          PY
