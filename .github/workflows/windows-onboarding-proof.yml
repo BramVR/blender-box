@@ -11,6 +11,18 @@ on:
 permissions:
   contents: read
 
+env:
+  EVENT_NAME: ${{ github.event_name }}
+  REQUEST_REF: ${{ github.ref }}
+  REQUEST_ACTOR: ${{ github.actor }}
+  RUN_ATTEMPT: ${{ github.run_attempt }}
+  WORKFLOW_REF: ${{ github.workflow_ref }}
+  CANDIDATE_SHA: ${{ inputs.candidate_sha }}
+  DRIVER_SHA: ${{ github.workflow_sha }}
+  PREMERGE_REF: ${{ vars.ONBOARDING_PREMERGE_REF }}
+  PREMERGE_DRIVER_SHA: ${{ vars.ONBOARDING_PREMERGE_DRIVER_SHA }}
+  PREMERGE_CANDIDATE_SHA: ${{ vars.ONBOARDING_PREMERGE_CANDIDATE_SHA }}
+
 concurrency:
   group: windows-onboarding-prepared-v1
   cancel-in-progress: false
@@ -34,9 +46,16 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          [[ "$EVENT_NAME" == workflow_dispatch && "$REQUEST_REF" == refs/heads/main ]]
-          [[ "$REQUEST_ACTOR" == BramVR && "$RUN_ATTEMPT" == 1 ]]
-          [[ "$CANDIDATE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          # proof-authority-start
+          [[ "$EVENT_NAME" == workflow_dispatch && "$REQUEST_ACTOR" == BramVR && "$RUN_ATTEMPT" == 1 ]] || exit 1
+          [[ "$GITHUB_REPOSITORY" == BramVR/blender-box ]] || exit 1
+          [[ "$CANDIDATE_SHA" =~ ^[0-9a-f]{40}$ && "$DRIVER_SHA" =~ ^[0-9a-f]{40}$ ]] || exit 1
+          [[ "$WORKFLOW_REF" == "$GITHUB_REPOSITORY/.github/workflows/windows-onboarding-proof.yml@$REQUEST_REF" ]] || exit 1
+          if [[ "$REQUEST_REF" != refs/heads/main ]]; then
+            [[ "$PREMERGE_REF" == refs/heads/* && "$REQUEST_REF" == "$PREMERGE_REF" ]] || exit 1
+            [[ "$DRIVER_SHA" == "$PREMERGE_DRIVER_SHA" && "$CANDIDATE_SHA" == "$PREMERGE_CANDIDATE_SHA" ]] || exit 1
+          fi
+          # proof-authority-end
           resolved=$(gh api "repos/$GITHUB_REPOSITORY/commits/$CANDIDATE_SHA" --jq .sha)
           [[ "$resolved" == "$CANDIDATE_SHA" ]]
           printf 'sha=%s\n' "$CANDIDATE_SHA" >> "$GITHUB_OUTPUT"
@@ -55,7 +74,16 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          [[ "$RUN_ATTEMPT" == 1 && "$CANDIDATE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          # proof-authority-start
+          [[ "$EVENT_NAME" == workflow_dispatch && "$REQUEST_ACTOR" == BramVR && "$RUN_ATTEMPT" == 1 ]] || exit 1
+          [[ "$GITHUB_REPOSITORY" == BramVR/blender-box ]] || exit 1
+          [[ "$CANDIDATE_SHA" =~ ^[0-9a-f]{40}$ && "$DRIVER_SHA" =~ ^[0-9a-f]{40}$ ]] || exit 1
+          [[ "$WORKFLOW_REF" == "$GITHUB_REPOSITORY/.github/workflows/windows-onboarding-proof.yml@$REQUEST_REF" ]] || exit 1
+          if [[ "$REQUEST_REF" != refs/heads/main ]]; then
+            [[ "$PREMERGE_REF" == refs/heads/* && "$REQUEST_REF" == "$PREMERGE_REF" ]] || exit 1
+            [[ "$DRIVER_SHA" == "$PREMERGE_DRIVER_SHA" && "$CANDIDATE_SHA" == "$PREMERGE_CANDIDATE_SHA" ]] || exit 1
+          fi
+          # proof-authority-end
           printf 'Authorized candidate %s.\n' "$CANDIDATE_SHA" >> "$GITHUB_STEP_SUMMARY"
 
   baseline:
@@ -74,8 +102,16 @@ jobs:
           REQUEST_REF: ${{ github.ref }}
         run: |
           set -euo pipefail
-          [[ "$RUN_ATTEMPT" == 1 && "$REQUEST_REF" == refs/heads/main ]]
-          [[ "$CANDIDATE_SHA" =~ ^[0-9a-f]{40}$ && "$DRIVER_SHA" =~ ^[0-9a-f]{40}$ ]]
+          # proof-authority-start
+          [[ "$EVENT_NAME" == workflow_dispatch && "$REQUEST_ACTOR" == BramVR && "$RUN_ATTEMPT" == 1 ]] || exit 1
+          [[ "$GITHUB_REPOSITORY" == BramVR/blender-box ]] || exit 1
+          [[ "$CANDIDATE_SHA" =~ ^[0-9a-f]{40}$ && "$DRIVER_SHA" =~ ^[0-9a-f]{40}$ ]] || exit 1
+          [[ "$WORKFLOW_REF" == "$GITHUB_REPOSITORY/.github/workflows/windows-onboarding-proof.yml@$REQUEST_REF" ]] || exit 1
+          if [[ "$REQUEST_REF" != refs/heads/main ]]; then
+            [[ "$PREMERGE_REF" == refs/heads/* && "$REQUEST_REF" == "$PREMERGE_REF" ]] || exit 1
+            [[ "$DRIVER_SHA" == "$PREMERGE_DRIVER_SHA" && "$CANDIDATE_SHA" == "$PREMERGE_CANDIDATE_SHA" ]] || exit 1
+          fi
+          # proof-authority-end
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.workflow_sha }}
@@ -174,8 +210,16 @@ jobs:
           REQUEST_REF: ${{ github.ref }}
         run: |
           set -euo pipefail
-          [[ "$RUN_ATTEMPT" == 1 && "$REQUEST_REF" == refs/heads/main ]]
-          [[ "$CANDIDATE_SHA" =~ ^[0-9a-f]{40}$ && "$DRIVER_SHA" =~ ^[0-9a-f]{40}$ ]]
+          # proof-authority-start
+          [[ "$EVENT_NAME" == workflow_dispatch && "$REQUEST_ACTOR" == BramVR && "$RUN_ATTEMPT" == 1 ]] || exit 1
+          [[ "$GITHUB_REPOSITORY" == BramVR/blender-box ]] || exit 1
+          [[ "$CANDIDATE_SHA" =~ ^[0-9a-f]{40}$ && "$DRIVER_SHA" =~ ^[0-9a-f]{40}$ ]] || exit 1
+          [[ "$WORKFLOW_REF" == "$GITHUB_REPOSITORY/.github/workflows/windows-onboarding-proof.yml@$REQUEST_REF" ]] || exit 1
+          if [[ "$REQUEST_REF" != refs/heads/main ]]; then
+            [[ "$PREMERGE_REF" == refs/heads/* && "$REQUEST_REF" == "$PREMERGE_REF" ]] || exit 1
+            [[ "$DRIVER_SHA" == "$PREMERGE_DRIVER_SHA" && "$CANDIDATE_SHA" == "$PREMERGE_CANDIDATE_SHA" ]] || exit 1
+          fi
+          # proof-authority-end
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.workflow_sha }}
@@ -263,11 +307,15 @@ jobs:
     needs: [candidate, named-target]
     if: always() && needs.candidate.result == 'success'
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 90
     environment: windows-onboarding-installer
+    permissions:
+      contents: read
+      id-token: write
     env:
       CANDIDATE_SHA: ${{ needs.candidate.outputs.sha }}
       DRIVER_SHA: ${{ github.workflow_sha }}
+      PROOF_EXECUTION_ID: gha_${{ github.run_id }}_host_install
     steps:
       - name: Reject reruns before installer authorization
         env:
@@ -275,60 +323,76 @@ jobs:
           REQUEST_REF: ${{ github.ref }}
         run: |
           set -euo pipefail
-          [[ "$RUN_ATTEMPT" == 1 && "$REQUEST_REF" == refs/heads/main ]]
-          [[ "$CANDIDATE_SHA" =~ ^[0-9a-f]{40}$ && "$DRIVER_SHA" =~ ^[0-9a-f]{40}$ ]]
+          # proof-authority-start
+          [[ "$EVENT_NAME" == workflow_dispatch && "$REQUEST_ACTOR" == BramVR && "$RUN_ATTEMPT" == 1 ]] || exit 1
+          [[ "$GITHUB_REPOSITORY" == BramVR/blender-box ]] || exit 1
+          [[ "$CANDIDATE_SHA" =~ ^[0-9a-f]{40}$ && "$DRIVER_SHA" =~ ^[0-9a-f]{40}$ ]] || exit 1
+          [[ "$WORKFLOW_REF" == "$GITHUB_REPOSITORY/.github/workflows/windows-onboarding-proof.yml@$REQUEST_REF" ]] || exit 1
+          if [[ "$REQUEST_REF" != refs/heads/main ]]; then
+            [[ "$PREMERGE_REF" == refs/heads/* && "$REQUEST_REF" == "$PREMERGE_REF" ]] || exit 1
+            [[ "$DRIVER_SHA" == "$PREMERGE_DRIVER_SHA" && "$CANDIDATE_SHA" == "$PREMERGE_CANDIDATE_SHA" ]] || exit 1
+          fi
+          # proof-authority-end
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.workflow_sha }}
           path: driver
           persist-credentials: false
-      - name: Verify trusted installer driver
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.candidate.outputs.sha }}
+          path: candidate
+          persist-credentials: false
+      - name: Verify both immutable checkouts
         run: |
           set -euo pipefail
           [[ "$(git -C driver rev-parse HEAD)" == "$DRIVER_SHA" ]]
+          [[ "$(git -C candidate rev-parse HEAD)" == "$CANDIDATE_SHA" ]]
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
-      - name: Bind separately protected installer configuration
+      - name: Bind protected installer grant and dedicated controller trust
         env:
           INSTALL_OPERATOR_CONFIG: ${{ secrets.ONBOARDING_INSTALL_OPERATOR_CONFIG }}
+          INSTALL_CONTROLLER_CONFIG: ${{ secrets.ONBOARDING_INSTALL_CONTROLLER_CONFIG }}
+          INSTALL_CONTROLLER_KEY: ${{ secrets.ONBOARDING_INSTALL_CONTROLLER_KEY }}
+          INSTALL_CONTROLLER_KNOWN_HOSTS: ${{ secrets.ONBOARDING_INSTALL_CONTROLLER_KNOWN_HOSTS }}
         run: |
           set -euo pipefail
-          umask 077
-          python3 - <<'PY'
-          import json, os, pathlib
-          value = json.loads(os.environ["INSTALL_OPERATOR_CONFIG"])
-          if value.get("authorization", {}).get("candidate_sha") != os.environ["CANDIDATE_SHA"]:
-              raise SystemExit("Installer authorization must bind the exact candidate.")
-          root = pathlib.Path(os.environ["RUNNER_TEMP"]) / "installer-authorization"
-          root.mkdir(mode=0o700)
-          (root / "operator.json").write_text(json.dumps(value))
-          PY
-      - name: Run host-install preflight before any host credentials or connection
+          python3 driver/scripts/proof_dispatch.py prepare --directory "$RUNNER_TEMP/onboarding-host-install-proof"
+      - name: Connect to the qualified persistent controller
+        uses: tailscale/github-action@53acf823325fe9ca47f4cdaa951f90b4b0de5bb9 # v4.1.1
+        with:
+          oauth-client-id: ${{ secrets.ONBOARDING_INSTALL_TS_CLIENT_ID }}
+          audience: ${{ vars.ONBOARDING_INSTALL_TS_AUDIENCE }}
+          tags: tag:blender-box-install-dispatch
+          use-cache: false
+          hostname: blender-box-install-dispatch-${{ github.run_id }}
+      - name: Dispatch the retained host-install proof
+        timeout-minutes: 65
         run: |
           set -euo pipefail
-          python3 driver/scripts/onboarding_proof.py host-install \
-            --candidate "$CANDIDATE_SHA" \
-            --candidate-checkout "$GITHUB_WORKSPACE/candidate" \
-            --operator-config "$RUNNER_TEMP/installer-authorization/operator.json" \
-            --output "$RUNNER_TEMP/onboarding-host-install-proof" \
-            --execution hosted --driver-sha "$DRIVER_SHA"
-      - name: Require a public result
+          python3 driver/scripts/proof_dispatch.py start --directory "$RUNNER_TEMP/onboarding-host-install-proof"
+      - name: Recover through the durable owner and require settlement
         if: always()
-        run: test -f "$RUNNER_TEMP/onboarding-host-install-proof/public/outcome.json"
-      - name: Upload allowlisted installer proof
+        timeout-minutes: 20
+        run: |
+          set -euo pipefail
+          python3 driver/scripts/proof_dispatch.py recover --directory "$RUNNER_TEMP/onboarding-host-install-proof"
+      - name: Upload only the validated public controller receipt
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: windows-onboarding-host-install-${{ needs.candidate.outputs.sha }}
           if-no-files-found: error
           retention-days: 14
-          path: ${{ runner.temp }}/onboarding-host-install-proof/public/outcome.json
-      - name: Remove only this job's installer authorization snapshot
+          path: ${{ runner.temp }}/onboarding-host-install-proof/public/receipt.json
+      - name: Remove only this job's dispatch credentials
         if: always()
         run: |
-          python3 - <<'PY'
+          python3 - <<'PYTHON'
           import os, pathlib
-          path = pathlib.Path(os.environ["RUNNER_TEMP"]) / "installer-authorization" / "operator.json"
-          path.unlink(missing_ok=True)
-          PY
+          root = pathlib.Path(os.environ["RUNNER_TEMP"]) / "onboarding-host-install-proof"
+          for name in ("key", "known_hosts", "ssh-config", "operator.json"):
+              (root / name).unlink(missing_ok=True)
+          PYTHON

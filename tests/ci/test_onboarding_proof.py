@@ -3,11 +3,14 @@ import importlib.util
 import json
 import os
 import socket
+import shutil
+import subprocess
 from pathlib import Path
 import struct
 import sys
 import tempfile
 import threading
+import textwrap
 import unittest
 from unittest import mock
 import zlib
@@ -1056,20 +1059,24 @@ with socket.create_connection(("127.0.0.1", {port})) as connection:
 
 
 class WorkflowTests(unittest.TestCase):
-    def test_installer_job_is_separate_serialized_and_blocked_before_host_credentials(self):
+    def test_installer_job_uses_durable_owner_and_uploads_only_public_receipt(self):
         workflow = (ROOT / ".github/workflows/windows-onboarding-proof.yml").read_text()
         installer = workflow.split("  host-install:\n", 1)[1]
         for value in ("name: host-install", "needs: [candidate, named-target]", "if: always() && needs.candidate.result == 'success'",
                       "environment: windows-onboarding-installer", "DRIVER_SHA: ${{ github.workflow_sha }}",
-                      "ref: ${{ github.workflow_sha }}", "ONBOARDING_INSTALL_OPERATOR_CONFIG",
-                      'value.get("authorization", {}).get("candidate_sha") != os.environ["CANDIDATE_SHA"]',
-                      "python3 driver/scripts/onboarding_proof.py host-install", "--execution hosted --driver-sha",
-                      "onboarding-host-install-proof/public/outcome.json"):
+                      "ref: ${{ github.workflow_sha }}", "ref: ${{ needs.candidate.outputs.sha }}",
+                      "proof_dispatch.py prepare", "proof_dispatch.py start", "proof_dispatch.py recover",
+                      "tag:blender-box-install-dispatch", "onboarding-host-install-proof/public/receipt.json"):
             self.assertIn(value, installer)
-        for value in ("ONBOARDING_SSH", "ONBOARDING_TS", "tailscale/github-action", "prepare_hosted_credentials",
+        for value in ("ONBOARDING_SSH", "ONBOARDING_TS", "prepare_hosted_credentials", "onboarding_proof.py host-install",
                       "protected-environment-approval", "candidate/scripts", "continue-on-error", "/private/", "*.json"):
             self.assertNotIn(value, installer)
-        self.assertEqual(set(proof.re.findall(r"secrets\.([A-Z_]+)", installer)), {"ONBOARDING_INSTALL_OPERATOR_CONFIG"})
+        self.assertEqual(set(proof.re.findall(r"secrets\.([A-Z_]+)", installer)), {
+            "ONBOARDING_INSTALL_OPERATOR_CONFIG", "ONBOARDING_INSTALL_CONTROLLER_CONFIG", "ONBOARDING_INSTALL_CONTROLLER_KEY",
+            "ONBOARDING_INSTALL_CONTROLLER_KNOWN_HOSTS", "ONBOARDING_INSTALL_TS_CLIENT_ID"})
+        self.assertIn("id-token: write", installer)
+        self.assertIn("audience: ${{ vars.ONBOARDING_INSTALL_TS_AUDIENCE }}", installer)
+        self.assertNotIn("oauth-secret:", installer)
         self.assertIn("group: windows-onboarding-prepared-v1", workflow)
 
     def test_named_job_requires_successful_baseline_and_reuses_trusted_boundaries(self):
@@ -1094,7 +1101,7 @@ class WorkflowTests(unittest.TestCase):
         for text in ("name: Windows onboarding proof", "name: baseline", "workflow_dispatch:",
                      "needs: [candidate, authorize]", "environment: windows-onboarding-approval",
                      "environment: windows-onboarding-host", "cancel-in-progress: false", "timeout-minutes: 75",
-                     '"$RUN_ATTEMPT" == 1', '"$REQUEST_REF" == refs/heads/main', '"$REQUEST_ACTOR" == BramVR',
+                     '"$RUN_ATTEMPT" == 1', '"$REQUEST_REF" != refs/heads/main', '"$REQUEST_ACTOR" == BramVR',
                      "ref: ${{ github.workflow_sha }}", "ref: ${{ needs.candidate.outputs.sha }}",
                      "python3 driver/scripts/onboarding_proof.py baseline", "--execution hosted", "persist-credentials: false",
                      "windows-onboarding-prepared-v1", "if-no-files-found: error", "prepare_hosted_credentials(os.environ)"):
@@ -1106,6 +1113,31 @@ class WorkflowTests(unittest.TestCase):
         self.assertIn("/public/outcome.json", upload)
         self.assertIn("/public/viewport.png", upload)
         self.assertNotIn("*", upload)
+
+    @unittest.skipUnless(shutil.which("bash"), "workflow guards require bash")
+    def test_each_workflow_guard_rejects_unapproved_premerge_authority(self):
+        workflow = (ROOT / ".github/workflows/windows-onboarding-proof.yml").read_text()
+        guards = proof.re.findall(r"# proof-authority-start\n(.*?)          # proof-authority-end", workflow, proof.re.S)
+        self.assertEqual(len(guards), 5)
+        ref = "refs/heads/codex/reviewed-proof"
+        prefix = "BramVR/blender-box/.github/workflows/windows-onboarding-proof.yml@"
+        env = dict(os.environ, EVENT_NAME="workflow_dispatch", REQUEST_ACTOR="BramVR", RUN_ATTEMPT="1",
+                   GITHUB_REPOSITORY="BramVR/blender-box", REQUEST_REF=ref, WORKFLOW_REF=prefix + ref,
+                   CANDIDATE_SHA="a" * 40, DRIVER_SHA="b" * 40, PREMERGE_REF=ref,
+                   PREMERGE_DRIVER_SHA="b" * 40, PREMERGE_CANDIDATE_SHA="a" * 40)
+        refused = ({"EVENT_NAME": "pull_request"}, {"REQUEST_ACTOR": "someone-else"}, {"RUN_ATTEMPT": "2"},
+                   {"GITHUB_REPOSITORY": "other/blender-box"}, {"WORKFLOW_REF": prefix + "refs/heads/other"},
+                   {"REQUEST_REF": "refs/heads/unreviewed"}, {"PREMERGE_REF": ""},
+                   {"PREMERGE_DRIVER_SHA": ""}, {"PREMERGE_CANDIDATE_SHA": ""},
+                   {"DRIVER_SHA": "c" * 40}, {"CANDIDATE_SHA": "c" * 40}, {"CANDIDATE_SHA": "not-a-sha"})
+        for index, guard in enumerate(guards):
+            script = "set -euo pipefail\n" + textwrap.dedent(guard)
+            for change, expected in [({}, 0), ({"REQUEST_REF": "refs/heads/main", "WORKFLOW_REF": prefix + "refs/heads/main"}, 0),
+                                     *((change, 1) for change in refused)]:
+                with self.subTest(guard=index, change=change):
+                    result = subprocess.run([shutil.which("bash"), "-c", script], env=env | change,
+                                            capture_output=True, timeout=5)
+                    self.assertEqual(result.returncode == 0, expected == 0, result.stderr.decode())
 
 
 INSTALL_ID = "bbxi_" + "1" * 32
@@ -1237,7 +1269,7 @@ class FakeInstallCommands(FakeCommands):
         self.installer_actions.append((operation, apply, kwargs.get("recovery", False)))
         if operation != "inspect":
             operation_id = cli[cli.index("--operation") + 1]
-            journal = json.loads((self.private / "installer-operations.json").read_bytes())
+            journal = json.loads(getattr(self, "operations_path", self.private / "installer-operations.json").read_bytes())
             proof.require(journal["installation_id"] == INSTALL_ID
                           and operation_id in journal["operations"].values(),
                           "installer-operation-changed")
@@ -1304,6 +1336,12 @@ class FakeInstallCommands(FakeCommands):
                   "inspection": {"owner_sid": self.operator.expected["identity_sid"], "root_identity": "test-volume:file-id",
                                  "blender_candidates": [candidate(self.operator.installation["blender"])], "python": python},
                   "plan": {"plan_sha256": plan_hash, "manifest_sha256": self.operator.manifest_sha256, "files": files,
+                           "state_root": self.operator.installation["state_root"],
+                           "windows_user": self.operator.connection["windows_user"],
+                           "task": {"name": self.operator.installation["task_name"], "owner_sid": self.operator.expected["identity_sid"],
+                                    "installation_id": INSTALL_ID, "executable": str(runtime / "blender-box.exe"),
+                                    "arguments": 'host run-request --state-root "' + self.operator.installation["state_root"] + '"',
+                                    "directory": str(runtime)},
                            "execution_launcher": dict(proof.INSTALLER_LAUNCHER)},
                   "files": [dict(item, identity="test-volume:" + item["path"]) for item in files] if self.receipt.exists() else [],
                   "retained": [], "problems": [], "target_publication": {"status": "not-requested"}}

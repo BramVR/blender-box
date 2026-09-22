@@ -43,10 +43,10 @@ def require(condition, code):
         raise ControllerError(code)
 
 
-def document(raw, limit=MAX_FILE):
+def document(raw, limit=MAX_FILE, *, version=1):
     require(isinstance(raw, bytes) and 0 < len(raw) <= limit, "invalid-document")
     try:
-        return proof.document(raw)
+        return proof.document(raw, version=version)
     except (proof.ProofError, RecursionError) as error:
         raise ControllerError("invalid-document") from error
 
@@ -76,7 +76,7 @@ class ProofExecutionRequest:
                 and value["repository"] == "BramVR/blender-box"
                 and proof.matches(proof.SHA, value["candidate_sha"])
                 and proof.matches(proof.SHA, value["driver_sha"])
-                and value["variant"] in ("baseline", "named-target")
+                and value["variant"] in ("baseline", "named-target", "host-install")
                 and proof.matches(EXECUTION_ID, value["execution_id"]), "invalid-request")
         utc(value["expires_at"])
         return cls(**value)
@@ -91,15 +91,20 @@ class Command:
     operation: str
     execution_id: str
     request: ProofExecutionRequest | None = None
+    installer_operator_sha256: str | None = None
 
 
 def parse_command(raw):
     value = document(raw, MAX_WIRE)
     operation = value.get("operation")
     if operation == "start":
-        require(set(value) == {"schema_version", "operation", "request"}, "invalid-command")
-        request = ProofExecutionRequest.parse(value["request"])
-        return Command(operation, request.execution_id, request)
+        request = ProofExecutionRequest.parse(value.get("request"))
+        installer = value.get("installer_operator_sha256")
+        require(set(value) == {"schema_version", "operation", "request"} | (
+                    {"installer_operator_sha256"} if installer is not None else set())
+                and (installer is None or request.variant == "host-install" and proof.matches(proof.HASH, installer)),
+                "invalid-command")
+        return Command(operation, request.execution_id, request, installer)
     require(operation in ("status", "recover", "stop")
             and set(value) == {"schema_version", "operation", "execution_id"}
             and proof.matches(EXECUTION_ID, value["execution_id"]), "invalid-command")
@@ -306,6 +311,9 @@ def normalized_ssh(connection, root):
 
 def snapshot_inputs(control, job, policy, files=None):
     files = files or local_files()
+    if job.request.variant == "host-install":
+        import proof_installation
+        return proof_installation.retain_inputs(control, job, policy, files)
     original = files.read(policy.operator_config, 64 << 10)
     value = document(original)
     inputs = control / "inputs"
@@ -341,13 +349,15 @@ def verify_inputs(control, job, expected, files=None):
         raw = files.read(control / "inputs.json")
         require(proof.digest(raw) == expected, "original-inputs-unavailable")
         require(files.read(job.root / "inputs.json") == raw, "original-inputs-unavailable")
-        manifest = document(raw)
-        require(set(manifest) == {"schema_version", "files", "candidate_checkout", "config", "expected_client_sha256"}
+        installing = job.request.variant == "host-install"
+        manifest = document(raw, version=2 if installing else 1)
+        require(not installing or manifest.get("variant") == "host-install", "original-inputs-unavailable")
+        require(set(manifest) - ({"variant"} if installing else set()) == {"schema_version", "files", "candidate_checkout", "config", "expected_client_sha256"}
                 and manifest["candidate_checkout"] == str(job.candidate_checkout)
                 and manifest["config"] == str(job.config)
                 and manifest["expected_client_sha256"] == job.expected_client_sha256
                 and set(manifest["files"]) == {"original-operator.json", "original-ssh-config", "operator.json",
-                                               "target.json", "ssh-config", "key", "known_hosts"},
+                                               ("runtime-manifest.json" if installing else "target.json"), "ssh-config", "key", "known_hosts"},
                 "original-inputs-unavailable")
         for name, expected_hash in manifest["files"].items():
             require(proof.digest(files.read(control / "inputs" / name)) == expected_hash
@@ -362,7 +372,7 @@ def verify_worker_inputs(job, files=None):
     try:
         raw = files.read(job.root / "inputs.json")
         require(proof.digest(raw) == job.inputs_digest, "original-inputs-unavailable")
-        manifest = document(raw)
+        manifest = document(raw, version=2 if job.request.variant == "host-install" else 1)
         for name, expected in manifest["files"].items():
             require(proof.digest(files.read(job.root / "inputs" / name)) == expected, "original-inputs-unavailable")
     except (OSError, ControllerError, KeyError, TypeError) as error:
@@ -423,6 +433,9 @@ class ProofWorker:
             return result
         previous = os.umask(0o077)
         try:
+            if job.request.variant == "host-install":
+                import proof_installation
+                return proof_installation.prove(job, request, commands, native_authority)
             return proof.baseline(request, commands, native_authority=native_authority)
         finally:
             os.umask(previous)
@@ -430,7 +443,10 @@ class ProofWorker:
     def recovery_inputs(self, job):
         return recovery_inputs(job, self.files)
 
-    def recover(self, job, retained):
+    def recover(self, job, retained, *, checkpoints=None):
+        if job.request.variant == "host-install":
+            import proof_installation
+            return proof_installation.recover(job, retained, checkpoints, self.commands_factory)
         current = self.recovery_inputs(job)
         require(current == retained, "recovery-inputs-changed")
         private_directory(job.attempt_root / "commands", create=True)
@@ -519,9 +535,13 @@ class Controller:
                 require(unreleased is not None and state["closed"] and state["inputs_digest"] is not None,
                         "execution-state-invalid")
                 if unreleased.mode == "baseline":
-                    require(state["attempt"] == 1 and state["phase"] == "settled" and state["proof_result"] == "fail"
-                            and state["windows_cleanup"] == "proven" and state["recovery_inputs"] is None,
-                            "execution-state-invalid")
+                    require(state["attempt"] == 1 and state["proof_result"] == "fail", "execution-state-invalid")
+                    if request.variant == "host-install":
+                        require(state["phase"] == "unresolved" and state["windows_cleanup"] == "unknown"
+                                and state["recovery_inputs"] is not None, "execution-state-invalid")
+                    else:
+                        require(state["phase"] == "settled" and state["windows_cleanup"] == "proven"
+                                and state["recovery_inputs"] is None, "execution-state-invalid")
                 else:
                     require(state["attempt"] > 1 and state["phase"] == "unresolved"
                             and state["recovery_inputs"] is not None, "execution-state-invalid")
@@ -537,21 +557,27 @@ class Controller:
                     and state["inputs_digest"] is not None), "execution-state-invalid")
             require(state["local_termination"] != "proven" or state["invocation"] is not None or unreleased is not None,
                     "execution-state-invalid")
-            require(state["recovery_inputs"] is None or (isinstance(state["recovery_inputs"], dict)
-                    and set(state["recovery_inputs"]) == {"schema_version", "run_id", "client_sha256", "target_sha256", "journal"}
-                    and state["recovery_inputs"]["schema_version"] == 1
-                    and proof.matches(proof.RUN_ID, state["recovery_inputs"]["run_id"])
-                    and state["recovery_inputs"]["client_sha256"] == state["expected_client_sha256"]
-                    and proof.matches(proof.HASH, state["recovery_inputs"]["target_sha256"])
-                    and state["recovery_inputs"]["journal"] == str(self.jobs_root / request.execution_id
-                        / "baseline/private/config/runs" / (state["recovery_inputs"]["run_id"] + ".json"))),
-                    "execution-state-invalid")
+            if request.variant == "host-install" and state["inputs_digest"] is not None:
+                import proof_installation
+                proof_installation.validate_anchor(state["recovery_inputs"], self.job(control, state))
+                if state["local_termination"] == "proven":
+                    proof_installation.read_chain(control, self.job(control, state), state["recovery_inputs"], self.files)
+            else:
+                require(state["recovery_inputs"] is None or (isinstance(state["recovery_inputs"], dict)
+                        and set(state["recovery_inputs"]) == {"schema_version", "run_id", "client_sha256", "target_sha256", "journal"}
+                        and state["recovery_inputs"]["schema_version"] == 1
+                        and proof.matches(proof.RUN_ID, state["recovery_inputs"]["run_id"])
+                        and state["recovery_inputs"]["client_sha256"] == state["expected_client_sha256"]
+                        and proof.matches(proof.HASH, state["recovery_inputs"]["target_sha256"])
+                        and state["recovery_inputs"]["journal"] == str(self.jobs_root / request.execution_id
+                            / "baseline/private/config/runs" / (state["recovery_inputs"]["run_id"] + ".json"))),
+                        "execution-state-invalid")
             if state["invocation"] is not None:
                 invocation = Invocation.parse(state["invocation"])
                 require(invocation.execution_id == request.execution_id and invocation.attempt == state["attempt"]
                         and invocation.request_digest == request.digest, "execution-state-invalid")
             return state
-        except (OSError, ControllerError, TypeError, KeyError) as error:
+        except (OSError, ControllerError, proof.ProofError, TypeError, KeyError) as error:
             raise ControllerError("execution-state-unavailable") from error
 
     def unreleased(self, control, state, *, fresh=False, publish=False):
@@ -575,7 +601,7 @@ class Controller:
                    state["expected_client_sha256"], state["attempt"], state["inputs_digest"])
 
     def start(self, control, request):
-        require(request.variant == self.policy.variant and request.variant in ("baseline", "named-target"),
+        require(request.variant == self.policy.variant and request.variant in ("baseline", "named-target", "host-install"),
                 "variant-driver-unavailable")
         require((request.candidate_sha, request.driver_sha) == (self.policy.candidate_sha, self.policy.driver_sha),
                 "request-not-authorized")
@@ -606,6 +632,10 @@ class Controller:
             self.files.directory(job.root, create=True)
             self.files.directory(job.root / "attempts", create=True)
             state["inputs_digest"] = snapshot_inputs(control, job, self.policy, self.files)
+            if request.variant == "host-install":
+                import proof_installation
+                state["recovery_inputs"] = proof_installation.create_anchor(
+                    control, replace(job, inputs_digest=state["inputs_digest"]), self.files)
             self.save(control, state)
             return self.receipt(self.launch(control, state, "baseline"))
         except Exception:
@@ -669,6 +699,8 @@ class Controller:
             if state["phase"] in ("recovering", "settled"):
                 return state
         state.update(closed=True)
+        if self.job(control, state).request.variant == "host-install":
+            state["proof_result"] = "fail"
         self.save(control, state)
         try:
             self.terminate(state)
@@ -678,12 +710,18 @@ class Controller:
             state = self.reconcile(control, state)
             if state["phase"] == "settled":
                 return state
-            if state["recovery_inputs"] is None:
-                require(self.service.result(Invocation.parse(state["invocation"])) is None, "retained-recovery-unavailable")
-            retained = self.worker.recovery_inputs(job)
-            require(state["recovery_inputs"] is None or retained == state["recovery_inputs"], "recovery-inputs-changed")
-            state["recovery_inputs"] = retained
-            self.save(control, state)
+            if job.request.variant == "host-install":
+                import proof_installation
+                proof_installation.read_chain(control, job, state["recovery_inputs"], self.files)
+                state["proof_result"] = "fail"
+                self.save(control, state)
+            else:
+                if state["recovery_inputs"] is None:
+                    require(self.service.result(Invocation.parse(state["invocation"])) is None, "retained-recovery-unavailable")
+                retained = self.worker.recovery_inputs(job)
+                require(state["recovery_inputs"] is None or retained == state["recovery_inputs"], "recovery-inputs-changed")
+                state["recovery_inputs"] = retained
+                self.save(control, state)
             return self.launch(control, state, "recover")
         except Exception:
             state.update(phase="unresolved", closed=True)
@@ -729,8 +767,10 @@ class Controller:
             if fresh.process == "gone":
                 state.update(local_termination="proven", proof_result="fail")
                 if fresh.mode == "baseline":
-                    require(state["attempt"] == 1 and state["recovery_inputs"] is None, "native-attempt-invalid")
-                    state.update(phase="settled", windows_cleanup="proven")
+                    require(state["attempt"] == 1 and (state["recovery_inputs"] is None
+                            or self.job(control, state).request.variant == "host-install"), "native-attempt-invalid")
+                    if self.job(control, state).request.variant != "host-install":
+                        state.update(phase="settled", windows_cleanup="proven")
                 else:
                     require(state["attempt"] > 1 and state["recovery_inputs"] is not None, "native-attempt-invalid")
                 self.save(control, state)
@@ -741,8 +781,11 @@ class Controller:
                 verify_inputs(control, self.job(control, state), state["inputs_digest"], self.files)
                 state.update(closed=True, local_termination="proven", phase="unresolved")
                 if proof_record.mode == "baseline":
-                    require(state["attempt"] == 1 and state["recovery_inputs"] is None, "unreleased-proof-invalid")
-                    state.update(phase="settled", windows_cleanup="proven", proof_result="fail")
+                    require(state["attempt"] == 1 and (state["recovery_inputs"] is None
+                            or self.job(control, state).request.variant == "host-install"), "unreleased-proof-invalid")
+                    state["proof_result"] = "fail"
+                    if self.job(control, state).request.variant != "host-install":
+                        state.update(phase="settled", windows_cleanup="proven")
                 else:
                     require(state["attempt"] > 1 and state["recovery_inputs"] is not None, "unreleased-proof-invalid")
                 self.save(control, state)
@@ -769,6 +812,26 @@ class Controller:
                 and completed["mode"] in ("baseline", "recover"), "proof-result-invalid")
         mode, result = completed["mode"], completed["result"]
         require((mode == "baseline") == (state["attempt"] == 1), "proof-result-invalid")
+        if job.request.variant == "host-install":
+            import proof_installation
+            latest = proof_installation.read_chain(control, job, state["recovery_inputs"], self.files)
+            require(isinstance(result, dict), "proof-result-invalid")
+            if mode == "baseline":
+                require(result.get("execution") == "hosted" and result.get("candidate_sha") == job.request.candidate_sha
+                        and result.get("driver_sha") == job.request.driver_sha
+                        and result.get("status") in ("pass", "fail"), "proof-result-invalid")
+                if state["proof_result"] != "fail":
+                    state["proof_result"] = result["status"]
+            else:
+                state["proof_result"] = "fail"
+            try:
+                proof_installation.settlement(latest, result, proof_installation.retained_operator(job, self.files, control=control))
+                state["windows_cleanup"] = "proven"
+            except (ControllerError, proof.ProofError):
+                state["proof_result"] = "fail"
+            state["phase"] = "settled" if state["windows_cleanup"] == "proven" else "unresolved"
+            self.save(control, state)
+            return state
         if mode == "baseline":
             require(isinstance(result, dict) and result.get("execution") == "hosted"
                     and result.get("candidate_sha") == job.request.candidate_sha

@@ -475,6 +475,10 @@ class InstallOperator:
         require(path.is_file() and not path.is_symlink(), "operator-config-missing")
         require(os.name == "nt" or path.stat().st_mode & 0o077 == 0, "operator-config-permissions")
         data = document(read_regular(path.parent, path.name, 64 << 10))
+        return cls.from_document(data, candidate)
+
+    @classmethod
+    def from_document(cls, data, candidate, raw_manifest=None):
         require(set(data) <= {"schema_version", "platform", "connection", "expected_host", "fixture", "installation",
                               "bootstrap", "runtime", "before_state", "authorization", "ssh_config", "publish_viewport"}
                 and data.get("platform") == "windows", "installer-config-invalid")
@@ -502,7 +506,8 @@ class InstallOperator:
         manifest_pin = pinned_file(runtime.get("remote_manifest"))
         local = Path(runtime["local_manifest"])
         require(local.is_absolute(), "installer-config-invalid")
-        raw = read_regular(local.parent, local.name, 128 << 10)
+        raw = read_regular(local.parent, local.name, 128 << 10) if raw_manifest is None else raw_manifest
+        require(isinstance(raw, bytes) and 0 < len(raw) <= 128 << 10, "installer-manifest-invalid")
         require(len(raw) == manifest_pin["size"] and digest(raw) == manifest_pin["sha256"], "installer-manifest-mismatch")
         manifest = document(raw)
         require(set(manifest) == {"schema_version", "platform", "architecture", "artifacts", "python_requires",
@@ -988,6 +993,14 @@ try {
     raw = response["output"].encode()
     (commands.private / f"installer-result-{commands.sequence:03d}.json").write_bytes(raw)
     value = document(raw)
+    return validate_installer_result(value, operator, operation, operation_id=operation_id, apply=apply,
+                                     expected_plan=expected_plan, target_out=target_out, fresh=fresh,
+                                     exit_code=response["exit_code"])
+
+
+def validate_installer_result(value, operator, operation, *, operation_id=None, apply=False, expected_plan=None,
+                              target_out=False, fresh=False, exit_code=0):
+    selected = operator.installation
     require(set(value) <= {"schema_version", "operation_id", "installation_id", "state", "completion", "plan", "inspection",
                           "files", "retained", "target", "problems", "target_publication", "execution"}
             and (value.get("installation_id") in (None, "") if fresh else value.get("installation_id") == selected["id"]),
@@ -1018,7 +1031,7 @@ try {
             and all(isinstance(p, dict) and set(p) == {"code", "message"}
                     and isinstance(p["code"], str) and isinstance(p["message"], str) for p in problems),
             "installer-problems-invalid")
-    require(observing or problems == [] and (response["exit_code"] == 0 or publication_failed), "installer-operation-failed")
+    require(observing or problems == [] and (exit_code == 0 or publication_failed), "installer-operation-failed")
     root = windows_path(selected["state_root"])
     retained = [str(root), str(root / ".operation.lock"), str(root / ".launch.lock"), str(root / "runs"),
                 str(root / "receipts"), str(root / "installations" / selected["id"] / "receipt.json")]
@@ -1139,12 +1152,14 @@ def require_same_installer_execution(before, after):
             "installer-execution-changed")
 
 
-def recover_installer(commands, operator, operation_id, expected_plan, *, target_out=False):
+def recover_installer(commands, operator, operation_id, expected_plan, *, target_out=False, checkpoint=None):
     deadline = time.monotonic() + 15
     observed = installer_call(commands, operator, "status", operation_id=operation_id, expected_plan=expected_plan,
                               target_out=target_out, recovery=True, recovery_deadline=deadline)
     require(time.monotonic() < deadline, "installer-stop-unsettled")
     execution = validate_installer_execution(observed)
+    if checkpoint is not None:
+        checkpoint(observed)
     cancellation_attempted = False
     while execution["state"] != "terminal" or execution["fence_state"] != "released":
         require(time.monotonic() < deadline, "installer-stop-unsettled")
@@ -1164,6 +1179,8 @@ def recover_installer(commands, operator, operation_id, expected_plan, *, target
         require(time.monotonic() < deadline, "installer-stop-unsettled")
         latest = validate_installer_execution(observed)
         require_same_installer_execution(execution, latest)
+        if checkpoint is not None:
+            checkpoint(observed)
         execution = latest
         if execution["state"] != "terminal" or execution["fence_state"] != "released":
             threading.Event().wait(0.1)
@@ -1221,7 +1238,7 @@ $hostHash = if (Test-Path -LiteralPath $config.host_executable) { (Get-FileHash 
 
 def write_outcome(public, report):
     temporary = public / "outcome.tmp"
-    temporary.write_bytes(canonical(report) + b"\n")
+    temporary.write_bytes(canonical({key: value for key, value in report.items() if key != "installation_settlement"}) + b"\n")
     temporary.replace(public / "outcome.json")
 
 
@@ -1251,7 +1268,7 @@ class WindowsProofHost:
         return {"daemon_capabilities": list(CAPABILITIES), "blender_version": operator.expected["blender_version"]}
 
 
-def baseline(request, commands_factory=Commands, host=None, *, native_authority=None):
+def baseline(request, commands_factory=Commands, host=None, *, native_authority=None, installation_checkpoints=None):
     host = host or WindowsProofHost()
     request.output.mkdir(mode=0o700, parents=False, exist_ok=False)
     private, public = request.output / "private", request.output / "public"
@@ -1280,6 +1297,7 @@ def baseline(request, commands_factory=Commands, host=None, *, native_authority=
     catalog_attempted, replacement_attempted = False, False
     installation_owned, install_attempted, scenario_attempted = False, False, False
     original_observation = None
+    retained_installation = None
     old_signals = {}
     if threading.current_thread() is threading.main_thread():
         for sig in (signal.SIGINT, signal.SIGTERM):
@@ -1290,7 +1308,8 @@ def baseline(request, commands_factory=Commands, host=None, *, native_authority=
         require(not installing or type(host) is WindowsProofHost, "candidate-invalid")
         if request.execution == "hosted":
             require(matches(SHA, request.driver_sha) and os.environ.get("GITHUB_RUN_ATTEMPT") == "1", "hosted-authorization-invalid")
-            require(not installing and native_authority is not None, "hosted-recovery-retention-unavailable")
+            require(native_authority is not None and (not installing or installation_checkpoints is not None),
+                    "hosted-recovery-retention-unavailable")
             from proof_controller_worker import NativeAdmission
             require(type(host) is WindowsProofHost and type(native_authority) is NativeAdmission,
                     "hosted-authorization-invalid")
@@ -1312,7 +1331,23 @@ def baseline(request, commands_factory=Commands, host=None, *, native_authority=
             selector = ["--target-name", PROOF_TARGET]
             report["outcomes"][current] = {"status": "pass", "code": "import-copy-migration-verified"}
             current = "preparation"
-        if installing:
+        if installing and installation_checkpoints is not None:
+            from proof_installation import Installation
+            retained_installation = Installation(installation_checkpoints, commands, operator)
+            current = "install-apply"
+            applied = retained_installation.install(report)
+            current = "install-target"
+            installed_target = retained_installation.bind_target(applied, target_path)
+            installed = inspect_host(commands, installed_target)
+            verify_expected_host(operator.expected, installed)
+            artifacts_by_role = {a["role"]: a for a in operator.manifest["artifacts"]}
+            host_hash = artifacts_by_role["host-executable"]["sha256"]
+            require(installed["host_sha256"] == host_hash, "installed-host-mismatch")
+            report["outcomes"][current] = {"status": "pass", "code": "generated-target-verified"}
+            report["binaries"] = {"host_sha256": host_hash, "host_size": artifacts_by_role["host-executable"]["size"],
+                                  "client_sha256": digest(read_regular(private, client.name, 128 << 20))}
+            current = "preparation"
+        elif installing:
             operation_ids = {name: "bbxo_" + os.urandom(16).hex() for name in ("install", "remove")}
             with (private / "installer-operations.json").open("x") as stream:
                 json.dump({"schema_version": 1, "installation_id": operator.installation["id"],
@@ -1387,6 +1422,8 @@ def baseline(request, commands_factory=Commands, host=None, *, native_authority=
         report.update(host.public_runtime(operator))
         report["outcomes"][current] = {"status": "pass", "code": host.platform + "-check-passed"}
         current = "scenario"
+        if retained_installation is not None:
+            retained_installation.release_run()
         scenario_attempted = True
         run = commands.json([client, "run", *selector, "--payload", FIXTURE / "payload.json",
                              "--timeout", "20m", "--json"], timeout=1320, marker=True)
@@ -1449,7 +1486,7 @@ def baseline(request, commands_factory=Commands, host=None, *, native_authority=
             except Exception:
                 selector = ["--target", target_path]
                 report["outcomes"]["target-restoration"] = {"status": "fail", "code": "target-restore-failed"}
-        if commands.run_id and commands.group_cleanup_known:
+        if retained_installation is None and commands.run_id and commands.group_cleanup_known:
             recovered = []
             for operation in ("status", "stop", "status"):
                 try:
@@ -1493,7 +1530,7 @@ def baseline(request, commands_factory=Commands, host=None, *, native_authority=
                 report["outcomes"]["target-forget"] = {"status": "pass", "code": "proof-profile-forgotten"}
             except Exception:
                 report["outcomes"]["target-forget"] = {"status": "fail", "code": "target-forget-failed"}
-        if installing and install_attempted:
+        if retained_installation is None and installing and install_attempted:
             if commands.group_cleanup_known:
                 try:
                     applied = recover_installer(commands, operator, operation_ids["install"], plan["plan"]["plan_sha256"], target_out=True)
@@ -1556,6 +1593,33 @@ def baseline(request, commands_factory=Commands, host=None, *, native_authority=
             except Exception as error:
                 code = error.code if isinstance(error, ProofError) else "installer-fixture-unknown"
                 report["outcomes"]["fixture-preserved"] = {"status": "fail", "code": code}
+        if retained_installation is not None and commands.group_cleanup_known:
+            try:
+                if retained_installation.stage in ("run-released", "run-owned", "run-clean"):
+                    report["cleanup"] = retained_installation.cleanup_run(run)
+                    report["outcomes"]["recovery"] = {"status": "pass", "code": "reconnect-exact-identity"}
+                    report["outcomes"]["cleanup"] = {"status": "pass", "code": "settled-and-reobserved"}
+                    if run is not None and run.get("state") == "complete":
+                        retained = request.candidate_checkout / "artifacts/blender-box" / commands.run_id
+                        verify_baseline(retained, verify_bundle(retained, run))
+                    if retained_installation.data["install_repeat"] == "pending":
+                        retained_installation.repeat("install")
+                        report["outcomes"]["install-repeat"] = {"status": "pass", "code": "identical-install-repeated-after-run"}
+                report.update(retained_installation.recover())
+                if retained_installation.stage == "removed":
+                    report["installation"] = {"installation_id": operator.installation["id"], "state": "removed"}
+                    for outcome, code in (("remove-preview", "remove-preview-read-only"),
+                                          ("remove-apply", "owned-runtime-removed"),
+                                          ("fixture-preserved", "declared-unrelated-fixture-preserved")):
+                        report["outcomes"][outcome] = {"status": "pass", "code": code}
+                    if retained_installation.data["remove_repeat"] == "pending":
+                        retained_installation.repeat("remove")
+                        report["outcomes"]["remove-repeat"] = {"status": "pass", "code": "removed-tombstone-reobserved"}
+                    report.update(retained_installation.recover())
+            except Exception as error:
+                code = getattr(error, "code", "installer-retention-unavailable")
+                report["outcomes"]["fixture-preserved"] = {"status": "fail", "code": code}
+                report.pop("installation_settlement", None)
         for sig, previous in old_signals.items():
             signal.signal(sig, previous)
         report["status"] = "pass" if all(report["outcomes"][name]["status"] == "pass" for name in required) else "fail"
