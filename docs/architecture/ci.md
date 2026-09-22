@@ -33,6 +33,8 @@ The GitHub workflows call these same commands. A language implementation extends
 
 The repository gate's public interface is three commands. Runner setup and language detection stay behind it. CI contract tests protect the parts GitHub cannot validate for us: triggers, permissions, timeouts, stable job names, supported operating systems, pinned actions, and the secret scan.
 
+The Windows job allows fifteen minutes for runner setup and native tests. Go retains its ten-minute package timeout so a stalled package can emit diagnostics before the enclosing job expires.
+
 Real Windows Blender proof stays outside the ordinary CI and Security workflows. The separate `Windows onboarding proof` workflow calls the repository's baseline runner against an explicitly authorized owned host. The project-local `verify-blender-box` skill documents the same public CLI path. Proof records the candidate and driver revisions, binary hashes, Run and Session identities, evidence, and cleanup without publishing private host details.
 
 Hosted proof currently refuses preflight until private original Run authority can survive loss of its ephemeral controller. Public artifact uploads retain neither the original claim nor the Session pin. A private durable retention mechanism and recovery procedure are prerequisites for enabling hosted execution.
