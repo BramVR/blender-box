@@ -446,7 +446,7 @@ class LinuxOps:
     def __init__(self, policy, *, _run=bounded_command):
         self.policy, self._run = policy, _run
 
-    def systemctl(self, operation):
+    def systemctl(self, operation, timeout=10):
         model.require(operation in ("show", "start"), "native-operation-invalid")
         args = ["/usr/bin/systemctl", "--no-pager", "--no-ask-password"]
         if operation == "show":
@@ -454,14 +454,14 @@ class LinuxOps:
         else:
             args += ["start", "--no-block", UNIT]
         result = self._run(args, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                           env={"PATH": "/usr/bin", "LANG": "C", "SYSTEMD_COLORS": "0"}, timeout=10, check=False,
+                           env={"PATH": "/usr/bin", "LANG": "C", "SYSTEMD_COLORS": "0"}, timeout=timeout, check=False,
                            close_fds=True)
         model.require(result.returncode == 0 and len(result.stdout) <= 16384 and len(result.stderr) <= 16384,
                       "native-service-unavailable")
         return result.stdout
 
-    def unit(self):
-        return parse_unit(self.systemctl("show"))
+    def unit(self, timeout=10):
+        return parse_unit(self.systemctl("show", timeout))
 
     def boot(self):
         return boot_id(Path("/proc/sys/kernel/random/boot_id").read_bytes())
@@ -504,8 +504,8 @@ class LinuxOps:
         finally:
             os.close(child)
 
-    def whole_empty(self):
-        unit = self.unit()
+    def whole_empty(self, unit=None):
+        unit = self.unit() if unit is None else unit
         if unit.main_pid or unit.job_id or unit.active not in ("inactive", "failed"):
             return False
         try:
@@ -580,7 +580,18 @@ class LinuxOps:
                 self.wait_group_empty(fd, deadline)
         except FileNotFoundError:
             pass
-        return self.supervisor_gone(receipt) and self.whole_empty()
+        observed = False
+        while True:
+            remaining = deadline - time.monotonic()
+            if observed and remaining <= 0:
+                return False
+            unit = self.unit(timeout=max(0.001, min(10, remaining)))
+            observed = True
+            invocation = receipt.invocation
+            model.require(unit.invocation_id in ("", invocation.invocation_id)
+                          and unit.main_pid in (0, invocation.parent_pid), "service-identity-changed")
+            if self.whole_empty(unit) and self.supervisor_gone(receipt):
+                return True
 
     def exchange(self, receipt, request):
         with socket.socket(socket.AF_UNIX, socket.SOCK_SEQPACKET) as connection:

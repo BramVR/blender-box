@@ -201,6 +201,7 @@ class Supervisor:
             leaf = "attempt-" + uuid.uuid4().hex
             os.mkdir(leaf, 0o700, dir_fd=parent)
         with self.ops.group(native.UNIT_CGROUP + "/" + leaf) as group:
+            os.fchmod(group, 0o755)
             info = os.fstat(group)
             gate_parent, gate_child = socket.socketpair(socket.AF_UNIX, socket.SOCK_SEQPACKET)
             result_parent, result_child = socket.socketpair(socket.AF_UNIX, socket.SOCK_SEQPACKET)
