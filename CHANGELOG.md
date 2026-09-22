@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Preserve proof-controller Run authority across interruptions with fenced native attempts, one-use worker admission, and local enrollment previews; allow unprivileged identity checks without cgroup write access and wait for exact native stop settlement. Native qualification remains required.
 - Require read-only Linux daemon package files and a private service file-creation mask so Blender startup preserves runtime integrity and cleanup permissions.
 - Report only Linux-verified daemon capabilities in Linux proof outcomes.
 - Accept systemd 255’s omitted empty service-hook and environment-file arrays during Linux setup verification while rejecting populated overrides.
