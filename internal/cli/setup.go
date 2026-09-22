@@ -139,8 +139,29 @@ func setupCommand(ctx context.Context, args []string, stdout, stderr io.Writer, 
 		if result.Plan.PlanSHA256 != "" {
 			fmt.Fprintf(stdout, "Plan SHA-256 %s\n", result.Plan.PlanSHA256)
 		}
+		if result.Inspection.OwnerSID != "" {
+			fmt.Fprintf(stdout, "Owner SID %s\n", result.Inspection.OwnerSID)
+		}
+		if result.Plan.WindowsUser != "" {
+			fmt.Fprintf(stdout, "Windows user %s\n", result.Plan.WindowsUser)
+		}
+		if result.Plan.StateRoot != "" {
+			fmt.Fprintf(stdout, "State root %s\n", result.Plan.StateRoot)
+		}
 		for _, candidate := range result.Inspection.BlenderCandidates {
-			fmt.Fprintf(stdout, "Blender %s; SHA-256 %s\n", candidate.Path, candidate.SHA256)
+			fmt.Fprintf(stdout, "Blender %s; version %s; SHA-256 %s\n", candidate.Path, candidate.Version, candidate.SHA256)
+		}
+		if result.Inspection.Python != nil {
+			candidate := result.Inspection.Python.Candidate
+			fmt.Fprintf(stdout, "Python %s; version %s; SHA-256 %s\n", candidate.Path, candidate.Version, candidate.SHA256)
+		}
+		if result.Plan.Task != nil {
+			fmt.Fprintf(stdout, "Runtime root %s\n", result.Plan.Task.Directory)
+			fmt.Fprintf(stdout, "Task %s\n", result.Plan.Task.Name)
+			fmt.Fprintf(stdout, "Task executable %s\n", result.Plan.Task.Executable)
+			fmt.Fprintf(stdout, "Task arguments %s\n", result.Plan.Task.Arguments)
+			fmt.Fprintf(stdout, "Task directory %s\n", result.Plan.Task.Directory)
+			fmt.Fprintln(stdout, "Task policy RunLevel=Limited; LogonType=InteractiveToken; Triggers=none; MultipleInstances=IgnoreNew; ExecutionTimeLimit=PT0S")
 		}
 		for _, file := range result.Plan.Files {
 			fmt.Fprintf(stdout, "%s %s (%d bytes)\n", file.Kind, file.Path, file.Size)

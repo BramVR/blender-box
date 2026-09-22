@@ -53,7 +53,7 @@ Run commands on Windows through the verified bootstrap:
 & $Bootstrap setup install --platform windows --state-root $StateRoot --runtime $Manifest --blender $Blender --python $Python --ssh-alias $SSHAlias --windows-user $WindowsUser --task-name $TaskName --target-out $TargetFile --json
 ```
 
-Inspection reports selections, prerequisites, and conflicts. Select an exact Blender executable when discovery is ambiguous. Review the installation destination, account, task, runtime inventory, and retained components. Neither command applies changes without `--apply`.
+Inspection reports selections, prerequisites, and conflicts. Select an exact Blender executable when discovery is ambiguous. The preview JSON reports the selected SID, Windows account, state root, runtime inventory, Blender and Python identities, and the exact Scheduled Task definition. Human output also reports the runtime root, task executable, arguments, working directory, and fixed limited-rights interactive policy. Neither command applies changes without `--apply`.
 
 Save the returned installation ID, operation ID, and plan SHA-256. Apply requires both identities from preview. Preserve them and the target publication destination on retries. A changed immutable selection requires resolving the conflict rather than overwriting the old installation.
 

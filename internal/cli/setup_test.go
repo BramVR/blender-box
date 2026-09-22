@@ -179,3 +179,57 @@ func TestSetupPublicationPreviewIsReadOnlyAndBindsDestination(t *testing.T) {
 		t.Fatal("preview published target")
 	}
 }
+
+func TestSetupHumanPreviewReportsSelectedIntent(t *testing.T) {
+	installationID := windowsinstall.InstallationID("bbxi_" + strings.Repeat("a", 32))
+	operationID := windowsinstall.OperationID("bbxo_" + strings.Repeat("b", 32))
+	runtimeRoot := `C:\Managed\installations\` + string(installationID) + `\runtime`
+	executor := &setupExecutor{result: windowsinstall.Result{
+		SchemaVersion:  1,
+		State:          "planned",
+		Completion:     "known",
+		InstallationID: installationID,
+		OperationID:    operationID,
+		Inspection: windowsinstall.Inspection{
+			OwnerSID:          "S-1-5-21-1234",
+			BlenderCandidates: []windowsinstall.Candidate{{Path: `C:\Apps\Blender\blender.exe`, Version: "4.3.2", SHA256: windowsinstall.SHA256(strings.Repeat("c", 64))}},
+			Python:            &windowsinstall.PythonPrerequisite{Candidate: windowsinstall.Candidate{Path: `C:\Python311\python.exe`, Version: "3.11.15", SHA256: windowsinstall.SHA256(strings.Repeat("d", 64))}},
+		},
+		Plan: windowsinstall.Plan{
+			PlanSHA256:  windowsinstall.SHA256(strings.Repeat("e", 64)),
+			StateRoot:   `C:\Managed`,
+			WindowsUser: `STUDIO\artist`,
+			Task: &windowsinstall.TaskPlan{
+				Name:       "BlenderBox",
+				Executable: runtimeRoot + `\blender-box.exe`,
+				Arguments:  `host run-request --state-root "C:\Managed"`,
+				Directory:  runtimeRoot,
+			},
+			Files: []windowsinstall.File{{Path: "runtime/blender-box.exe", Kind: "file", Size: 123}},
+		},
+	}}
+	var out, stderr bytes.Buffer
+	code := Run(context.Background(), []string{"setup", "install", "--platform", "windows", "--state-root", `C:\Managed`}, strings.NewReader(""), &out, &stderr, Dependencies{Setup: executor})
+	if code != 0 {
+		t.Fatalf("preview code=%d err=%s", code, stderr.String())
+	}
+	want := "Windows setup install: planned\n" +
+		"Installation " + string(installationID) + "; operation " + string(operationID) + "\n" +
+		"Plan SHA-256 " + strings.Repeat("e", 64) + "\n" +
+		"Owner SID S-1-5-21-1234\n" +
+		"Windows user STUDIO\\artist\n" +
+		"State root C:\\Managed\n" +
+		"Blender C:\\Apps\\Blender\\blender.exe; version 4.3.2; SHA-256 " + strings.Repeat("c", 64) + "\n" +
+		"Python C:\\Python311\\python.exe; version 3.11.15; SHA-256 " + strings.Repeat("d", 64) + "\n" +
+		"Runtime root " + runtimeRoot + "\n" +
+		"Task BlenderBox\n" +
+		"Task executable " + runtimeRoot + "\\blender-box.exe\n" +
+		"Task arguments host run-request --state-root \"C:\\Managed\"\n" +
+		"Task directory " + runtimeRoot + "\n" +
+		"Task policy RunLevel=Limited; LogonType=InteractiveToken; Triggers=none; MultipleInstances=IgnoreNew; ExecutionTimeLimit=PT0S\n" +
+		"file runtime/blender-box.exe (123 bytes)\n" +
+		"Preview only; no host files or tasks created.\n"
+	if out.String() != want {
+		t.Fatalf("human preview:\n%s\nwant:\n%s", out.String(), want)
+	}
+}

@@ -92,6 +92,14 @@ type PythonPrerequisite struct {
 	DLL        Candidate `json:"dll"`
 	VenvSource Candidate `json:"venv_source"`
 }
+type TaskPlan struct {
+	Name           string         `json:"name"`
+	OwnerSID       string         `json:"owner_sid"`
+	InstallationID InstallationID `json:"installation_id"`
+	Executable     string         `json:"executable"`
+	Arguments      string         `json:"arguments"`
+	Directory      string         `json:"directory"`
+}
 type Inspection struct {
 	OwnerSID          string              `json:"owner_sid"`
 	RootIdentity      string              `json:"root_identity"`
@@ -99,9 +107,12 @@ type Inspection struct {
 	Python            *PythonPrerequisite `json:"python,omitempty"`
 }
 type Plan struct {
-	PlanSHA256     SHA256 `json:"plan_sha256"`
-	ManifestSHA256 SHA256 `json:"manifest_sha256,omitempty"`
-	Files          []File `json:"files"`
+	PlanSHA256     SHA256    `json:"plan_sha256"`
+	ManifestSHA256 SHA256    `json:"manifest_sha256,omitempty"`
+	StateRoot      string    `json:"state_root,omitempty"`
+	WindowsUser    string    `json:"windows_user,omitempty"`
+	Task           *TaskPlan `json:"task,omitempty"`
+	Files          []File    `json:"files"`
 }
 type Problem struct {
 	Code    string `json:"code"`

@@ -186,7 +186,14 @@ func TestPreviewInstallRepeatRemovePreservesAuthority(t *testing.T) {
 	if err != nil || automatic.InstallationID != installed.InstallationID || automatic.OperationID != installed.OperationID {
 		t.Fatalf("automatic repeat=%+v %v", automatic, err)
 	}
-	remove := Request{Operation: "remove", Platform: "windows", StateRoot: r.StateRoot, InstallationID: installed.InstallationID, Apply: true}
+	remove := Request{Operation: "remove", Platform: "windows", StateRoot: r.StateRoot, InstallationID: installed.InstallationID}
+	removalPreview, err := e.Execute(context.Background(), remove)
+	if err != nil || removalPreview.Plan.StateRoot != r.StateRoot || removalPreview.Plan.WindowsUser != r.WindowsUser || removalPreview.Plan.Task == nil || removalPreview.Plan.Task.Directory != filepath.Join(r.StateRoot, "installations", string(installed.InstallationID), "runtime") {
+		t.Fatalf("removal preview=%+v %v", removalPreview.Plan, err)
+	}
+	remove.OperationID = removalPreview.OperationID
+	remove.ExpectedPlan = removalPreview.Plan.PlanSHA256
+	remove.Apply = true
 	removed, err := e.Execute(context.Background(), remove)
 	if err != nil || removed.State != "removed" || m.current.Exists {
 		t.Fatalf("remove=%+v %v", removed, err)
@@ -202,6 +209,67 @@ func TestPreviewInstallRepeatRemovePreservesAuthority(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(r.StateRoot, "installations", string(installed.InstallationID), "receipt.json")); err != nil {
 		t.Fatal("missing tombstone")
+	}
+}
+
+func TestInstallPreviewJSONReportsSelectedIntentWithoutMutation(t *testing.T) {
+	e, machine, request := installFixture(t)
+	machine.inspection.BlenderCandidates[0].Version = "4.3.2"
+	planned, err := e.Execute(context.Background(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	encoded, err := json.Marshal(planned)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var preview struct {
+		Plan       Plan       `json:"plan"`
+		Inspection Inspection `json:"inspection"`
+	}
+	if err := json.Unmarshal(encoded, &preview); err != nil {
+		t.Fatal(err)
+	}
+	runtimeRoot := filepath.Join(request.StateRoot, "installations", string(planned.InstallationID), "runtime")
+	if preview.Plan.StateRoot != request.StateRoot || preview.Plan.WindowsUser != "test-user" || preview.Plan.Task == nil {
+		t.Fatalf("managed intent missing from preview JSON: %s", encoded)
+	}
+	if preview.Plan.Task.Name != "test-task" || preview.Plan.Task.OwnerSID != "S-1-5-21-test" || preview.Plan.Task.Executable != filepath.Join(runtimeRoot, "blender-box.exe") || preview.Plan.Task.Arguments != `host run-request --state-root "`+request.StateRoot+`"` || preview.Plan.Task.Directory != runtimeRoot {
+		t.Fatalf("task intent missing from preview JSON: %s", encoded)
+	}
+	if preview.Inspection.OwnerSID != "S-1-5-21-test" || len(preview.Inspection.BlenderCandidates) != 1 || preview.Inspection.BlenderCandidates[0].Path != request.BlenderPath || preview.Inspection.BlenderCandidates[0].Version != "4.3.2" || preview.Inspection.Python == nil || preview.Inspection.Python.Candidate.Path != request.PythonPath || preview.Inspection.Python.Candidate.Version != "3.11.15" || preview.Inspection.Python.Candidate.SHA256 == "" {
+		t.Fatalf("selected prerequisites missing from preview JSON: %s", encoded)
+	}
+	if _, err := os.Lstat(request.StateRoot); !os.IsNotExist(err) {
+		t.Fatal("preview created state")
+	}
+}
+
+func TestRepeatInstallUsesDiscoveredBlender(t *testing.T) {
+	e, m, request := installFixture(t)
+	request.BlenderPath = ""
+	planned, err := e.Execute(context.Background(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	apply := request
+	apply.Apply = true
+	apply.InstallationID = planned.InstallationID
+	apply.OperationID = planned.OperationID
+	apply.ExpectedPlan = planned.Plan.PlanSHA256
+	installed, err := e.Execute(context.Background(), apply)
+	if err != nil || installed.State != "installed" {
+		t.Fatalf("install state=%s error=%v", installed.State, err)
+	}
+	request.Apply = true
+	repeated, err := e.Execute(context.Background(), request)
+	if err != nil || repeated.State != "installed" || repeated.InstallationID != installed.InstallationID || repeated.OperationID != installed.OperationID {
+		t.Fatalf("repeat state=%s error=%v", repeated.State, err)
+	}
+	m.inspection.BlenderCandidates[0].Path = filepath.Join(filepath.Dir(request.PythonPath), "replacement.exe")
+	conflict, err := e.Execute(context.Background(), request)
+	if err == nil || len(conflict.Problems) != 1 || conflict.Problems[0].Code != "installation-conflict" {
+		t.Fatalf("replacement discovery=%+v error=%v", conflict, err)
 	}
 }
 

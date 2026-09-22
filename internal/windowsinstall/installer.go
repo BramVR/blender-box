@@ -14,14 +14,7 @@ import (
 	"github.com/BramVR/blender-box/internal/target"
 )
 
-type taskSpec struct {
-	Name           string         `json:"name"`
-	OwnerSID       string         `json:"owner_sid"`
-	InstallationID InstallationID `json:"installation_id"`
-	Executable     string         `json:"executable"`
-	Arguments      string         `json:"arguments"`
-	Directory      string         `json:"directory"`
-}
+type taskSpec = TaskPlan
 type taskObservation struct {
 	Exists      bool   `json:"exists"`
 	Running     bool   `json:"running"`
@@ -306,7 +299,7 @@ func (e *installer) Execute(ctx context.Context, request Request) (Result, error
 		}
 	}
 	result.OperationID = request.OperationID
-	result.Plan = Plan{PlanSHA256: objectDigest(intent), ManifestSHA256: intent.ManifestSHA256, Files: intent.Files}
+	result.Plan = Plan{PlanSHA256: objectDigest(intent), ManifestSHA256: intent.ManifestSHA256, StateRoot: intent.Root, WindowsUser: intent.WindowsUser, Task: &intent.Task, Files: intent.Files}
 	if request.Operation == "remove" {
 		result.Plan.PlanSHA256 = objectDigest(struct {
 			Kind   string `json:"kind"`
@@ -526,7 +519,7 @@ func (e *installer) matchInstallation(request Request, hash SHA256, inspection I
 			}
 			continue
 		}
-		if r.Intent.ManifestSHA256 != hash || r.Intent.Blender.Path != request.BlenderPath || r.Intent.Python.Candidate.Path != request.PythonPath {
+		if r.Intent.ManifestSHA256 != hash || r.Intent.Blender.Path != inspection.BlenderCandidates[0].Path || r.Intent.Python.Candidate.Path != request.PythonPath {
 			return "", fmt.Errorf("task belongs to another immutable installation intent")
 		}
 		if match != "" {
