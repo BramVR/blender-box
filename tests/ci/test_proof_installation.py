@@ -1,6 +1,8 @@
 import copy
+from contextlib import contextmanager
 from dataclasses import asdict, replace
 import json
+import os
 import unittest
 import socket
 import threading
@@ -41,6 +43,91 @@ class InstallationTests(unittest.TestCase):
 
     def latest(self):
         return installation.read_chain(self.control, self.job, self.anchor, self.controller.files)
+
+    def native_attempt(self):
+        inv = model.Invocation("1" * 32, "2" * 32, native.UNIT_CGROUP + "/attempt-" + "3" * 32,
+                               301, 4001, 300, self.job.request.execution_id, 1, self.job.request.digest)
+        state = self.controller.load(self.control)
+        state["invocation"] = asdict(inv)
+        self.controller.save(self.control, state)
+        self.controller.files.publish(self.control / "authorization-0001.json", proof.canonical({
+            "schema_version": 1, "invocation": asdict(inv), "mode": "baseline"}), exclusive=False)
+        runtime = self.base.root / "runtime"
+        runtime.mkdir(mode=0o700)
+        intent = model.document(self.controller.files.read(self.control / "intent-0001.json"))
+        self.controller.files.publish(runtime / "pending.json", proof.canonical(intent))
+        group = self.base.root / "group"
+        group.mkdir(mode=0o700)
+        info = group.stat()
+        original = self.controller.files.read(self.control / "inputs/original-operator.json", 64 << 10)
+        value = {"variant": "host-install", "candidate_sha": self.job.request.candidate_sha,
+                 "driver_sha": self.job.request.driver_sha,
+                 "installer_inputs": {"operator.json": proof.digest(original)}}
+        policy = native.NativePolicy(value, "a" * 64)
+
+        class Ops:
+            empty = False
+
+            def boot(self):
+                return inv.boot_id
+
+            def unit(self):
+                return native.UnitState("inactive" if self.empty else "active", 0 if self.empty else inv.parent_pid,
+                                        inv.invocation_id, native.UNIT_CGROUP)
+
+            def whole_empty(self):
+                return self.empty
+
+            def process(self, pid):
+                return (native.Process(inv.parent_pid, 1, 3000, native.UNIT_CGROUP) if pid == inv.parent_pid
+                        else native.Process(inv.leader_pid, inv.parent_pid, inv.leader_start_ticks, inv.cgroup))
+
+            def supervisor_gone(self, receipt):
+                return self.empty
+
+            @contextmanager
+            def group(self, name):
+                self_outer.assertEqual(name, inv.cgroup)
+                fd = os.open(group, os.O_RDONLY | os.O_DIRECTORY)
+                try:
+                    yield fd
+                finally:
+                    os.close(fd)
+
+        self_outer = self
+        ops = Ops()
+        service = native.NativeService(policy, self.controller.files, ops)
+        with mock.patch.multiple(native, CONTROL=self.base.control, RUNTIME=runtime):
+            self.controller.files.publish(native.receipt_path(inv), proof.canonical(asdict(native.NativeReceipt(
+                inv, 3000, info.st_dev, info.st_ino))))
+        return service, ops, inv, runtime
+
+    def test_native_host_install_revalidates_retained_operator_for_status_and_recovery(self):
+        service, ops, inv, runtime = self.native_attempt()
+        self.controller.service = service
+        with mock.patch.multiple(native, CONTROL=self.base.control, RUNTIME=runtime):
+            self.assertEqual(self.controller.dispatch(baseline.command("status"))["phase"], "running")
+            original = self.controller.files.read(self.control / "inputs/original-operator.json", 64 << 10)
+            self.controller.files.publish(self.control / "inputs/original-operator.json", b"changed", exclusive=False)
+            with self.assertRaisesRegex(model.ControllerError, "request-not-authorized"):
+                service.inspect_attempt(self.job.request, 1, inv)
+            self.controller.files.publish(self.control / "inputs/original-operator.json", original, exclusive=False)
+            (self.control / "inputs/original-operator.json").unlink()
+            with self.assertRaises(OSError):
+                service.inspect_attempt(self.job.request, 1, inv)
+            self.controller.files.publish(self.control / "inputs/original-operator.json", original)
+            def stop_exact(expected):
+                self.assertEqual(expected, inv)
+                ops.empty = True
+                return True
+            def launch(control, state, mode):
+                self.assertEqual((control, mode), (self.control, "recover"))
+                return {**state, "phase": "starting"}
+            with mock.patch.object(service, "stop_exact", side_effect=stop_exact), \
+                 mock.patch.object(self.controller, "launch", side_effect=launch) as launched:
+                self.assertEqual(self.controller.dispatch(baseline.command("recover"))["phase"], "starting")
+                self.assertTrue(launched.called)
+                self.assertTrue(ops.empty)
 
     def exchange(self, frame):
         proposal = frame["record"]

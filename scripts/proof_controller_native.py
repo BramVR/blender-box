@@ -717,7 +717,11 @@ class NativeService:
                                      "mode": "baseline" if attempt == 1 else "recover"}, "native-attempt-invalid")
         original = model.ProofExecutionRequest.parse(model.document(self.files.read(CONTROL / request.execution_id / "request.json")))
         model.require(original == request, "native-attempt-invalid")
-        self.policy.admit(model.Command("start", request.execution_id, request))
+        operator_sha256 = None
+        if request.variant == "host-install":
+            original = self.files.read(CONTROL / request.execution_id / "inputs/original-operator.json", 64 << 10)
+            operator_sha256 = model.proof.digest(original)
+        self.policy.admit(model.Command("start", request.execution_id, request, operator_sha256))
         issuer_path = attempt_path(identity, "start-command")
         if self.files.exists(issuer_path):
             model.require(model.document(self.files.read(issuer_path)) == {"schema_version": 1,
