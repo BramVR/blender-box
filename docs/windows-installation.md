@@ -63,7 +63,7 @@ Save the returned installation ID, operation ID, and plan SHA-256. Apply require
 & $Bootstrap setup install --platform windows --state-root $StateRoot --runtime $Manifest --blender $Blender --python $Python --ssh-alias $SSHAlias --windows-user $WindowsUser --task-name $TaskName --installation $InstallationID --operation $InstallOperationID --expected-plan $PlanSHA256 --apply --target-out $TargetFile --json
 ```
 
-Require `state: installed` and inspect the returned problems and target publication result. Installation probes the private daemon before declaring success. It creates only an owned runtime and an exactly marked, limited-rights interactive task. Existing unowned tasks or files are conflicts, even when their names or bytes match.
+Require `state: installed` and inspect the returned problems and target publication result. Installation probes the private daemon before declaring success. Before that probe, setup seals the installed Python site-packages tree against writes by the limited task account. Blender can import the package without leaving bytecode in the installer-owned inventory. The receipt records the permission transition so an interrupted seal accepts only the original object or its exact planned permissions. Unknown files remain conflicts. It creates only an owned runtime and an exactly marked, limited-rights interactive task. Existing unowned tasks or files are conflicts, even when their names or bytes match.
 
 Copy the exported target to the developer machine through the trusted operator channel. Import it without editing its paths:
 

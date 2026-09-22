@@ -248,6 +248,18 @@ func (nativeMachine) securePath(ctx context.Context, path, sid string, missing b
 	_, err := powerShell(ctx, `Assert-Path $r.path $r.sid $r.missing; if(Test-Path -LiteralPath $r.path){Assert-Access $r.path $r.sid $true}`, map[string]any{"path": path, "sid": sid, "missing": missing})
 	return err
 }
+func (nativeMachine) secureSealedPath(ctx context.Context, path, sid string) error {
+	_, err := powerShell(ctx, `Assert-Path $r.path $r.sid $false; Assert-SealedRuntime $r.path $r.sid`, map[string]string{"path": path, "sid": sid})
+	return err
+}
+func (nativeMachine) sealPath(ctx context.Context, path, sid string) error {
+	_, err := powerShell(ctx, `Assert-Path $r.path $r.sid $false; Assert-Access $r.path $r.sid $true
+$acl=Get-Acl -LiteralPath $r.path -ErrorAction Stop
+$acl.SetSecurityDescriptorSddlForm((Sealed-Runtime-Security $r.sid))
+Set-Acl -LiteralPath $r.path -AclObject $acl -ErrorAction Stop
+Assert-SealedRuntime $r.path $r.sid`, map[string]string{"path": path, "sid": sid})
+	return err
+}
 func (nativeMachine) securePaths(ctx context.Context, paths []string, sid string) error {
 	_, err := powerShell(ctx, `foreach($path in $r.paths){Assert-Path $path $r.sid $false; Assert-Access $path $r.sid $true}`, map[string]any{"paths": paths, "sid": sid})
 	return err
@@ -359,6 +371,11 @@ function Assert-Access([string]$Path,[string]$Sid,[bool]$Managed){
  }
  if(($deny -band $required) -ne 0 -or ($allow -band $required) -ne $required){throw 'Configured limited account lacks required path rights'}
  if($Managed -and (Test-Path -LiteralPath $Path -PathType Container) -and -not $inherit){throw 'Managed directory lacks direct account inheritance for files and directories'}
+}
+function Sealed-Runtime-Security([string]$Sid){return ('O:'+$Sid+'G:'+$Sid+'D:P(A;;FA;;;SY)(A;;FA;;;BA)(A;;0x001300a9;;;'+$Sid+')')}
+function Assert-SealedRuntime([string]$Path,[string]$Sid){
+ $acl=Get-Acl -LiteralPath $Path -ErrorAction Stop
+ if((Canonical-Security $acl.Sddl) -cne (Canonical-Security (Sealed-Runtime-Security $Sid))){throw 'Sealed runtime ACL changed'}
 }
 function Task-Definition($service,$s){
  $d=$service.NewTask(0);$d.RegistrationInfo.Description='Blender Box installation '+$s.installation_id;$d.RegistrationInfo.Source=$s.installation_id;$d.RegistrationInfo.Author=$s.owner_sid;$d.RegistrationInfo.URI='\'+$s.name

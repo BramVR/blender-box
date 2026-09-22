@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Seal installed Windows Python packages before use so Blender imports cannot add bytecode that blocks repeated installation or exact removal; retain interrupted permission changes in installation ownership records.
+
 - Wait for the entire owned Windows installer process tree to finish within its operation deadline, allowing children to exit naturally after their root while retaining exact cancellation and cleanup proof.
 
 - Start Windows installer keepers through a temporary limited interactive Scheduled Task with durable launch receipts, a bounded deadline, and exact external task cleanup before releasing setup authority; preserve private worker Job cleanup across SSH disconnects.

@@ -24,6 +24,8 @@ type taskObservation struct {
 type machine interface {
 	inspect(context.Context, Request) (Inspection, error)
 	securePath(context.Context, string, string, bool) error
+	secureSealedPath(context.Context, string, string) error
+	sealPath(context.Context, string, string) error
 	securePaths(context.Context, []string, string) error
 	createDirectory(context.Context, string, string) error
 	task(context.Context, string, taskSpec) (taskObservation, error)
@@ -39,6 +41,7 @@ type installer struct {
 func NewLocal() Executor { return newOwner(nativeMachine{}) }
 
 type installIntent struct {
+	RuntimePolicy  string             `json:"runtime_policy,omitempty"`
 	TargetOut      string             `json:"target_out,omitempty"`
 	SaveTarget     string             `json:"save_target,omitempty"`
 	Root           string             `json:"root"`
@@ -51,6 +54,15 @@ type installIntent struct {
 	Task           taskSpec           `json:"task"`
 	Files          []File             `json:"files"`
 }
+
+const sealedRuntimePolicy = "sealed-site-packages-v1"
+
+const sitePackagesRoot = "runtime/python/Lib/site-packages"
+
+func packageComponent(path string) bool {
+	return path == sitePackagesRoot || strings.HasPrefix(path, sitePackagesRoot+"/")
+}
+
 type mutation struct {
 	Action string `json:"action"`
 	Path   string `json:"path"`
@@ -66,6 +78,7 @@ type installationReceipt struct {
 	Generation      uint64         `json:"generation"`
 	Files           []File         `json:"files"`
 	TaskFingerprint SHA256         `json:"task_fingerprint,omitempty"`
+	RuntimeSealed   bool           `json:"runtime_sealed,omitempty"`
 	Pending         *mutation      `json:"pending,omitempty"`
 	Deleted         []string       `json:"deleted"`
 }
@@ -109,6 +122,9 @@ func (r installationReceipt) validate() error {
 	if err != nil {
 		return err
 	}
+	if r.Intent.RuntimePolicy != "" && r.Intent.RuntimePolicy != sealedRuntimePolicy {
+		return fmt.Errorf("unknown runtime policy")
+	}
 	seen := map[string]bool{}
 	for _, file := range r.Files {
 		expected, exists := allowed[safepath.WindowsKey(file.Path)]
@@ -128,6 +144,10 @@ func (r installationReceipt) validate() error {
 	}
 	if r.Pending != nil {
 		switch r.Pending.Action {
+		case "seal":
+			if r.Intent.RuntimePolicy != sealedRuntimePolicy || r.Pending.Path != sitePackagesRoot || r.RuntimeSealed || len(r.Files) != len(r.Intent.Files) || r.TaskFingerprint != "" || len(r.Deleted) != 0 || r.State != "partial" {
+				return fmt.Errorf("invalid pending runtime seal")
+			}
 		case "create", "delete":
 			if _, exists := allowed[safepath.WindowsKey(r.Pending.Path)]; !exists {
 				return fmt.Errorf("invalid pending path")
@@ -151,7 +171,10 @@ func (r installationReceipt) validate() error {
 			return fmt.Errorf("deletion without owned component")
 		}
 	}
-	if r.State == "prepared" && (len(r.Files) != 0 || len(r.Deleted) != 0 || r.Pending != nil || r.TaskFingerprint != "") {
+	if r.Intent.RuntimePolicy == "" && r.RuntimeSealed || r.RuntimeSealed && len(r.Files) != len(r.Intent.Files) || r.Intent.RuntimePolicy == sealedRuntimePolicy && r.State == "installed" && !r.RuntimeSealed {
+		return fmt.Errorf("invalid runtime seal state")
+	}
+	if r.State == "prepared" && (len(r.Files) != 0 || len(r.Deleted) != 0 || r.Pending != nil || r.TaskFingerprint != "" || r.RuntimeSealed) {
 		return fmt.Errorf("invalid prepared state")
 	}
 	if r.State == "installed" && (len(r.Files) != len(r.Intent.Files) || r.TaskFingerprint == "" || r.Pending != nil || len(r.Deleted) != 0) {
@@ -241,7 +264,7 @@ func (e *installer) Execute(ctx context.Context, request Request) (Result, error
 			request.InstallationID = InstallationID(id)
 		}
 		runtime := filepath.Join(request.StateRoot, "installations", string(request.InstallationID), "runtime")
-		intent = installIntent{TargetOut: request.TargetOut, SaveTarget: request.SaveTarget, Root: request.StateRoot, OwnerSID: inspection.OwnerSID, SSHAlias: request.SSHAlias, WindowsUser: request.WindowsUser, Blender: inspection.BlenderCandidates[0], Python: *inspection.Python, ManifestSHA256: bundle.SHA256, Task: taskSpec{Name: request.TaskName, OwnerSID: inspection.OwnerSID, InstallationID: request.InstallationID, Executable: filepath.Join(runtime, "blender-box.exe"), Arguments: `host run-request --state-root "` + request.StateRoot + `"`, Directory: runtime}, Files: inventory(contents)}
+		intent = installIntent{RuntimePolicy: sealedRuntimePolicy, TargetOut: request.TargetOut, SaveTarget: request.SaveTarget, Root: request.StateRoot, OwnerSID: inspection.OwnerSID, SSHAlias: request.SSHAlias, WindowsUser: request.WindowsUser, Blender: inspection.BlenderCandidates[0], Python: *inspection.Python, ManifestSHA256: bundle.SHA256, Task: taskSpec{Name: request.TaskName, OwnerSID: inspection.OwnerSID, InstallationID: request.InstallationID, Executable: filepath.Join(runtime, "blender-box.exe"), Arguments: `host run-request --state-root "` + request.StateRoot + `"`, Directory: runtime}, Files: inventory(contents)}
 	}
 	if request.Operation == "install" {
 		if _, err := validateInventory(intent.Files); err != nil {
@@ -267,7 +290,11 @@ func (e *installer) Execute(ctx context.Context, request Request) (Result, error
 			return problem(result, "receipt-conflict", fmt.Errorf("installation owner or root identity changed"))
 		}
 		if request.Operation == "install" && objectDigest(intent) != receipt.IntentSHA256 {
-			return problem(result, "intent-conflict", fmt.Errorf("immutable installation intent changed; use a fresh installation"))
+			legacy := intent
+			legacy.RuntimePolicy = ""
+			if receipt.Intent.RuntimePolicy != "" || objectDigest(legacy) != receipt.IntentSHA256 {
+				return problem(result, "intent-conflict", fmt.Errorf("immutable installation intent changed; use a fresh installation"))
+			}
 		}
 		intent = receipt.Intent
 		result.OperationID = receipt.OperationID
@@ -608,18 +635,146 @@ func (e *installer) validateOwned(ctx context.Context, directory string, r insta
 			}
 			continue
 		}
-		_, err := observeFile(filepath.Join(directory, filepath.FromSlash(file.Path)), file)
+		destination := filepath.Join(directory, filepath.FromSlash(file.Path))
+		expected := file
+		if r.Pending != nil && r.Pending.Action == "seal" && packageComponent(file.Path) {
+			expected.Identity = ""
+		}
+		observed, err := observeFile(destination, expected)
 		if err != nil {
 			if os.IsNotExist(err) && r.Pending != nil && r.Pending.Action == "delete" && r.Pending.Path == file.Path {
 				continue
 			}
 			return err
 		}
-		if err = e.machine.securePath(ctx, filepath.Join(directory, filepath.FromSlash(file.Path)), r.Intent.OwnerSID, false); err != nil {
+		if err = e.secureRuntimeComponent(ctx, destination, r, file, observed); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+func sameFileObject(before, after string) bool {
+	last := strings.LastIndexByte(before, ':')
+	return last > 0 && strings.LastIndexByte(after, ':') > 0 && before[:last] == after[:strings.LastIndexByte(after, ':')]
+}
+
+func (e *installer) secureRuntimeComponent(ctx context.Context, path string, r installationReceipt, before, observed File) error {
+	if packageComponent(before.Path) && r.Pending != nil && r.Pending.Action == "seal" {
+		if observed.Identity == before.Identity {
+			return e.machine.securePath(ctx, path, r.Intent.OwnerSID, false)
+		}
+		if !sameFileObject(before.Identity, observed.Identity) {
+			return fmt.Errorf("runtime object changed during seal: %s", before.Path)
+		}
+		return e.machine.secureSealedPath(ctx, path, r.Intent.OwnerSID)
+	}
+	if packageComponent(before.Path) && r.RuntimeSealed {
+		return e.machine.secureSealedPath(ctx, path, r.Intent.OwnerSID)
+	}
+	return e.machine.securePath(ctx, path, r.Intent.OwnerSID, false)
+}
+
+func (e *installer) sealRuntime(ctx context.Context, directory, receiptPath string, r *installationReceipt) error {
+	if r.Intent.RuntimePolicy != sealedRuntimePolicy {
+		return nil
+	}
+	if r.RuntimeSealed {
+		return nil
+	}
+	if r.Pending == nil {
+		if len(r.Files) != len(r.Intent.Files) || r.TaskFingerprint != "" {
+			return fmt.Errorf("runtime seal requires complete unpublished installation")
+		}
+		if err := e.validateOwned(ctx, directory, *r); err != nil {
+			return err
+		}
+		r.Pending = &mutation{Action: "seal", Path: sitePackagesRoot}
+		r.State = "partial"
+		if err := saveReceipt(receiptPath, r, true); err != nil {
+			return err
+		}
+	}
+	if r.Pending.Action != "seal" {
+		return fmt.Errorf("runtime seal conflicts with pending mutation")
+	}
+	if err := e.validateOwned(ctx, directory, *r); err != nil {
+		return err
+	}
+	files := make([]File, 0, len(r.Files))
+	for _, file := range r.Files {
+		if packageComponent(file.Path) {
+			files = append(files, file)
+		}
+	}
+	sort.Slice(files, func(i, j int) bool {
+		if files[i].Kind != files[j].Kind {
+			return files[i].Kind == "file"
+		}
+		if files[i].Kind == "directory" {
+			if len(files[i].Path) != len(files[j].Path) {
+				return len(files[i].Path) > len(files[j].Path)
+			}
+		}
+		return files[i].Path < files[j].Path
+	})
+	for _, file := range files {
+		destination := filepath.Join(directory, filepath.FromSlash(file.Path))
+		planned := file
+		planned.Identity = ""
+		observed, err := observeFile(destination, planned)
+		if err != nil {
+			return err
+		}
+		if observed.Identity == file.Identity {
+			if err := e.hit("before-seal:" + file.Path); err != nil {
+				return err
+			}
+			if err := e.machine.sealPath(ctx, destination, r.Intent.OwnerSID); err != nil {
+				return err
+			}
+			if err := e.hit("after-seal:" + file.Path); err != nil {
+				return err
+			}
+			observed, err = observeFile(destination, planned)
+			if err != nil {
+				return err
+			}
+		}
+		if !sameFileObject(file.Identity, observed.Identity) || observed.Identity == file.Identity {
+			return fmt.Errorf("runtime seal changed object identity: %s", file.Path)
+		}
+		if err := e.machine.secureSealedPath(ctx, destination, r.Intent.OwnerSID); err != nil {
+			return err
+		}
+	}
+	if err := e.validateOwned(ctx, directory, *r); err != nil {
+		return err
+	}
+	sealed := make([]File, len(r.Files))
+	for i, file := range r.Files {
+		planned := file
+		if packageComponent(file.Path) {
+			planned.Identity = ""
+		}
+		observed, err := observeFile(filepath.Join(directory, filepath.FromSlash(file.Path)), planned)
+		if err != nil {
+			return fmt.Errorf("runtime changed before seal commit: %s: %w", file.Path, err)
+		}
+		if packageComponent(file.Path) {
+			if !sameFileObject(file.Identity, observed.Identity) || observed.Identity == file.Identity {
+				return fmt.Errorf("runtime seal changed object identity: %s", file.Path)
+			}
+			if err := e.machine.secureSealedPath(ctx, filepath.Join(directory, filepath.FromSlash(file.Path)), r.Intent.OwnerSID); err != nil {
+				return err
+			}
+		}
+		sealed[i] = observed
+	}
+	r.Files = sealed
+	r.Pending = nil
+	r.RuntimeSealed = true
+	return saveReceipt(receiptPath, r, true)
 }
 func (e *installer) install(ctx context.Context, directory, path string, r *installationReceipt, contents map[string][]byte) error {
 	for _, file := range r.Intent.Files {
@@ -672,6 +827,9 @@ func (e *installer) install(ctx context.Context, directory, path string, r *inst
 			return err
 		}
 	}
+	if err := e.sealRuntime(ctx, directory, path, r); err != nil {
+		return err
+	}
 	if err := e.machine.probe(ctx, filepath.Join(directory, "runtime", "blendersessiond.exe"), filepath.Join(directory, "probe-state")); err != nil {
 		return err
 	}
@@ -717,6 +875,11 @@ func (e *installer) install(ctx context.Context, directory, path string, r *inst
 	return saveReceipt(path, r, true)
 }
 func (e *installer) remove(ctx context.Context, directory, path string, r *installationReceipt) error {
+	if r.Pending != nil && r.Pending.Action == "seal" {
+		if err := e.sealRuntime(ctx, directory, path, r); err != nil {
+			return err
+		}
+	}
 	task, err := e.machine.task(ctx, "inspect", r.Intent.Task)
 	if err != nil {
 		return err
@@ -811,7 +974,7 @@ func (e *installer) remove(ctx context.Context, directory, path string, r *insta
 			return err
 		}
 		if !missing {
-			if err := e.machine.securePath(ctx, destination, r.Intent.OwnerSID, false); err != nil {
+			if err := e.secureRuntimeComponent(ctx, destination, *r, file, file); err != nil {
 				return err
 			}
 			if err := removeOwnedFile(destination, file); err != nil {

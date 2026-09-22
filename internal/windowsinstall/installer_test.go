@@ -24,6 +24,8 @@ type fakeMachine struct {
 	taskSpec        taskSpec
 	taskCalls       []string
 	probes          int
+	probeHook       func()
+	sealCalls       []string
 	probeErr        error
 	taskHook        func()
 	taskMutationErr error
@@ -40,6 +42,16 @@ func (m *fakeMachine) inspect(_ context.Context, r Request) (Inspection, error) 
 }
 func (m *fakeMachine) securePath(_ context.Context, path, _ string, missing bool) error {
 	return checkPath(path, missing)
+}
+func (m *fakeMachine) secureSealedPath(_ context.Context, path, _ string) error {
+	if err := checkPath(path, false); err != nil {
+		return err
+	}
+	return fakeSealed(path)
+}
+func (m *fakeMachine) sealPath(_ context.Context, path, _ string) error {
+	m.sealCalls = append(m.sealCalls, path)
+	return fakeSeal(path)
 }
 func (m *fakeMachine) securePaths(ctx context.Context, paths []string, sid string) error {
 	for _, path := range paths {
@@ -99,6 +111,9 @@ func (m *fakeMachine) task(_ context.Context, action string, spec taskSpec) (tas
 }
 func (m *fakeMachine) probe(_ context.Context, broker, _ string) error {
 	m.probes++
+	if m.probeHook != nil {
+		m.probeHook()
+	}
 	for _, relative := range []string{"blendersessiond.exe", "python/Scripts/python.exe", "python/pyvenv.cfg", "python/Lib/site-packages/blendersessiond/__main__.py", "python/Lib/site-packages/blendersessiond/windows_job.py"} {
 		if _, err := os.Stat(filepath.Join(filepath.Dir(broker), filepath.FromSlash(relative))); err != nil {
 			return fmt.Errorf("broker prerequisite unavailable: %w", err)
@@ -240,6 +255,186 @@ func TestPreviewInstallRepeatRemovePreservesAuthority(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(r.StateRoot, "installations", string(installed.InstallationID), "receipt.json")); err != nil {
 		t.Fatal("missing tombstone")
+	}
+}
+
+func TestSitePackagesSealPrecedesProbeAndKeepsOtherRuntimeIdentities(t *testing.T) {
+	e, m, r := installFixture(t)
+	r.Apply = true
+	id, _ := newID("bbxi_")
+	r.InstallationID = InstallationID(id)
+	receiptPath := filepath.Join(r.StateRoot, "installations", id, "receipt.json")
+	pre := map[string]string{}
+	e.checkpoint = func(point string) error {
+		if point != "before-seal:"+sitePackagesRoot+"/blendersessiond/__main__.py" {
+			return nil
+		}
+		receipt, err := readReceipt(receiptPath)
+		if err != nil || receipt.Pending == nil || receipt.Pending.Action != "seal" {
+			return fmt.Errorf("seal intent missing before mutation: %v", err)
+		}
+		for _, file := range receipt.Files {
+			if !packageComponent(file.Path) {
+				pre[file.Path] = file.Identity
+			}
+		}
+		return nil
+	}
+	m.probeHook = func() {
+		receipt, err := readReceipt(receiptPath)
+		if err != nil || !receipt.RuntimeSealed || receipt.Pending != nil || m.current.Exists {
+			t.Errorf("probe preceded durable seal or task was published early: receipt=%+v error=%v", receipt, err)
+		}
+	}
+	installed, err := e.Execute(context.Background(), r)
+	if err != nil || installed.State != "installed" || m.probes != 1 || len(pre) == 0 {
+		t.Fatalf("install=%+v error=%v pre=%d", installed, err, len(pre))
+	}
+	receipt, err := readReceipt(receiptPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, file := range receipt.Files {
+		if old, exists := pre[file.Path]; exists && file.Identity != old {
+			t.Fatalf("non-package identity changed: %s", file.Path)
+		}
+	}
+	for _, path := range m.sealCalls {
+		relative, err := filepath.Rel(filepath.Dir(receiptPath), path)
+		if err != nil || !packageComponent(filepath.ToSlash(relative)) {
+			t.Fatalf("sealed outside site-packages: %s", path)
+		}
+	}
+}
+
+func TestSitePackagesSealRecoveryRejectsUnknownAndChangedState(t *testing.T) {
+	const selected = sitePackagesRoot + "/blendersessiond-1.0.dist-info/METADATA"
+	for _, change := range []string{"none", "unknown-child", "third-acl", "replaced-file"} {
+		t.Run(change, func(t *testing.T) {
+			e, m, r := installFixture(t)
+			r.Apply = true
+			id, _ := newID("bbxi_")
+			r.InstallationID = InstallationID(id)
+			e.checkpoint = func(point string) error {
+				if point == "after-seal:"+selected {
+					return fmt.Errorf("interrupted after one ACL change")
+				}
+				return nil
+			}
+			partial, err := e.Execute(context.Background(), r)
+			if err == nil || partial.State != "partial" || m.probes != 0 || m.current.Exists {
+				t.Fatalf("interrupted seal=%+v error=%v", partial, err)
+			}
+			receiptPath := filepath.Join(r.StateRoot, "installations", id, "receipt.json")
+			receipt, err := readReceipt(receiptPath)
+			if err != nil || receipt.Pending == nil || receipt.Pending.Action != "seal" || receipt.RuntimeSealed {
+				t.Fatalf("seal authority lost: %+v %v", receipt, err)
+			}
+			packageDir := filepath.Join(filepath.Dir(receiptPath), filepath.FromSlash(sitePackagesRoot))
+			selectedPath := filepath.Join(filepath.Dir(receiptPath), filepath.FromSlash(selected))
+			switch change {
+			case "unknown-child":
+				err = os.WriteFile(filepath.Join(packageDir, "unknown.pyc"), []byte("keep"), 0600)
+			case "third-acl":
+				err = fakeThirdACL(selectedPath)
+			case "replaced-file":
+				data, readErr := os.ReadFile(selectedPath)
+				if readErr != nil {
+					t.Fatal(readErr)
+				}
+				err = os.Rename(selectedPath, selectedPath+".original")
+				if err == nil {
+					err = os.WriteFile(selectedPath, data, 0640)
+				}
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			e.checkpoint = nil
+			result, err := e.Execute(context.Background(), r)
+			if change == "none" {
+				if err != nil || result.State != "installed" || m.probes != 1 || !m.current.Exists {
+					t.Fatalf("mixed ACL recovery=%+v error=%v", result, err)
+				}
+				return
+			}
+			if err == nil || m.probes != 0 || m.current.Exists {
+				t.Fatalf("changed runtime accepted: %+v error=%v", result, err)
+			}
+		})
+	}
+}
+
+func TestSitePackagesSealIntentSurvivesBeforeMutation(t *testing.T) {
+	e, m, r := installFixture(t)
+	r.Apply = true
+	id, _ := newID("bbxi_")
+	r.InstallationID = InstallationID(id)
+	point := "before-seal:" + sitePackagesRoot + "/blendersessiond-1.0.dist-info/METADATA"
+	e.checkpoint = func(at string) error {
+		if at == point {
+			return fmt.Errorf("interrupted before ACL change")
+		}
+		return nil
+	}
+	partial, err := e.Execute(context.Background(), r)
+	if err == nil || partial.State != "partial" || m.probes != 0 {
+		t.Fatalf("before-seal interruption=%+v error=%v", partial, err)
+	}
+	receiptPath := filepath.Join(r.StateRoot, "installations", id, "receipt.json")
+	receipt, err := readReceipt(receiptPath)
+	if err != nil || receipt.Pending == nil || receipt.Pending.Action != "seal" || receipt.RuntimeSealed {
+		t.Fatalf("durable pre-seal receipt=%+v error=%v", receipt, err)
+	}
+	for _, file := range receipt.Files {
+		observed, err := observeFile(filepath.Join(filepath.Dir(receiptPath), filepath.FromSlash(file.Path)), file)
+		if err != nil || observed.Identity != file.Identity {
+			t.Fatalf("pre-seal identity changed: %s: %v", file.Path, err)
+		}
+	}
+	e.checkpoint = nil
+	installed, err := e.Execute(context.Background(), r)
+	if err != nil || installed.State != "installed" || m.probes != 1 {
+		t.Fatalf("before-seal recovery=%+v error=%v", installed, err)
+	}
+}
+
+func TestLegacyRuntimeIntentRemainsRepeatableAndRemovable(t *testing.T) {
+	e, m, r := installFixture(t)
+	r.Apply = true
+	id, _ := newID("bbxi_")
+	r.InstallationID = InstallationID(id)
+	e.checkpoint = func(point string) error {
+		if point == "before-seal:"+sitePackagesRoot+"/blendersessiond-1.0.dist-info/METADATA" {
+			return fmt.Errorf("stop before sealing")
+		}
+		return nil
+	}
+	if result, err := e.Execute(context.Background(), r); err == nil || result.State != "partial" {
+		t.Fatalf("pre-seal installation=%+v error=%v", result, err)
+	}
+	receiptPath := filepath.Join(r.StateRoot, "installations", id, "receipt.json")
+	receipt, err := readReceipt(receiptPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	receipt.Intent.RuntimePolicy = ""
+	receipt.IntentSHA256 = objectDigest(receipt.Intent)
+	receipt.Pending = nil
+	if err := saveReceipt(receiptPath, &receipt, true); err != nil {
+		t.Fatal(err)
+	}
+	e.checkpoint = nil
+	installed, err := e.Execute(context.Background(), r)
+	if err != nil || installed.State != "installed" || len(m.sealCalls) != 0 {
+		t.Fatalf("legacy repeat=%+v error=%v sealCalls=%d", installed, err, len(m.sealCalls))
+	}
+	r.Operation = "remove"
+	r.OperationID = ""
+	r.RuntimePath = ""
+	removed, err := e.Execute(context.Background(), r)
+	if err != nil || removed.State != "removed" {
+		t.Fatalf("legacy removal=%+v error=%v", removed, err)
 	}
 }
 
