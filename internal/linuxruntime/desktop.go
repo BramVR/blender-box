@@ -373,8 +373,14 @@ func validateUnitFacts(facts map[string]string, root, executable, home, unit str
 			return fmt.Errorf("Linux unit effective %s mismatch", key)
 		}
 	}
-	for _, key := range []string{"DropInPaths", "EnvironmentFiles", "ExecStartPre", "ExecStartPost", "ExecCondition", "ExecStop", "ExecStopPost", "PartOf", "Wants", "BindsTo"} {
+	for _, key := range []string{"DropInPaths", "PartOf", "Wants", "BindsTo"} {
 		if value, exists := facts[key]; !exists || value != "" {
+			return fmt.Errorf("Linux unit effective %s must be empty", key)
+		}
+	}
+	// systemd 255 omits empty struct arrays even with show --all.
+	for _, key := range []string{"EnvironmentFiles", "ExecStartPre", "ExecStartPost", "ExecCondition", "ExecStop", "ExecStopPost"} {
+		if facts[key] != "" {
 			return fmt.Errorf("Linux unit effective %s must be empty", key)
 		}
 	}

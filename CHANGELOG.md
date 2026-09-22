@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Accept systemd 255’s omitted empty service-hook and environment-file arrays during Linux setup verification while rejecting populated overrides.
 - Recognize GNOME Xorg sessions when GDM leaves desktop metadata empty, using exact-session Xorg identity and display socket ownership.
 - Accept official Blender 5.2.0 LTS version banners on Linux and report the normalized version as 5.2.0.
 - Preserve verified Run request and Session identity in failed onboarding proof reports after recovery.

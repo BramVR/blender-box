@@ -54,10 +54,38 @@ Slice=app.slice
 			}
 		})
 	}
+	specialArrays := []string{"EnvironmentFiles", "ExecStartPre", "ExecStartPost", "ExecCondition", "ExecStop", "ExecStopPost"}
+	for _, key := range specialArrays {
+		t.Run(key+" omitted when empty", func(t *testing.T) {
+			facts := properties([]byte(fixture))
+			delete(facts, key)
+			if err := validate(facts); err != nil {
+				t.Fatalf("rejected empty systemd 255 array %s: %v", key, err)
+			}
+		})
+		t.Run(key+" populated", func(t *testing.T) {
+			facts := properties([]byte(fixture))
+			facts[key] = "/home/operator/unexpected"
+			if err := validate(facts); err == nil {
+				t.Fatalf("accepted populated %s", key)
+			}
+		})
+	}
 	facts := properties([]byte(fixture))
-	delete(facts, "DropInPaths")
-	if err := validate(facts); err == nil {
-		t.Fatal("accepted incomplete unit inspection")
+	for _, key := range specialArrays {
+		delete(facts, key)
+	}
+	if err := validate(facts); err != nil {
+		t.Fatalf("rejected native systemd 255 empty-array output: %v", err)
+	}
+	for _, key := range []string{"DropInPaths", "PartOf", "Wants", "BindsTo", "ExecStart", "LoadState", "FragmentPath", "Names", "Type", "ExitType", "RemainAfterExit", "Restart", "KillMode", "NeedDaemonReload", "Slice", "Requires", "UnitFileState", "Environment"} {
+		t.Run(key+" missing", func(t *testing.T) {
+			facts := properties([]byte(fixture))
+			delete(facts, key)
+			if err := validate(facts); err == nil {
+				t.Fatalf("accepted incomplete unit inspection without %s", key)
+			}
+		})
 	}
 }
 func TestGDMDisplayFDAndExactSessionXorgBinding(t *testing.T) {
