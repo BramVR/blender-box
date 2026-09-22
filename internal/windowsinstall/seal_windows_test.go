@@ -27,7 +27,7 @@ func TestNativeSealedRuntimeACLAndExactRemoval(t *testing.T) {
 	}
 	contents := []byte("sealed runtime test\n")
 	module := filepath.Join(packageDir, "__main__.py")
-	if err := os.WriteFile(module, contents, 0600); err != nil {
+	if err := publishBytes(module, root, contents, false, nil); err != nil {
 		t.Fatal(err)
 	}
 	files := []File{

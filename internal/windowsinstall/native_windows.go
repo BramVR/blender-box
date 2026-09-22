@@ -254,16 +254,15 @@ func (nativeMachine) secureSealedPath(ctx context.Context, path, sid string) err
 }
 func (nativeMachine) sealPath(ctx context.Context, path, sid string) error {
 	_, err := powerShell(ctx, `Assert-Path $r.path $r.sid $false; Assert-Access $r.path $r.sid $true
-$before=Get-Acl -LiteralPath $r.path -ErrorAction Stop
-if($before.GetOwner([Security.Principal.SecurityIdentifier]).Value -ne $r.sid -or $before.GetGroup([Security.Principal.SecurityIdentifier]).Value -ne $r.sid){throw 'Runtime owner or group changed before seal'}
+$sections=[Security.AccessControl.AccessControlSections]::Access -bor [Security.AccessControl.AccessControlSections]::Owner -bor [Security.AccessControl.AccessControlSections]::Group
 $item=Get-Item -Force -LiteralPath $r.path -ErrorAction Stop
 if($item -is [IO.DirectoryInfo]){
  $acl=[Security.AccessControl.DirectorySecurity]::new()
- $acl.SetSecurityDescriptorSddlForm((Sealed-Runtime-Security $r.sid),[Security.AccessControl.AccessControlSections]::Access)
+ $acl.SetSecurityDescriptorSddlForm((Sealed-Runtime-Security $r.sid),$sections)
  [IO.Directory]::SetAccessControl($r.path,$acl)
 }else{
  $acl=[Security.AccessControl.FileSecurity]::new()
- $acl.SetSecurityDescriptorSddlForm((Sealed-Runtime-Security $r.sid),[Security.AccessControl.AccessControlSections]::Access)
+ $acl.SetSecurityDescriptorSddlForm((Sealed-Runtime-Security $r.sid),$sections)
  [IO.File]::SetAccessControl($r.path,$acl)
 }
 Assert-SealedRuntime $r.path $r.sid`, map[string]string{"path": path, "sid": sid})
