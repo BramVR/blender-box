@@ -21,6 +21,13 @@ import time
 import zlib
 
 
+INSTALLER_LAUNCHER = {
+    "kind": "per-execution-task", "name_template": "BlenderBox-Setup-<execution-token>",
+    "action": "<pinned-bootstrap> __setup-keeper <private-execution-directory> <request-sha256>",
+    "principal": "same-SID limited interactive", "triggers": "none", "instances": "IgnoreNew",
+    "deadline_seconds": 300, "execution_time_limit": "PT6M",
+    "cleanup": "external exact inactive task deletion after keeper exit and worker settlement",
+}
 REQUIRED = ("preparation", "readiness", "scenario", "evidence", "recovery", "cleanup")
 NAMED_REQUIRED = ("target-catalog", "target-binding", "target-restoration", "target-forget")
 INSTALL_REQUIRED = ("install-inspect", "install-preview", "install-apply", "install-target",
@@ -1039,9 +1046,20 @@ try {
                 and "python" in inspection and inspection["python"]["candidate"]["path"] == selected["python"],
                 "installer-selection-changed")
     plan = value.get("plan")
-    require(isinstance(plan, dict) and set(plan) <= {"plan_sha256", "manifest_sha256", "files"}, "installer-plan-invalid")
+    require(isinstance(plan, dict) and set(plan) <= {"plan_sha256", "manifest_sha256", "files", "state_root", "windows_user", "task", "execution_launcher"}, "installer-plan-invalid")
     if operation != "inspect":
-        require(matches(HASH, plan.get("plan_sha256")), "installer-plan-invalid")
+        require(matches(HASH, plan.get("plan_sha256")) and plan.get("execution_launcher") == INSTALLER_LAUNCHER,
+                "installer-plan-invalid")
+    if "state_root" in plan:
+        require(plan["state_root"] == selected["state_root"], "installer-plan-invalid")
+    if "windows_user" in plan:
+        require(plan["windows_user"] == operator.connection["windows_user"], "installer-plan-invalid")
+    if "task" in plan:
+        runtime = windows_path(selected["state_root"]) / "installations" / selected["id"] / "runtime"
+        require(plan["task"] == {"name": selected["task_name"], "owner_sid": operator.expected["identity_sid"],
+                                 "installation_id": selected["id"], "executable": str(runtime / "blender-box.exe"),
+                                 "arguments": 'host run-request --state-root "' + selected["state_root"] + '"',
+                                 "directory": str(runtime)}, "installer-plan-invalid")
     if operation == "install":
         require(plan.get("manifest_sha256") == operator.manifest_sha256, "installer-manifest-mismatch")
     for inventory in (plan.get("files"), value.get("files")):
@@ -1076,13 +1094,14 @@ try {
 def validate_installer_execution(result, *, terminal=False):
     execution = result.get("execution")
     require(isinstance(execution, dict) and set(execution) <= {"token", "request_sha256", "deadline", "state", "tree_cleanup",
-                                                               "task_mutation", "cancel_requested", "keeper", "worker", "process_state", "fence_state"}
+                                                               "task_mutation", "launcher_cleanup", "cancel_requested", "keeper", "worker", "process_state", "fence_state"}
             and matches(r"bbxe_[a-f0-9]{32}", execution.get("token"))
             and matches(HASH, execution.get("request_sha256"))
             and execution.get("state") in {"running", "terminal", "unknown"}
             and execution.get("process_state") in {"started", "not-started", "unknown"}
             and execution.get("fence_state") in {"held", "released"}
             and execution.get("tree_cleanup") in {"known", "unknown"}
+            and execution.get("launcher_cleanup") in {"known", "unknown"}
             and execution.get("task_mutation") in {"settled", "unknown"}
             and type(execution.get("cancel_requested")) is bool, "installer-execution-invalid")
     try:
@@ -1100,11 +1119,12 @@ def validate_installer_execution(result, *, terminal=False):
                 and type(identity["pid"]) is int and 0 < identity["pid"] <= 2**32 - 1
                 and matches(r"[1-9][0-9]{0,19}", identity["created_filetime"]), "installer-execution-invalid")
     if execution["process_state"] == "not-started":
-        require(execution["state"] == "terminal" and result["state"] == "partial" and "worker" not in execution,
+        require(execution["tree_cleanup"] == "known" and result["state"] == "partial" and "worker" not in execution,
                 "installer-execution-invalid")
     if execution["state"] == "terminal" or terminal:
         require(execution["state"] == "terminal" and execution["tree_cleanup"] == "known"
-                and execution["task_mutation"] == "settled" and result["completion"] == "known", "installer-state-unknown")
+                and execution["task_mutation"] == "settled" and execution["launcher_cleanup"] == "known"
+                and result["completion"] == "known", "installer-state-unknown")
     if terminal:
         require(execution["fence_state"] == "released", "installer-state-unknown")
     return execution
@@ -1128,7 +1148,9 @@ def recover_installer(commands, operator, operation_id, expected_plan, *, target
     cancellation_attempted = False
     while execution["state"] != "terminal" or execution["fence_state"] != "released":
         require(time.monotonic() < deadline, "installer-stop-unsettled")
-        if not cancellation_attempted or execution["state"] == "terminal" and execution["fence_state"] == "held":
+        if (not cancellation_attempted or execution["state"] == "terminal" and execution["fence_state"] == "held"
+                or execution["tree_cleanup"] == "known" and execution["task_mutation"] == "settled"
+                and execution["launcher_cleanup"] == "unknown"):
             cancellation_attempted = True
             try:
                 installer_call(commands, operator, "stop", operation_id=operation_id, apply=True,

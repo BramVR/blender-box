@@ -1303,7 +1303,8 @@ class FakeInstallCommands(FakeCommands):
         result = {"schema_version": 1, "installation_id": INSTALL_ID, "state": self.installation_state, "completion": "known",
                   "inspection": {"owner_sid": self.operator.expected["identity_sid"], "root_identity": "test-volume:file-id",
                                  "blender_candidates": [candidate(self.operator.installation["blender"])], "python": python},
-                  "plan": {"plan_sha256": plan_hash, "manifest_sha256": self.operator.manifest_sha256, "files": files},
+                  "plan": {"plan_sha256": plan_hash, "manifest_sha256": self.operator.manifest_sha256, "files": files,
+                           "execution_launcher": dict(proof.INSTALLER_LAUNCHER)},
                   "files": [dict(item, identity="test-volume:" + item["path"]) for item in files] if self.receipt.exists() else [],
                   "retained": [], "problems": [], "target_publication": {"status": "not-requested"}}
         if "--target-out" in cli:
@@ -1341,7 +1342,7 @@ class FakeInstallCommands(FakeCommands):
         if apply:
             result["execution"] = {"token": "bbxe_" + ("b" if operation == "install" else "c") * 32,
                                    "request_sha256": "d" * 64, "deadline": "2026-09-06T12:00:00Z",
-                                   "state": "terminal", "process_state": "started", "fence_state": "released", "tree_cleanup": "known", "task_mutation": "settled",
+                                   "state": "terminal", "process_state": "started", "fence_state": "released", "tree_cleanup": "known", "task_mutation": "settled", "launcher_cleanup": "known",
                                    "cancel_requested": False, "keeper": {"pid": 101, "created_filetime": "1001"},
                                    "worker": {"pid": 102, "created_filetime": "1002"}}
             self.execution_results[operation_id] = copy.deepcopy(result)
@@ -1367,7 +1368,8 @@ class InstallerRecoveryTests(unittest.TestCase):
         execution = {"token": "bbxe_" + "b" * 32, "request_sha256": "d" * 64,
                      "deadline": "2026-09-06T12:00:00Z", "state": state, "process_state": process_state,
                      "fence_state": fence, "tree_cleanup": "known" if state == "terminal" else "unknown",
-                     "task_mutation": "settled" if state == "terminal" else "unknown", "cancel_requested": False}
+                     "task_mutation": "settled" if state == "terminal" else "unknown",
+                     "launcher_cleanup": "known" if state == "terminal" else "unknown", "cancel_requested": False}
         if process_state != "unknown":
             execution["keeper"] = {"pid": 101, "created_filetime": "1001"}
         if process_state == "started":
@@ -1489,6 +1491,19 @@ class InstallerRecoveryTests(unittest.TestCase):
         result = self.recover([("status", pending), ("stop", pending), ("status", held),
                                ("stop", terminal), ("status", terminal)])
         self.assertEqual(result, terminal)
+
+    def test_worker_terminal_reconciles_launcher_after_cancellation(self):
+        running = self.observation("running", fence="held")
+        awaiting_cleanup = self.observation("unknown", process_state="started", fence="held",
+                                            tree_cleanup="known", task_mutation="settled")
+        terminal = self.observation()
+        result = self.recover([("status", running), ("stop", running), ("status", awaiting_cleanup),
+                               ("stop", terminal), ("status", terminal)])
+        self.assertEqual(result, terminal)
+
+    def test_terminal_requires_launcher_cleanup(self):
+        with self.assertRaisesRegex(proof.ProofError, "installer-state-unknown"):
+            proof.validate_installer_execution(self.observation(launcher_cleanup="unknown"), terminal=True)
 
     def test_released_terminal_needs_no_stop(self):
         terminal = self.observation()

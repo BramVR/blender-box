@@ -117,54 +117,6 @@ func TestNativeOwnerHelper(t *testing.T) {
 		}
 		// ExitProcess closes the sole Job handle without publishing terminal proof.
 		os.Exit(0)
-	case "breakaway", "nested-breakaway":
-		null, err := os.OpenFile(os.DevNull, os.O_RDWR, 0)
-		if err != nil {
-			os.Exit(89)
-		}
-		defer null.Close()
-		var job *nativeJob
-		childMode := "mutate"
-		flags := uint32(0x01000000 | 0x00000008 | 0x00000004)
-		if mode == "nested-breakaway" {
-			job, err = newNativeJob()
-			if err != nil {
-				os.Exit(90)
-			}
-			defer job.close()
-			limits := nativeExtendedLimits{Basic: nativeBasicLimits{Flags: 0x00002000 | 0x00000800}}
-			if ok, _, _ := nativeSetJob.Call(uintptr(job.handle), 9, uintptr(unsafe.Pointer(&limits)), unsafe.Sizeof(limits)); ok == 0 {
-				os.Exit(91)
-			}
-			childMode = "breakaway"
-			flags = 0x00000004
-		}
-		spawn, err := job.startFlags(os.Args[0], ownerNativeArgs(childMode, directory), os.Environ(), [3]*os.File{null, os.Stdout, os.Stderr}, flags)
-		if spawn.Info.Process == 0 {
-			_ = json.NewEncoder(os.Stdout).Encode(map[string]bool{"detached": false})
-			os.Exit(0)
-		}
-		defer syscall.CloseHandle(spawn.Info.Process)
-		defer syscall.CloseHandle(spawn.Info.Thread)
-		if err == nil && mode == "breakaway" {
-			err = requireDetachedKeeper(spawn.Info.Process)
-		}
-		if err != nil {
-			_ = syscall.TerminateProcess(spawn.Info.Process, 1)
-			_, _ = syscall.WaitForSingleObject(spawn.Info.Process, 5000)
-			_ = json.NewEncoder(os.Stdout).Encode(map[string]bool{"detached": false})
-			os.Exit(0)
-		}
-		if result, _, _ := nativeResumeThread.Call(uintptr(spawn.Info.Thread)); result == 0xffffffff {
-			os.Exit(92)
-		}
-		if wait, err := syscall.WaitForSingleObject(spawn.Info.Process, 10000); err != nil || wait != syscall.WAIT_OBJECT_0 {
-			os.Exit(93)
-		}
-		if mode == "breakaway" {
-			_ = json.NewEncoder(os.Stdout).Encode(map[string]bool{"detached": true})
-		}
-		os.Exit(0)
 	}
 	os.Exit(94)
 }
@@ -259,72 +211,6 @@ func TestNativeOwnerSelfDeadlineSettlesNestedDescendants(t *testing.T) {
 	case <-exited:
 	default:
 		t.Fatal("deadline lacks retained Job tree proof")
-	}
-}
-
-func TestNativeKeeperBreakawayRequiresLeavingEveryAncestorJob(t *testing.T) {
-	self, _ := syscall.GetCurrentProcess()
-	if err := requireDetachedKeeper(self); err != nil {
-		t.Skip("native breakaway fixture requires a test runner outside ambient Jobs")
-	}
-	for _, mode := range []string{"allowed", "denied", "nested"} {
-		t.Run(mode, func(t *testing.T) {
-			directory := t.TempDir()
-			job, err := newNativeJob()
-			if err != nil {
-				t.Fatal(err)
-			}
-			defer job.close()
-			if mode == "allowed" {
-				limits := nativeExtendedLimits{Basic: nativeBasicLimits{Flags: 0x00002000 | 0x00000800}}
-				if ok, _, err := nativeSetJob.Call(uintptr(job.handle), 9, uintptr(unsafe.Pointer(&limits)), unsafe.Sizeof(limits)); ok == 0 {
-					t.Fatal(err)
-				}
-			}
-			null, err := os.OpenFile(os.DevNull, os.O_RDWR, 0)
-			if err != nil {
-				t.Fatal(err)
-			}
-			defer null.Close()
-			read, write, err := os.Pipe()
-			if err != nil {
-				t.Fatal(err)
-			}
-			defer read.Close()
-			defer write.Close()
-			executable, _ := os.Executable()
-			helperMode := "breakaway"
-			if mode == "nested" {
-				helperMode = "nested-breakaway"
-			}
-			spawn, err := job.start(executable, ownerNativeArgs(helperMode, directory), ownerNativeEnvironment(t), [3]*os.File{null, write, null})
-			_ = write.Close()
-			if spawn.Info.Process == 0 {
-				t.Fatal(err)
-			}
-			defer syscall.CloseHandle(spawn.Info.Process)
-			defer syscall.CloseHandle(spawn.Info.Thread)
-			defer job.terminateAndWait()
-			if err != nil {
-				t.Fatal(err)
-			}
-			if wait, err := syscall.WaitForSingleObject(spawn.Info.Process, 15000); err != nil || wait != syscall.WAIT_OBJECT_0 {
-				t.Fatalf("breakaway fixture wait=%d err=%v", wait, err)
-			}
-			var result struct {
-				Detached bool `json:"detached"`
-			}
-			if err := json.NewDecoder(read).Decode(&result); err != nil {
-				t.Fatal(err)
-			}
-			if result.Detached != (mode == "allowed") {
-				t.Fatalf("breakaway %s detached=%v", mode, result.Detached)
-			}
-			_, mutationErr := os.Stat(filepath.Join(directory, "mutated"))
-			if mode != "allowed" && !os.IsNotExist(mutationErr) {
-				t.Fatal("blocked keeper mutated before leaving all Jobs")
-			}
-		})
 	}
 }
 

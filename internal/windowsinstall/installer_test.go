@@ -18,6 +18,7 @@ import (
 )
 
 type fakeMachine struct {
+	launchers       map[string]taskObservation
 	inspection      Inspection
 	current         taskObservation
 	taskSpec        taskSpec
@@ -40,10 +41,40 @@ func (m *fakeMachine) inspect(_ context.Context, r Request) (Inspection, error) 
 func (m *fakeMachine) securePath(_ context.Context, path, _ string, missing bool) error {
 	return checkPath(path, missing)
 }
+func (m *fakeMachine) securePaths(ctx context.Context, paths []string, sid string) error {
+	for _, path := range paths {
+		if err := m.securePath(ctx, path, sid, false); err != nil {
+			return err
+		}
+	}
+	return nil
+}
 func (m *fakeMachine) createDirectory(_ context.Context, path, _ string) error {
 	return os.Mkdir(path, 0700)
 }
 func (m *fakeMachine) task(_ context.Context, action string, spec taskSpec) (taskObservation, error) {
+	if spec.Marker != "" {
+		if m.launchers == nil {
+			m.launchers = map[string]taskObservation{}
+		}
+		task := m.launchers[spec.Name]
+		switch action {
+		case "create":
+			if task.Exists {
+				return task, fmt.Errorf("launcher collision")
+			}
+			task = taskObservation{Exists: true, Matches: true, Fingerprint: objectDigest(spec)}
+		case "run":
+			task.Running = true
+		case "delete":
+			if !task.Exists || !task.Matches || task.Running {
+				return task, fmt.Errorf("launcher conflict")
+			}
+			task = taskObservation{}
+		}
+		m.launchers[spec.Name] = task
+		return task, nil
+	}
 	m.taskCalls = append(m.taskCalls, action)
 	if m.taskHook != nil {
 		m.taskHook()

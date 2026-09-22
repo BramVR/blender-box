@@ -248,6 +248,10 @@ func (nativeMachine) securePath(ctx context.Context, path, sid string, missing b
 	_, err := powerShell(ctx, `Assert-Path $r.path $r.sid $r.missing; if(Test-Path -LiteralPath $r.path){Assert-Access $r.path $r.sid $true}`, map[string]any{"path": path, "sid": sid, "missing": missing})
 	return err
 }
+func (nativeMachine) securePaths(ctx context.Context, paths []string, sid string) error {
+	_, err := powerShell(ctx, `foreach($path in $r.paths){Assert-Path $path $r.sid $false; Assert-Access $path $r.sid $true}`, map[string]any{"paths": paths, "sid": sid})
+	return err
+}
 func (nativeMachine) createDirectory(ctx context.Context, path, sid string) error {
 	_, err := powerShell(ctx, `Assert-Path $r.path $r.sid $true
 if(Test-Path -LiteralPath $r.path){throw 'Directory collision'}
@@ -358,8 +362,10 @@ function Assert-Access([string]$Path,[string]$Sid,[bool]$Managed){
 }
 function Task-Definition($service,$s){
  $d=$service.NewTask(0);$d.RegistrationInfo.Description='Blender Box installation '+$s.installation_id;$d.RegistrationInfo.Source=$s.installation_id;$d.RegistrationInfo.Author=$s.owner_sid;$d.RegistrationInfo.URI='\'+$s.name
+ if($s.marker){$d.RegistrationInfo.Description=$s.marker;$d.RegistrationInfo.Source=$s.marker}
  $d.Principal.UserId=$s.owner_sid;$d.Principal.LogonType=3;$d.Principal.RunLevel=0
  $d.Settings.Enabled=$true;$d.Settings.MultipleInstances=2;$d.Settings.ExecutionTimeLimit='PT0S';$d.Settings.DisallowStartIfOnBatteries=$false;$d.Settings.StopIfGoingOnBatteries=$false;$d.Settings.AllowDemandStart=$true
+ if($s.execution_time_limit){$d.Settings.ExecutionTimeLimit=$s.execution_time_limit}
  $a=$d.Actions.Create(0);$a.Path=$s.executable;$a.Arguments=$s.arguments;$a.WorkingDirectory=$s.directory
  return $d
 }
@@ -401,7 +407,7 @@ function Observe($task){
  $actualSecurity=Canonical-Security $task.GetSecurityDescriptor(7)
  $expectedSecurity=Canonical-Security $security
  $matches=$actualXML -ceq $expectedXML -and $actualSecurity -ceq $expectedSecurity
- return [ordered]@{exists=$true;running=($task.GetInstances(0).Count -gt 0);matches=$matches;fingerprint=(Hash-Text ($actualXML+[char]10+$actualSecurity))}
+ return [ordered]@{exists=$true;running=($task.State -ne 3 -or $task.GetInstances(0).Count -gt 0);matches=$matches;fingerprint=(Hash-Text ($actualXML+[char]10+$actualSecurity))}
 }
 $observed=Observe $task
 if($r.operation -eq 'create'){
@@ -412,6 +418,10 @@ if($r.operation -eq 'create'){
  if(-not $observed.exists -or -not $observed.matches -or $observed.running){throw 'Task deletion authority mismatch'}
  $folder.DeleteTask($s.name,0);$task=$null
  try{$task=$folder.GetTask($s.name)}catch{if($_.Exception.HResult -ne -2147024894){throw}}
+ $observed=Observe $task
+}elseif($r.operation -eq 'run'){
+ if(-not $observed.exists -or -not $observed.matches -or $observed.running){throw 'Task launch authority mismatch'}
+ $null=$task.Run($null)
  $observed=Observe $task
 }elseif($r.operation -ne 'inspect'){throw 'Unknown task operation'}
 $observed | ConvertTo-Json -Compress`

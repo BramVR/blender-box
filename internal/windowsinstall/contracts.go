@@ -93,12 +93,14 @@ type PythonPrerequisite struct {
 	VenvSource Candidate `json:"venv_source"`
 }
 type TaskPlan struct {
-	Name           string         `json:"name"`
-	OwnerSID       string         `json:"owner_sid"`
-	InstallationID InstallationID `json:"installation_id"`
-	Executable     string         `json:"executable"`
-	Arguments      string         `json:"arguments"`
-	Directory      string         `json:"directory"`
+	ExecutionTimeLimit string         `json:"execution_time_limit,omitempty"`
+	Marker             string         `json:"marker,omitempty"`
+	Name               string         `json:"name"`
+	OwnerSID           string         `json:"owner_sid"`
+	InstallationID     InstallationID `json:"installation_id"`
+	Executable         string         `json:"executable"`
+	Arguments          string         `json:"arguments"`
+	Directory          string         `json:"directory"`
 }
 type Inspection struct {
 	OwnerSID          string              `json:"owner_sid"`
@@ -107,12 +109,13 @@ type Inspection struct {
 	Python            *PythonPrerequisite `json:"python,omitempty"`
 }
 type Plan struct {
-	PlanSHA256     SHA256    `json:"plan_sha256"`
-	ManifestSHA256 SHA256    `json:"manifest_sha256,omitempty"`
-	StateRoot      string    `json:"state_root,omitempty"`
-	WindowsUser    string    `json:"windows_user,omitempty"`
-	Task           *TaskPlan `json:"task,omitempty"`
-	Files          []File    `json:"files"`
+	ExecutionLauncher LauncherPolicy `json:"execution_launcher"`
+	PlanSHA256        SHA256         `json:"plan_sha256"`
+	ManifestSHA256    SHA256         `json:"manifest_sha256,omitempty"`
+	StateRoot         string         `json:"state_root,omitempty"`
+	WindowsUser       string         `json:"windows_user,omitempty"`
+	Task              *TaskPlan      `json:"task,omitempty"`
+	Files             []File         `json:"files"`
 }
 type Problem struct {
 	Code    string `json:"code"`

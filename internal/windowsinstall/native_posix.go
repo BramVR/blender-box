@@ -16,6 +16,9 @@ func (nativeMachine) inspect(context.Context, Request) (Inspection, error) {
 func (nativeMachine) securePath(context.Context, string, string, bool) error {
 	return fmt.Errorf("unsupported platform")
 }
+func (nativeMachine) securePaths(context.Context, []string, string) error {
+	return fmt.Errorf("unsupported platform")
+}
 func (nativeMachine) createDirectory(context.Context, string, string) error {
 	return fmt.Errorf("unsupported platform")
 }

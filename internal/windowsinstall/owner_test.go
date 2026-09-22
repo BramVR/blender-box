@@ -3,10 +3,8 @@ package windowsinstall
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -59,6 +57,48 @@ func ownerFixture(t *testing.T) (*owner, *fakeMachine, Request) {
 		}
 		return outcome, &treeExit{Kind: "tree-empty", Keeper: own.Keeper, ObservedAt: time.Now().UTC(), Worker: own.Worker, WorkerExitObserved: true}, nil
 	}
+	owner.schedule = func(ctx context.Context, record executionRequest) (Result, error) {
+		fingerprint := objectDigest(record.launcherTask())
+		for _, state := range []string{"submitted", "registered", "run-submitted", "started"} {
+			hash := fingerprint
+			if state == "submitted" {
+				hash = ""
+			}
+			if err := owner.publishLauncher(record, state, hash, nil); err != nil {
+				return emptyResult(record.Request), err
+			}
+		}
+		keeper := ProcessIdentity{101, "1001"}
+		if err := owner.publishLauncher(record, "keeper", fingerprint, &keeper); err != nil {
+			return emptyResult(record.Request), err
+		}
+		if _, err := machine.task(ctx, "create", record.launcherTask()); err != nil {
+			return emptyResult(record.Request), err
+		}
+		result, runErr := owner.keepAdmitted(ctx, record)
+		observed, err := owner.observe(ctx, record.Request)
+		if err != nil {
+			return problem(result, "execution-unknown", err)
+		}
+		if observed.workerSettled() {
+			alive := owner.alive
+			owner.alive = func(ProcessIdentity) (bool, error) { return false, nil }
+			err = owner.settleLauncher(ctx, &observed)
+			owner.alive = alive
+			if err != nil {
+				return problem(result, "launcher-cleanup-unknown", err)
+			}
+			if err := owner.releaseFence(ctx, observed); err != nil {
+				return problem(result, "fence-release-failed", err)
+			}
+			observed.fenced = false
+		}
+		result, err = owner.result(observed)
+		if err != nil {
+			return result, err
+		}
+		return result, runErr
+	}
 	owner.launch = func(_ context.Context, request Request) (Result, error) {
 		return owner.keep(context.Background(), request)
 	}
@@ -79,6 +119,7 @@ func TestExecutionFreshStatusAndSuccessfulReplay(t *testing.T) {
 	}
 	before := machine.probes
 	fresh := newOwner(machine)
+	fresh.alive = func(ProcessIdentity) (bool, error) { return false, nil }
 	fresh.alive = owner.alive
 	observed, err := fresh.Execute(context.Background(), statusRequest(request))
 	if err != nil || observed.Execution.Token != installed.Execution.Token || observed.State != "installed" {
@@ -335,36 +376,6 @@ func TestExecutionPublicationOwnedByWorkerAndRetryUsesNewToken(t *testing.T) {
 	}
 }
 
-func TestKeeperRequiresCompleteEOFFromPublicInternalRole(t *testing.T) {
-	owner, _, request := ownerFixture(t)
-	encoded, _ := json.Marshal(request)
-	read, write := io.Pipe()
-	defer read.Close()
-	defer write.Close()
-	inputContext, cancel := context.WithCancel(context.Background())
-	done := make(chan error, 1)
-	go func() { _, err := owner.serveKeeper(inputContext, read); done <- err }()
-	if _, err := write.Write(encoded); err != nil {
-		t.Fatal(err)
-	}
-	select {
-	case err := <-done:
-		t.Fatalf("accepted request without EOF: %v", err)
-	default:
-	}
-	cancel()
-	if err := <-done; !errors.Is(err, context.Canceled) {
-		t.Fatalf("lost EOF=%v", err)
-	}
-	if _, err := os.Stat(request.StateRoot); !os.IsNotExist(err) {
-		t.Fatal("incomplete request dispatched setup")
-	}
-	result, err := owner.serveKeeper(context.Background(), bytes.NewReader(encoded))
-	if err != nil || result.State != "installed" {
-		t.Fatalf("complete EOF result=%s err=%v", result.State, err)
-	}
-}
-
 func TestExecutionDeadlineSurvivesCallerLossAfterOwnership(t *testing.T) {
 	owner, _, request := ownerFixture(t)
 	caller, cancel := context.WithCancel(context.Background())
@@ -500,6 +511,7 @@ func TestExecutionTerminalFenceRecoveredByExactStopBeforeRunAdmission(t *testing
 	}
 	machine.inspectionErr = nil
 	fresh := newOwner(machine)
+	fresh.alive = func(ProcessIdentity) (bool, error) { return false, nil }
 	before, _ := os.ReadFile(filepath.Join(request.StateRoot, "pending-setup.json"))
 	observed, err := fresh.Status(context.Background(), statusRequest(request))
 	if err != nil {

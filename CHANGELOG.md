@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Start Windows installer keepers through a temporary limited interactive Scheduled Task with durable launch receipts, a bounded deadline, and exact external task cleanup before releasing setup authority; preserve private worker Job cleanup across SSH disconnects.
 - Add owned Windows runtime installation with pinned artifact manifests, previews that show selected identities and exact managed task changes, durable installation receipts, bounded execution status and recovery, generated targets, repeatable removal, and maintenance fencing; refuse legacy setup apply without ownership and prepare separately authorized host-install proof.
 - Start trusted Windows installer PowerShell commands suspended with `CREATE_NO_WINDOW` to restore execution and output while generic commands remain detached and suspended; retain exact Job-member handles, including any console helper, and require complete membership and physical exit proof within one cleanup deadline before reporting tree cleanup.
 - Preserve proof-controller Run authority across interruptions with fenced native attempts, one-use worker admission, and local enrollment previews; allow unprivileged identity checks without cgroup write access and wait for exact native stop settlement. Native qualification remains required.

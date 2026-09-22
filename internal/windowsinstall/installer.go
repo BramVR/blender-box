@@ -24,6 +24,7 @@ type taskObservation struct {
 type machine interface {
 	inspect(context.Context, Request) (Inspection, error)
 	securePath(context.Context, string, string, bool) error
+	securePaths(context.Context, []string, string) error
 	createDirectory(context.Context, string, string) error
 	task(context.Context, string, taskSpec) (taskObservation, error)
 	probe(context.Context, string, string) error
@@ -306,6 +307,11 @@ func (e *installer) Execute(ctx context.Context, request Request) (Result, error
 			Intent SHA256 `json:"intent"`
 		}{"remove", receipt.IntentSHA256})
 	}
+	result.Plan.ExecutionLauncher = setupLauncherPolicy()
+	result.Plan.PlanSHA256 = objectDigest(struct {
+		Intent   SHA256         `json:"intent"`
+		Launcher LauncherPolicy `json:"launcher"`
+	}{result.Plan.PlanSHA256, result.Plan.ExecutionLauncher})
 	if request.ExpectedPlan != "" && request.ExpectedPlan != result.Plan.PlanSHA256 {
 		return problem(result, "plan-changed", fmt.Errorf("expected plan digest differs from current intent"))
 	}

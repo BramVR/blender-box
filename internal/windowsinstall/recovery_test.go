@@ -37,6 +37,14 @@ func TestExecutionRetryLimitPreservesJournalFenceAndStatus(t *testing.T) {
 	}
 	machine.inspectionErr = nil
 	fresh := newOwner(machine)
+	fresh.alive = func(ProcessIdentity) (bool, error) { return false, nil }
+	observed, err := fresh.observe(context.Background(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := fresh.settleLauncher(context.Background(), &observed); err != nil {
+		t.Fatal(err)
+	}
 	before, beforeErr := fresh.Status(context.Background(), statusRequest(request))
 	if beforeErr == nil || beforeErr.Error() != "CreateProcess refused before spawn" || before.Execution == nil || before.Execution.FenceState != "held" || before.Completion != "known" {
 		t.Fatalf("status at limit=%+v error=%v", before.Execution, beforeErr)
@@ -162,6 +170,7 @@ func TestExecutionReplayReleasesTerminalFenceBeforeRunAdmission(t *testing.T) {
 	}
 	machine.inspectionErr = nil
 	fresh := newOwner(machine)
+	fresh.alive = func(ProcessIdentity) (bool, error) { return false, nil }
 	fresh.launch = func(ctx context.Context, request Request) (Result, error) {
 		return fresh.keep(ctx, request)
 	}

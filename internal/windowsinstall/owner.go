@@ -40,6 +40,7 @@ type Execution struct {
 	State           string           `json:"state"`
 	TreeCleanup     string           `json:"tree_cleanup"`
 	TaskMutation    string           `json:"task_mutation"`
+	LauncherCleanup string           `json:"launcher_cleanup"`
 	CancelRequested bool             `json:"cancel_requested"`
 	Keeper          *ProcessIdentity `json:"keeper,omitempty"`
 	Worker          *ProcessIdentity `json:"worker,omitempty"`
@@ -57,6 +58,7 @@ type executionRequest struct {
 	Bootstrap         File      `json:"bootstrap"`
 	Inputs            []File    `json:"inputs"`
 	Preview           Result    `json:"preview"`
+	Launcher          string    `json:"launcher"`
 }
 
 func (r executionRequest) directory() string {
@@ -66,7 +68,7 @@ func (r executionRequest) claim() host.SetupClaim {
 	return host.SetupClaim{SchemaVersion: 1, InstallationID: string(r.Request.InstallationID), OperationID: string(r.Request.OperationID), ExecutionToken: r.Token, RequestSHA256: string(objectDigest(r)), RootIdentity: r.RootIdentity, OwnerSID: r.OwnerSID, Deadline: r.Deadline}
 }
 func (r executionRequest) validate() error {
-	if r.SchemaVersion != 1 || !executionID.MatchString(r.Token) || r.DirectoryIdentity == "" || r.Preview.Plan.PlanSHA256 == "" || r.Request.ExpectedPlan != r.Preview.Plan.PlanSHA256 || !r.Request.Apply || r.Request.ExecutionToken != "" || r.Request.Operation != "install" && r.Request.Operation != "remove" || len(r.Inputs) > maxFiles || r.Bootstrap.Identity == "" || !hex64.MatchString(string(r.Bootstrap.SHA256)) || r.Predecessor != "" && !hex64.MatchString(string(r.Predecessor)) {
+	if r.Preview.Plan.ExecutionLauncher != setupLauncherPolicy() || r.Launcher != launcherName(r.Token) || r.SchemaVersion != 1 || !executionID.MatchString(r.Token) || r.DirectoryIdentity == "" || r.Preview.Plan.PlanSHA256 == "" || r.Request.ExpectedPlan != r.Preview.Plan.PlanSHA256 || !r.Request.Apply || r.Request.ExecutionToken != "" || r.Request.Operation != "install" && r.Request.Operation != "remove" || len(r.Inputs) > maxFiles || r.Bootstrap.Identity == "" || !hex64.MatchString(string(r.Bootstrap.SHA256)) || r.Predecessor != "" && !hex64.MatchString(string(r.Predecessor)) {
 		return fmt.Errorf("invalid execution request")
 	}
 	if r.Preview.InstallationID != r.Request.InstallationID || r.Preview.OperationID != r.Request.OperationID || r.Preview.Inspection.OwnerSID != r.OwnerSID {
@@ -111,18 +113,22 @@ type observedExecution struct {
 	terminal  *executionTerminal
 	cancel    bool
 	fenced    bool
+	launcher  map[string]launcherFact
 }
 
 type owner struct {
 	installer *installer
 	launch    func(context.Context, Request) (Result, error)
+	schedule  func(context.Context, executionRequest) (Result, error)
 	run       func(context.Context, executionRequest, func(executionOwnership) error) (workerOutcome, *treeExit, error)
 	alive     func(ProcessIdentity) (bool, error)
 	pins      func(context.Context, Request, Inspection) (File, []File, func(), error)
 }
 
 func newOwner(machine machine) *owner {
-	return &owner{installer: &installer{machine: machine}, launch: launchNativeKeeper, run: runNativeWorker, alive: nativeProcessAlive, pins: pinExecutionInputs}
+	o := &owner{installer: &installer{machine: machine}, launch: launchNativeKeeper, run: runNativeWorker, alive: nativeProcessAlive, pins: pinExecutionInputs}
+	o.schedule = o.launchExecution
+	return o
 }
 func emptyResult(request Request) Result {
 	return Result{SchemaVersion: 1, InstallationID: request.InstallationID, OperationID: request.OperationID, State: "unknown", Completion: "unknown", Plan: Plan{Files: []File{}}, Inspection: Inspection{BlenderCandidates: []Candidate{}}, Files: []File{}, Retained: []string{}, Problems: []Problem{}, TargetPublication: Publication{Status: "not-requested"}}
@@ -183,17 +189,31 @@ func (o *owner) observe(ctx context.Context, request Request) (observedExecution
 	if len(entries) == 0 || len(entries) > maxExecutions {
 		return zero, fmt.Errorf("invalid execution journal size")
 	}
-	records := map[SHA256]observedExecution{}
-	successors := map[SHA256]SHA256{}
-	var first SHA256
+	journalFiles := map[string][]os.DirEntry{}
+	trustedPaths := []string{directory}
 	for _, entry := range entries {
 		if !entry.IsDir() || !executionID.MatchString(entry.Name()) {
 			return zero, fmt.Errorf("unknown execution journal entry")
 		}
 		path := filepath.Join(directory, entry.Name())
-		if err := o.installer.machine.securePath(ctx, path, inspection.OwnerSID, false); err != nil {
-			return zero, err
+		names, err := os.ReadDir(path)
+		if err != nil || len(names) > 11 {
+			return zero, fmt.Errorf("invalid execution record directory")
 		}
+		journalFiles[entry.Name()] = names
+		trustedPaths = append(trustedPaths, path)
+		for _, name := range names {
+			trustedPaths = append(trustedPaths, filepath.Join(path, name.Name()))
+		}
+	}
+	if err := o.installer.machine.securePaths(ctx, trustedPaths, inspection.OwnerSID); err != nil {
+		return zero, err
+	}
+	records := map[SHA256]observedExecution{}
+	successors := map[SHA256]SHA256{}
+	var first SHA256
+	for _, entry := range entries {
+		path := filepath.Join(directory, entry.Name())
 		var record executionRequest
 		if err := readExecutionJSON(filepath.Join(path, "request.json"), &record); err != nil {
 			return zero, err
@@ -208,17 +228,19 @@ func (o *owner) observe(ctx context.Context, request Request) (observedExecution
 		if err != nil || identity != record.DirectoryIdentity {
 			return zero, fmt.Errorf("execution directory identity changed")
 		}
-		current := observedExecution{request: record}
-		names, err := os.ReadDir(path)
-		if err != nil || len(names) > 4 {
-			return zero, fmt.Errorf("invalid execution record directory")
-		}
-		for _, name := range names {
+		current := observedExecution{request: record, launcher: map[string]launcherFact{}}
+		for _, name := range journalFiles[entry.Name()] {
 			full := filepath.Join(path, name.Name())
-			if err := o.installer.machine.securePath(ctx, full, inspection.OwnerSID, false); err != nil {
-				return zero, err
-			}
 			switch name.Name() {
+			case "launcher-submitted.json", "launcher-registered.json", "launcher-run-submitted.json", "launcher-started.json", "launcher-keeper.json", "launcher-delete-submitted.json", "launcher-cleaned.json":
+				var fact launcherFact
+				if err := readExecutionJSON(full, &fact); err != nil {
+					return zero, err
+				}
+				if err := fact.validate(record, name.Name()); err != nil {
+					return zero, err
+				}
+				current.launcher[fact.State] = fact
 			case "request.json":
 			case "ownership.json":
 				var own executionOwnership
@@ -256,6 +278,9 @@ func (o *owner) observe(ctx context.Context, request Request) (observedExecution
 			default:
 				return zero, fmt.Errorf("unknown execution record")
 			}
+		}
+		if err := current.validateLauncher(); err != nil {
+			return zero, err
 		}
 		if current.terminal != nil && current.terminal.TreeExit != nil {
 			proof := current.terminal.TreeExit
@@ -327,6 +352,9 @@ func (o *owner) observe(ctx context.Context, request Request) (observedExecution
 	return current, nil
 }
 func (e observedExecution) settled() bool {
+	return e.launcher["cleaned"].State == "cleaned" && e.workerSettled()
+}
+func (e observedExecution) workerSettled() bool {
 	return e.terminal != nil && e.terminal.TreeExit != nil && e.terminal.Outcome.TaskMutation == "settled" && e.terminal.Outcome.Result.Completion == "known"
 }
 func (e observedExecution) resumable() bool {
@@ -344,7 +372,10 @@ func (o *owner) result(observed observedExecution) (Result, error) {
 	if observed.fenced {
 		fenceState = "held"
 	}
-	execution := Execution{FenceState: fenceState, ProcessState: "unknown", Token: record.Token, RequestSHA256: objectDigest(record), Deadline: record.Deadline, State: "unknown", TreeCleanup: "unknown", TaskMutation: "unknown", CancelRequested: observed.cancel}
+	execution := Execution{FenceState: fenceState, ProcessState: "unknown", Token: record.Token, RequestSHA256: objectDigest(record), Deadline: record.Deadline, State: "unknown", TreeCleanup: "unknown", TaskMutation: "unknown", LauncherCleanup: "unknown", CancelRequested: observed.cancel}
+	if observed.launcher["cleaned"].State == "cleaned" {
+		execution.LauncherCleanup = "known"
+	}
 	if observed.ownership != nil {
 		execution.ProcessState = "started"
 		execution.Keeper = &observed.ownership.Keeper
@@ -405,6 +436,12 @@ func (o *owner) Stop(ctx context.Context, request Request) (Result, error) {
 		return problem(emptyResult(request), "stale-execution", fmt.Errorf("execution token is no longer current"))
 	}
 	if observed.terminal != nil {
+		if observed.workerSettled() {
+			if err := o.settleLauncher(ctx, &observed); err != nil {
+				result, _ := o.result(observed)
+				return problem(result, "launcher-cleanup-unknown", err)
+			}
+		}
 		if observed.settled() {
 			if err := o.releaseFence(ctx, observed); err != nil {
 				result, _ := o.result(observed)
@@ -465,6 +502,12 @@ func (o *owner) keep(ctx context.Context, request Request) (Result, error) {
 	if err == nil {
 		if !sameExecutionIntent(observed.request.Request, request) || request.ExpectedPlan != "" && request.ExpectedPlan != observed.request.Preview.Plan.PlanSHA256 {
 			return problem(emptyResult(request), "intent-conflict", fmt.Errorf("logical operation intent changed"))
+		}
+		if observed.workerSettled() {
+			if err := o.settleLauncher(ctx, &observed); err != nil {
+				result, _ := o.result(observed)
+				return problem(result, "launcher-cleanup-unknown", err)
+			}
 		}
 		prior = &observed
 		if !observed.settled() {
@@ -585,7 +628,7 @@ func (o *owner) keep(ctx context.Context, request Request) (Result, error) {
 		deadline, _ := ctx.Deadline()
 		preview.Inspection.RootIdentity = rootIdentity
 		request.ExpectedPlan = preview.Plan.PlanSHA256
-		record = executionRequest{SchemaVersion: 1, Token: token, Request: request, OwnerSID: preview.Inspection.OwnerSID, RootIdentity: rootIdentity, DirectoryIdentity: directoryIdentity, Deadline: deadline.UTC(), Bootstrap: bootstrap, Inputs: inputs, Preview: preview}
+		record = executionRequest{SchemaVersion: 1, Token: token, Launcher: launcherName(token), Request: request, OwnerSID: preview.Inspection.OwnerSID, RootIdentity: rootIdentity, DirectoryIdentity: directoryIdentity, Deadline: deadline.UTC(), Bootstrap: bootstrap, Inputs: inputs, Preview: preview}
 		if prior != nil {
 			record.Predecessor = objectDigest(*prior.terminal)
 		}
@@ -600,6 +643,11 @@ func (o *owner) keep(ctx context.Context, request Request) (Result, error) {
 	if err != nil {
 		return problem(preview, "admission-failed", err)
 	}
+	return o.schedule(ctx, record)
+}
+
+func (o *owner) keepAdmitted(ctx context.Context, record executionRequest) (Result, error) {
+	request, preview := record.Request, record.Preview
 	workerContext, stopWatching := watchExecutionCancellation(ctx, record)
 	defer stopWatching()
 	outcome, exit, runErr := o.run(workerContext, record, func(ownership executionOwnership) error {
@@ -639,14 +687,6 @@ func (o *owner) keep(ctx context.Context, request Request) (Result, error) {
 	var ownership executionOwnership
 	if err := readExecutionJSON(filepath.Join(record.directory(), "ownership.json"), &ownership); err == nil {
 		settled.ownership = &ownership
-	}
-	if settled.settled() {
-		if err := o.releaseFence(context.WithoutCancel(ctx), settled); err != nil {
-			result, _ := o.result(settled)
-			return problem(result, "fence-release-failed", err)
-		}
-
-		settled.fenced = false
 	}
 	return o.result(settled)
 }

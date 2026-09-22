@@ -3,7 +3,6 @@
 package windowsinstall
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -59,16 +58,6 @@ func nativeProcessAlive(want ProcessIdentity) (bool, error) {
 	wait, err := syscall.WaitForSingleObject(process, 0)
 	return wait == syscall.WAIT_TIMEOUT, err
 }
-func requireDetachedKeeper(process syscall.Handle) error {
-	var member int32
-	if ok, _, err := nativeIsProcessInJob.Call(uintptr(process), 0, uintptr(unsafe.Pointer(&member))); ok == 0 {
-		return fmt.Errorf("inspect keeper Job membership: %w", err)
-	}
-	if member != 0 {
-		return fmt.Errorf("keeper did not leave all parent Jobs")
-	}
-	return nil
-}
 func openPinnedSource(path string) (*os.File, error) {
 	pointer, err := syscall.UTF16PtrFromString(path)
 	if err != nil {
@@ -102,128 +91,34 @@ func openPinnedDirectory(path string) (*os.File, error) {
 }
 
 func launchNativeKeeper(ctx context.Context, request Request) (Result, error) {
-	failure := func(err error) (Result, error) { return problem(emptyResult(request), "keeper-dispatch-failed", err) }
-	if err := ctx.Err(); err != nil {
-		return failure(err)
+	return newOwner(nativeMachine{}).keep(ctx, request)
+}
+
+func runScheduledKeeper(directory, hash string) (Result, error) {
+	var record executionRequest
+	if err := readExecutionJSON(filepath.Join(directory, "request.json"), &record); err != nil {
+		return Result{}, err
+	}
+	if record.directory() != directory || string(objectDigest(record)) != hash {
+		return Result{}, fmt.Errorf("keeper request identity changed")
 	}
 	executable, err := os.Executable()
+	if err != nil || executable != record.Bootstrap.Path {
+		return Result{}, fmt.Errorf("keeper bootstrap changed")
+	}
+	ctx, cancel := context.WithDeadline(context.Background(), record.Deadline)
+	defer cancel()
+	self, err := currentProcessIdentity()
 	if err != nil {
-		return failure(err)
+		return Result{}, err
 	}
-	pinned, err := openPinnedSource(executable)
+	owner := newOwner(nativeMachine{})
+	release, err := owner.admitKeeper(ctx, record, self)
 	if err != nil {
-		return failure(err)
+		return Result{}, err
 	}
-	defer pinned.Close()
-	environment, err := cleanEnvironment()
-	if err != nil {
-		return failure(err)
-	}
-	inputRead, inputWrite, err := os.Pipe()
-	if err != nil {
-		return failure(err)
-	}
-	defer inputRead.Close()
-	defer inputWrite.Close()
-	outputRead, outputWrite, err := os.Pipe()
-	if err != nil {
-		return failure(err)
-	}
-	defer outputRead.Close()
-	defer outputWrite.Close()
-	null, err := os.OpenFile(os.DevNull, os.O_WRONLY, 0)
-	if err != nil {
-		return failure(err)
-	}
-	defer null.Close()
-	// Breakaway is attempted even when the caller belongs to an SSH Job.
-	spawn, startErr := (*nativeJob)(nil).startFlags(executable, []string{"__setup-keeper"}, environment, [3]*os.File{inputRead, outputWrite, null}, 0x01000000|0x00000008)
-	_ = inputRead.Close()
-	_ = outputWrite.Close()
-	if spawn.Info.Process == 0 {
-		return failure(startErr)
-	}
-	defer syscall.CloseHandle(spawn.Info.Process)
-	defer syscall.CloseHandle(spawn.Info.Thread)
-	abort := func(cause error) (Result, error) {
-		_ = syscall.TerminateProcess(spawn.Info.Process, 1)
-		wait, err := syscall.WaitForSingleObject(spawn.Info.Process, uint32(nativeCleanupTimeout/time.Millisecond))
-		if err != nil || wait != syscall.WAIT_OBJECT_0 {
-			cause = errors.Join(cause, errNativeCleanupUnknown)
-		}
-		return failure(cause)
-	}
-	if startErr != nil {
-		return abort(startErr)
-	}
-	if err := requireDetachedKeeper(spawn.Info.Process); err != nil {
-		return abort(err)
-	}
-	data, err := json.Marshal(request)
-	if err != nil {
-		return abort(err)
-	}
-	if len(data) > 64<<10 {
-		return abort(fmt.Errorf("setup request exceeds input bound"))
-	}
-	inputDone := make(chan error, 1)
-	go func() {
-		_, err := io.Copy(inputWrite, bytes.NewReader(data))
-		closeErr := inputWrite.Close()
-		inputDone <- errors.Join(err, closeErr)
-	}()
-	outputDone := make(chan nativeStream, 1)
-	go func() {
-		data, err := io.ReadAll(io.LimitReader(outputRead, maxExecutionRecord+1))
-		outputDone <- nativeStream{data: data, err: err}
-	}()
-	select {
-	case err := <-inputDone:
-		if err != nil {
-			return failure(err)
-		}
-	case <-ctx.Done():
-		return failure(ctx.Err())
-	}
-	select {
-	case output := <-outputDone:
-		if output.err != nil {
-			return failure(output.err)
-		}
-		if len(output.data) > maxExecutionRecord {
-			return failure(fmt.Errorf("keeper response exceeds output bound"))
-		}
-		wait, waitErr := syscall.WaitForSingleObject(spawn.Info.Process, uint32(nativeCleanupTimeout/time.Millisecond))
-		if waitErr != nil || wait != syscall.WAIT_OBJECT_0 {
-			return failure(fmt.Errorf("keeper exit was not observed: %v", waitErr))
-		}
-		var exitCode uint32
-		if err := syscall.GetExitCodeProcess(spawn.Info.Process, &exitCode); err != nil {
-			return failure(err)
-		}
-		var result Result
-		if err := strictjson.Decode(output.data, &result); err != nil {
-			return failure(err)
-		}
-		if result.SchemaVersion != 1 || result.InstallationID != request.InstallationID || result.OperationID != request.OperationID {
-			return failure(fmt.Errorf("keeper result identity changed"))
-		}
-		if exitCode != 0 {
-			return result, fmt.Errorf("setup keeper exited with code %d", exitCode)
-		}
-		if result.TargetPublication.Status == "failed" {
-			return result, fmt.Errorf("target publication failed")
-		}
-		if len(result.Problems) > 0 {
-			return result, fmt.Errorf("setup keeper reported %s", result.Problems[0].Code)
-		}
-		if result.Completion != "known" && result.State != "running" {
-			return result, fmt.Errorf("setup execution is unsettled")
-		}
-		return result, nil
-	case <-ctx.Done():
-		return failure(ctx.Err())
-	}
+	defer release()
+	return owner.keepAdmitted(ctx, record)
 }
 
 func runNativeWorker(ctx context.Context, record executionRequest, publish func(executionOwnership) error) (workerOutcome, *treeExit, error) {
@@ -352,17 +247,8 @@ func RunInternal(args []string, stdin io.Reader, stdout, stderr io.Writer) (bool
 	defer watchdog.Stop()
 	var value any
 	var err error
-	if args[0] == "__setup-keeper" && len(args) == 1 {
-		process, processErr := syscall.GetCurrentProcess()
-		err = processErr
-		if err == nil {
-			err = requireDetachedKeeper(process)
-		}
-		if err == nil {
-			inputContext, cancel := context.WithTimeout(context.Background(), bootstrapInputTimeout)
-			defer cancel()
-			value, err = newOwner(nativeMachine{}).serveKeeper(inputContext, stdin)
-		}
+	if args[0] == "__setup-keeper" && len(args) == 3 {
+		value, err = runScheduledKeeper(args[1], args[2])
 	} else if args[0] == "__setup-worker" && len(args) == 3 {
 		value, err = runSetupWorker(args[1], args[2])
 	} else {

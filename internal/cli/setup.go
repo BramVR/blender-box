@@ -163,6 +163,12 @@ func setupCommand(ctx context.Context, args []string, stdout, stderr io.Writer, 
 			fmt.Fprintf(stdout, "Task directory %s\n", result.Plan.Task.Directory)
 			fmt.Fprintln(stdout, "Task policy RunLevel=Limited; LogonType=InteractiveToken; Triggers=none; MultipleInstances=IgnoreNew; ExecutionTimeLimit=PT0S")
 		}
+		if launcher := result.Plan.ExecutionLauncher; launcher.Kind != "" {
+			fmt.Fprintf(stdout, "Setup launcher %s; name %s\n", launcher.Kind, launcher.NameTemplate)
+			fmt.Fprintf(stdout, "Setup launcher action %s\n", launcher.Action)
+			fmt.Fprintf(stdout, "Setup launcher policy %s; triggers %s; instances %s; deadline %ds; ExecutionTimeLimit=%s\n", launcher.Principal, launcher.Triggers, launcher.Instances, launcher.DeadlineSeconds, launcher.ExecutionTimeLimit)
+			fmt.Fprintf(stdout, "Setup launcher cleanup %s\n", launcher.Cleanup)
+		}
 		for _, file := range result.Plan.Files {
 			fmt.Fprintf(stdout, "%s %s (%d bytes)\n", file.Kind, file.Path, file.Size)
 		}

@@ -248,7 +248,7 @@ func TestExecutionPublicationAbruptExit(t *testing.T) {
 				}
 				requireRemnants(t, request.StateRoot, remnants)
 				fresh := newOwner(machine)
-				fresh.alive = o.alive
+				fresh.alive = func(ProcessIdentity) (bool, error) { return false, nil }
 				if name == "request.json" && phase == "publication-staged" {
 					if _, err := fresh.Status(context.Background(), statusRequest(request)); err == nil {
 						t.Error("missing durable request adopted")
@@ -278,11 +278,23 @@ func TestExecutionPublicationAbruptExit(t *testing.T) {
 				if err != nil {
 					t.Fatalf("strict execution reader rejected interrupted publication: %v", err)
 				}
+				if observed.launcher["registered"].State != "" {
+					if machine.launchers == nil {
+						machine.launchers = map[string]taskObservation{}
+					}
+					machine.launchers[observed.request.Launcher] = taskObservation{Exists: true, Matches: true, Fingerprint: observed.launcher["registered"].Fingerprint}
+				}
 				stop := statusRequest(request)
 				stop.Operation, stop.Apply, stop.ExecutionToken = "stop", true, observed.request.Token
 				stopped, err := fresh.Stop(context.Background(), stop)
 				if err != nil || stopped.Execution == nil {
 					t.Fatalf("fresh stop: %+v %v", stopped.Execution, err)
+				}
+				if observed.launcher["keeper"].Keeper == nil {
+					if host.RejectPendingSetup(request.StateRoot) == nil {
+						t.Fatal("unstarted launcher lost fence")
+					}
+					return
 				}
 				if observed.terminal == nil {
 					replay, err := o.Execute(context.Background(), request)
