@@ -26,6 +26,8 @@ type fakeMachine struct {
 	probes          int
 	probeHook       func()
 	sealCalls       []string
+	aclBatches      int
+	aclChecks       []runtimePathCheck
 	probeErr        error
 	taskHook        func()
 	taskMutationErr error
@@ -57,6 +59,24 @@ func (m *fakeMachine) securePaths(ctx context.Context, paths []string, sid strin
 	for _, path := range paths {
 		if err := m.securePath(ctx, path, sid, false); err != nil {
 			return err
+		}
+	}
+	return nil
+}
+func (m *fakeMachine) secureRuntimePaths(_ context.Context, checks []runtimePathCheck, _ string) error {
+	if len(checks) == 0 {
+		return nil
+	}
+	m.aclBatches += (len(checks) + runtimeACLBatchSize - 1) / runtimeACLBatchSize
+	m.aclChecks = append(m.aclChecks, checks...)
+	for _, check := range checks {
+		if err := checkPath(check.Path, false); err != nil {
+			return err
+		}
+		if check.Sealed {
+			if err := fakeSealed(check.Path); err != nil {
+				return err
+			}
 		}
 	}
 	return nil
@@ -294,10 +314,20 @@ func TestSitePackagesSealPrecedesProbeAndKeepsOtherRuntimeIdentities(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
+	packageFiles := 0
 	for _, file := range receipt.Files {
 		if old, exists := pre[file.Path]; exists && file.Identity != old {
 			t.Fatalf("non-package identity changed: %s", file.Path)
 		}
+		if packageComponent(file.Path) {
+			packageFiles++
+		}
+	}
+	if len(m.aclChecks) < len(receipt.Files) || m.aclBatches >= len(receipt.Files) {
+		t.Fatalf("runtime ACL coverage or native child budget changed: checks=%d batches=%d files=%d package=%d", len(m.aclChecks), m.aclBatches, len(receipt.Files), packageFiles)
+	}
+	if len(m.sealCalls) != packageFiles {
+		t.Fatalf("runtime seal calls=%d package files=%d", len(m.sealCalls), packageFiles)
 	}
 	for _, path := range m.sealCalls {
 		relative, err := filepath.Rel(filepath.Dir(receiptPath), path)

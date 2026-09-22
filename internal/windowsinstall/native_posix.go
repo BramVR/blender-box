@@ -25,6 +25,9 @@ func (nativeMachine) sealPath(context.Context, string, string) error {
 func (nativeMachine) securePaths(context.Context, []string, string) error {
 	return fmt.Errorf("unsupported platform")
 }
+func (nativeMachine) secureRuntimePaths(context.Context, []runtimePathCheck, string) error {
+	return fmt.Errorf("unsupported platform")
+}
 func (nativeMachine) createDirectory(context.Context, string, string) error {
 	return fmt.Errorf("unsupported platform")
 }

@@ -21,12 +21,17 @@ type taskObservation struct {
 	Matches     bool   `json:"matches"`
 	Fingerprint SHA256 `json:"fingerprint,omitempty"`
 }
+type runtimePathCheck struct {
+	Path   string `json:"path"`
+	Sealed bool   `json:"sealed"`
+}
 type machine interface {
 	inspect(context.Context, Request) (Inspection, error)
 	securePath(context.Context, string, string, bool) error
 	secureSealedPath(context.Context, string, string) error
 	sealPath(context.Context, string, string) error
 	securePaths(context.Context, []string, string) error
+	secureRuntimePaths(context.Context, []runtimePathCheck, string) error
 	createDirectory(context.Context, string, string) error
 	task(context.Context, string, taskSpec) (taskObservation, error)
 	probe(context.Context, string, string) error
@@ -56,6 +61,7 @@ type installIntent struct {
 }
 
 const sealedRuntimePolicy = "sealed-site-packages-v1"
+const runtimeACLBatchSize = 32
 
 const sitePackagesRoot = "runtime/python/Lib/site-packages"
 
@@ -628,6 +634,7 @@ func (e *installer) validateOwned(ctx context.Context, directory string, r insta
 	if err := e.machine.securePath(ctx, directory, r.Intent.OwnerSID, false); err != nil {
 		return err
 	}
+	checks := make([]runtimePathCheck, 0, len(r.Files))
 	for _, file := range r.Files {
 		if contains(r.Deleted, file.Path) {
 			if _, err := os.Lstat(filepath.Join(directory, filepath.FromSlash(file.Path))); !os.IsNotExist(err) {
@@ -647,11 +654,13 @@ func (e *installer) validateOwned(ctx context.Context, directory string, r insta
 			}
 			return err
 		}
-		if err = e.secureRuntimeComponent(ctx, destination, r, file, observed); err != nil {
+		check, err := runtimeComponentCheck(destination, r, file, observed)
+		if err != nil {
 			return err
 		}
+		checks = append(checks, check)
 	}
-	return nil
+	return e.machine.secureRuntimePaths(ctx, checks, r.Intent.OwnerSID)
 }
 
 func sameFileObject(before, after string) bool {
@@ -659,20 +668,29 @@ func sameFileObject(before, after string) bool {
 	return last > 0 && strings.LastIndexByte(after, ':') > 0 && before[:last] == after[:strings.LastIndexByte(after, ':')]
 }
 
-func (e *installer) secureRuntimeComponent(ctx context.Context, path string, r installationReceipt, before, observed File) error {
+func runtimeComponentCheck(path string, r installationReceipt, before, observed File) (runtimePathCheck, error) {
+	check := runtimePathCheck{Path: path}
 	if packageComponent(before.Path) && r.Pending != nil && r.Pending.Action == "seal" {
 		if observed.Identity == before.Identity {
-			return e.machine.securePath(ctx, path, r.Intent.OwnerSID, false)
+			return check, nil
 		}
 		if !sameFileObject(before.Identity, observed.Identity) {
-			return fmt.Errorf("runtime object changed during seal: %s", before.Path)
+			return check, fmt.Errorf("runtime object changed during seal: %s", before.Path)
 		}
-		return e.machine.secureSealedPath(ctx, path, r.Intent.OwnerSID)
+		check.Sealed = true
 	}
 	if packageComponent(before.Path) && r.RuntimeSealed {
-		return e.machine.secureSealedPath(ctx, path, r.Intent.OwnerSID)
+		check.Sealed = true
 	}
-	return e.machine.securePath(ctx, path, r.Intent.OwnerSID, false)
+	return check, nil
+}
+
+func (e *installer) secureRuntimeComponent(ctx context.Context, path string, r installationReceipt, before, observed File) error {
+	check, err := runtimeComponentCheck(path, r, before, observed)
+	if err != nil {
+		return err
+	}
+	return e.machine.secureRuntimePaths(ctx, []runtimePathCheck{check}, r.Intent.OwnerSID)
 }
 
 func (e *installer) sealRuntime(ctx context.Context, directory, receiptPath string, r *installationReceipt) error {
@@ -744,14 +762,12 @@ func (e *installer) sealRuntime(ctx context.Context, directory, receiptPath stri
 		if !sameFileObject(file.Identity, observed.Identity) || observed.Identity == file.Identity {
 			return fmt.Errorf("runtime seal changed object identity: %s", file.Path)
 		}
-		if err := e.machine.secureSealedPath(ctx, destination, r.Intent.OwnerSID); err != nil {
-			return err
-		}
 	}
 	if err := e.validateOwned(ctx, directory, *r); err != nil {
 		return err
 	}
 	sealed := make([]File, len(r.Files))
+	checks := make([]runtimePathCheck, 0, len(files))
 	for i, file := range r.Files {
 		planned := file
 		if packageComponent(file.Path) {
@@ -765,11 +781,12 @@ func (e *installer) sealRuntime(ctx context.Context, directory, receiptPath stri
 			if !sameFileObject(file.Identity, observed.Identity) || observed.Identity == file.Identity {
 				return fmt.Errorf("runtime seal changed object identity: %s", file.Path)
 			}
-			if err := e.machine.secureSealedPath(ctx, filepath.Join(directory, filepath.FromSlash(file.Path)), r.Intent.OwnerSID); err != nil {
-				return err
-			}
+			checks = append(checks, runtimePathCheck{Path: filepath.Join(directory, filepath.FromSlash(file.Path)), Sealed: true})
 		}
 		sealed[i] = observed
+	}
+	if err := e.machine.secureRuntimePaths(ctx, checks, r.Intent.OwnerSID); err != nil {
+		return err
 	}
 	r.Files = sealed
 	r.Pending = nil

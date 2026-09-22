@@ -264,6 +264,19 @@ func (nativeMachine) securePaths(ctx context.Context, paths []string, sid string
 	_, err := powerShell(ctx, `foreach($path in $r.paths){Assert-Path $path $r.sid $false; Assert-Access $path $r.sid $true}`, map[string]any{"paths": paths, "sid": sid})
 	return err
 }
+func (nativeMachine) secureRuntimePaths(ctx context.Context, checks []runtimePathCheck, sid string) error {
+	for start := 0; start < len(checks); start += runtimeACLBatchSize {
+		end := min(start+runtimeACLBatchSize, len(checks))
+		_, err := powerShellWithTimeout(ctx, `foreach($check in $r.checks){
+ Assert-Path $check.path $r.sid $false
+ if($check.sealed){Assert-SealedRuntime $check.path $r.sid}else{Assert-Access $check.path $r.sid $true}
+}`, map[string]any{"checks": checks[start:end], "sid": sid}, 30*time.Second)
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
 func (nativeMachine) createDirectory(ctx context.Context, path, sid string) error {
 	_, err := powerShell(ctx, `Assert-Path $r.path $r.sid $true
 if(Test-Path -LiteralPath $r.path){throw 'Directory collision'}

@@ -42,6 +42,10 @@ func TestNativeSealedRuntimeACLAndExactRemoval(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	checks := []runtimePathCheck{{Path: module}, {Path: packageDir}, {Path: root}}
+	if err := machine.secureRuntimePaths(ctx, checks, sid); err != nil {
+		t.Fatalf("unsealed ACL batch: %v", err)
+	}
 	for i := range files {
 		if err := machine.sealPath(ctx, paths[i], sid); err != nil {
 			t.Fatalf("seal %s: %v", paths[i], err)
@@ -59,6 +63,10 @@ func TestNativeSealedRuntimeACLAndExactRemoval(t *testing.T) {
 			t.Fatalf("sealed ACL rejected: %s: %v", paths[i], err)
 		}
 		files[i] = sealed
+		checks[i].Sealed = true
+		if err := machine.secureRuntimePaths(ctx, checks, sid); err != nil {
+			t.Fatalf("mixed ACL batch after sealing %s: %v", paths[i], err)
+		}
 	}
 	for i := range files {
 		if err := removeOwnedFile(paths[i], files[i]); err != nil {

@@ -4,7 +4,7 @@
 
 - Retain Windows installation and original Run authority on the persistent proof controller across hosted job loss; require durable checkpoint acknowledgement before mutations and exact cleanup before settlement.
 
-- Seal installed Windows Python packages before use so Blender imports cannot add bytecode that blocks repeated installation or exact removal; retain interrupted permission changes in installation ownership records.
+- Seal installed Windows Python packages before use so Blender imports cannot add bytecode that blocks repeated installation or exact removal; retain interrupted permission changes in installation ownership records. Batch read-only permission checks to stay within installer process limits.
 
 - Wait for the entire owned Windows installer process tree to finish within its operation deadline, allowing children to exit naturally after their root while retaining exact cancellation and cleanup proof.
 

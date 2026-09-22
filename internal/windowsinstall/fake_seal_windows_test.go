@@ -117,14 +117,14 @@ func canonicalFakeDACL(sddl string) (string, error) {
 }
 
 func fakeDescriptorString(descriptor uintptr) (string, error) {
-	var encoded uintptr
+	var encoded *uint16
 	var count uint32
 	result, _, callErr := fakeSDString.Call(descriptor, 1, 4, uintptr(unsafe.Pointer(&encoded)), uintptr(unsafe.Pointer(&count)))
 	if result == 0 {
 		return "", callErr
 	}
-	defer syscall.LocalFree(syscall.Handle(encoded))
-	sddl := syscall.UTF16ToString(unsafe.Slice((*uint16)(unsafe.Pointer(encoded)), count))
+	defer syscall.LocalFree(syscall.Handle(uintptr(unsafe.Pointer(encoded))))
+	sddl := syscall.UTF16ToString(unsafe.Slice(encoded, count))
 	aces := strings.IndexByte(sddl, '(')
 	if aces < 0 || !strings.Contains(sddl[:aces], "P") {
 		return "", fmt.Errorf("fake runtime DACL is not protected")
