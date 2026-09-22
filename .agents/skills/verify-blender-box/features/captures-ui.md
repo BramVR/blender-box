@@ -16,7 +16,7 @@ Start with the Scenario payload from `SKILL.md`. For Windows, use payload schema
 
 Run a fresh `windows check` and `doctor --target TARGET --payload PAYLOAD --json`. Require passing readiness and support for every requested capture before `run`. Drive the Scenario with the usual private configuration, then perform exact `status` and idempotent `stop`.
 
-Require the manifest to contain each requested type, matching Session identity, method, positive dimensions, and matching local/remote SHA-256. Inspect the actual images. An offscreen viewport proves no window chrome; a Blender-window capture proves no OS dialog. A desktop image with blank content does not prove that Blender UI was visible, even when transfer and hashes pass. Keep private desktop content out of public proof.
+Require the manifest to contain each requested type, matching Session identity, method, positive dimensions, and matching local/remote SHA-256. Inspect the actual images. An offscreen viewport does not establish window chrome. A Blender-window capture does not establish whether OS dialogs are present. A desktop image with blank content does not prove that Blender UI was visible, even when transfer and hashes pass. Keep private desktop content out of public proof.
 
 Linux supports only viewport. A schema-2 window or desktop request must refuse locally before SSH.
 
