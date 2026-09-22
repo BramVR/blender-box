@@ -131,10 +131,11 @@ func CheckDesktop(ctx context.Context, uid uint32, desktop linuxtarget.Desktop) 
 		return fmt.Errorf("requires exactly one local graphical login for the SSH UID; found %d", len(matches))
 	}
 	session := matches[0]
-	if err := validateDesktopSession(session, uid, desktop); err != nil {
+	xorg, err := checkXorg("/proc", session, desktop)
+	if err != nil {
 		return err
 	}
-	if err := checkXorg(session["ID"], desktop); err != nil {
+	if err := validateDesktopSession(session, uid, desktop, xorg); err != nil {
 		return err
 	}
 	socket := "/tmp/.X11-unix/X" + strings.TrimPrefix(desktop.Display, ":")
@@ -148,46 +149,176 @@ func CheckDesktop(ctx context.Context, uid uint32, desktop linuxtarget.Desktop) 
 	}
 	return connection.Close()
 }
-func validateDesktopSession(session map[string]string, uid uint32, desktop linuxtarget.Desktop) error {
-	gnome := strings.ToLower(session["Desktop"])
-	if session["User"] != strconv.FormatUint(uint64(uid), 10) || session["Active"] != "yes" || session["Remote"] != "no" || session["Type"] != "x11" || session["Class"] != "user" || session["Display"] != desktop.Display || session["Seat"] != "seat0" || (gnome != "gnome" && gnome != "ubuntu" && gnome != "ubuntu:gnome" && gnome != "ubuntu-xorg" && gnome != "gnome-xorg") {
+
+type xorgDesktopFacts struct {
+	desktop string
+	display string
+}
+
+func validateDesktopSession(session map[string]string, uid uint32, desktop linuxtarget.Desktop, xorg xorgDesktopFacts) error {
+	label, hasDesktop := session["Desktop"]
+	display, hasDisplay := session["Display"]
+	if !hasDesktop || !hasDisplay {
+		return fmt.Errorf("logind desktop inspection is incomplete")
+	}
+	if label == "" {
+		label = xorg.desktop
+	}
+	if display == "" {
+		display = xorg.display
+	}
+	if session["User"] != strconv.FormatUint(uint64(uid), 10) || session["Active"] != "yes" || session["Remote"] != "no" || session["Type"] != "x11" || session["Class"] != "user" || display != desktop.Display || session["Seat"] != "seat0" || !gnomeDesktop(label) {
 		return fmt.Errorf("requires one active local GNOME Xorg session on seat0; Wayland, remote, virtual and ambiguous sessions are unsupported")
 	}
 	return nil
 }
-func checkXorg(session string, desktop linuxtarget.Desktop) error {
-	entries, err := os.ReadDir("/proc")
-	if err != nil {
-		return err
+
+func gnomeDesktop(label string) bool {
+	switch strings.ToLower(label) {
+	case "gnome", "ubuntu", "ubuntu:gnome", "ubuntu-xorg", "gnome-xorg":
+		return true
 	}
-	matches := 0
+	return false
+}
+
+func checkXorg(procRoot string, session map[string]string, desktop linuxtarget.Desktop) (xorgDesktopFacts, error) {
+	facts := xorgDesktopFacts{}
+	entries, err := os.ReadDir(procRoot)
+	if err != nil {
+		return facts, err
+	}
+	var matches []struct {
+		root     string
+		identity xorgProcessIdentity
+	}
 	for _, entry := range entries {
 		if _, err := strconv.Atoi(entry.Name()); err != nil {
 			continue
 		}
-		base := "/proc/" + entry.Name()
-		exe, err := os.Readlink(base + "/exe")
-		if err != nil || exe != "/usr/lib/xorg/Xorg" {
+		base := filepath.Join(procRoot, entry.Name())
+		identity, err := readXorgProcessIdentity(base)
+		if err != nil || identity.executable != "/usr/lib/xorg/Xorg" {
 			continue
 		}
-		cgroup, err := readBounded(base+"/cgroup", 64<<10)
-		if err != nil {
-			continue
-		}
-
 		cmdline, err := readBounded(base+"/cmdline", 64<<10)
 		if err != nil {
 			continue
 		}
-		if xorgMatches(session, string(cgroup), strings.Split(string(cmdline), "\x00"), desktop) {
-			matches++
+		if xorgMatches(session["ID"], identity.cgroup, strings.Split(string(cmdline), "\x00"), desktop) {
+			matches = append(matches, struct {
+				root     string
+				identity xorgProcessIdentity
+			}{base, identity})
 		}
-
 	}
-	if matches != 1 {
-		return fmt.Errorf("configured display must belong to exactly one real Xorg process in the active logind session")
+	if len(matches) != 1 {
+		return facts, fmt.Errorf("configured display must belong to exactly one real Xorg process in the active logind session")
+	}
+	process := matches[0]
+	base := process.root
+	if session["Desktop"] == "" {
+		environ, err := readBounded(base+"/environ", 64<<10)
+		if err != nil {
+			return facts, fmt.Errorf("read active Xorg desktop metadata: %w", err)
+		}
+		values := map[string]string{}
+		for _, entry := range strings.Split(string(environ), "\x00") {
+			if key, value, ok := strings.Cut(entry, "="); ok {
+				values[key] = value
+			}
+		}
+		if values["XDG_SESSION_ID"] != session["ID"] || !gnomeDesktop(values["XDG_CURRENT_DESKTOP"]) {
+			return facts, fmt.Errorf("active Xorg process must identify the same GNOME logind session")
+		}
+		for _, key := range []string{"DESKTOP_SESSION", "XDG_SESSION_DESKTOP", "GDMSESSION"} {
+			if value := values[key]; value != "" && !gnomeDesktop(value) {
+				return facts, fmt.Errorf("active Xorg process has contradictory desktop metadata")
+			}
+		}
+		facts.desktop = values["XDG_CURRENT_DESKTOP"]
+	}
+	if session["Display"] == "" {
+		if err := checkXorgDisplaySocket(procRoot, base, desktop.Display); err != nil {
+			return facts, err
+		}
+		facts.display = desktop.Display
+	}
+	if err := process.identity.check(base); err != nil {
+		return xorgDesktopFacts{}, err
+	}
+	return facts, nil
+}
+
+type xorgProcessIdentity struct {
+	startTime  string
+	executable string
+	cgroup     string
+}
+
+func readXorgProcessIdentity(base string) (xorgProcessIdentity, error) {
+	identity := xorgProcessIdentity{}
+	stat, err := readBounded(base+"/stat", 64<<10)
+	if err != nil {
+		return identity, err
+	}
+	end := strings.LastIndexByte(string(stat), ')')
+	if end < 0 {
+		return identity, fmt.Errorf("invalid Xorg process stat")
+	}
+	fields := strings.Fields(string(stat[end+1:]))
+	if len(fields) < 20 {
+		return identity, fmt.Errorf("incomplete Xorg process stat")
+	}
+	if start, err := strconv.ParseUint(fields[19], 10, 64); err != nil || start == 0 {
+		return identity, fmt.Errorf("invalid Xorg process start time")
+	}
+	identity.startTime = fields[19]
+	identity.executable, err = os.Readlink(base + "/exe")
+	if err != nil {
+		return identity, err
+	}
+	cgroup, err := readBounded(base+"/cgroup", 64<<10)
+	identity.cgroup = string(cgroup)
+	return identity, err
+}
+
+func (identity xorgProcessIdentity) check(base string) error {
+	current, err := readXorgProcessIdentity(base)
+	if err != nil || current != identity {
+		return fmt.Errorf("active Xorg process identity changed during desktop inspection")
 	}
 	return nil
+}
+
+func checkXorgDisplaySocket(procRoot, processRoot, display string) error {
+	sockets, err := readBounded(filepath.Join(procRoot, "net/unix"), 1<<20)
+	if err != nil {
+		return fmt.Errorf("read Xorg display socket ownership: %w", err)
+	}
+	path := "/tmp/.X11-unix/X" + strings.TrimPrefix(display, ":")
+	var inodes []string
+	for _, line := range strings.Split(string(sockets), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) == 8 && fields[3] == "00010000" && fields[4] == "0001" && fields[5] == "01" && fields[7] == path {
+			if inode, err := strconv.ParseUint(fields[6], 10, 64); err == nil && inode != 0 {
+				inodes = append(inodes, fields[6])
+			}
+		}
+	}
+	if len(inodes) != 1 {
+		return fmt.Errorf("configured display must have exactly one listening Unix socket")
+	}
+	fds, err := os.ReadDir(processRoot + "/fd")
+	if err != nil {
+		return fmt.Errorf("read active Xorg socket descriptors: %w", err)
+	}
+	for _, fd := range fds {
+		link, err := os.Readlink(processRoot + "/fd/" + fd.Name())
+		if err == nil && link == "socket:["+inodes[0]+"]" {
+			return nil
+		}
+	}
+	return fmt.Errorf("configured display listener must belong to the active Xorg process")
 }
 func properties(output []byte) map[string]string {
 	result := map[string]string{}

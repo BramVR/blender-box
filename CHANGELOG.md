@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Recognize GNOME Xorg sessions when GDM leaves desktop metadata empty, using exact-session Xorg identity and display socket ownership.
+- Accept official Blender 5.2.0 LTS version banners on Linux and report the normalized version as 5.2.0.
 - Preserve verified Run request and Session identity in failed onboarding proof reports after recovery.
 - Fix Windows named-target replacement while readers hold the previous profile open, preserving complete records and permission failures.
 - Keep Linux daemon, Blender, and Scenario HOME-based caches under each private Run root, with prelaunch validation and exact settlement cleanup while preserving missing-home recovery.
