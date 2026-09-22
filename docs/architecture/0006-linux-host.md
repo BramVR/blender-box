@@ -13,7 +13,7 @@ This decision was numbered 0004 on the Linux branch. It is now 0006 to preserve 
 
 Linux uses the existing seven-method `HostAdapter` and host Run state machine. The client selects a concrete adapter after target resolution. PlanResult, HostRequirements, and HostInspection remain shared typed contracts. Linux inspection reports viewport support after all required Linux readiness checks pass. `orchestrator.New` and the local original-target authority records remain unchanged.
 
-The intended platform is Ubuntu 24.04 LTS with GNOME on Xorg, systemd 255, unified cgroup v2, CPython 3.12, and Blender 5.2.0. This is a support contract, not evidence that any operator host meets it. Local fake-boundary tests pass. Native Linux, Blender, and hosted proof remain separate acceptance requirements.
+The intended platform is Ubuntu 24.04 LTS with GNOME on Xorg, systemd 255, unified cgroup v2, CPython 3.12, and Blender 5.2.0. This is a support contract, not evidence that any operator host meets it. Local fake-boundary tests do not establish native acceptance. The opt-in Linux proof establishes native acceptance for an exact candidate. Hosted proof also requires private durable recovery authority.
 
 A fixed desktop and reviewed runtime make the authority check concrete. A transient-unit protocol, alternate import mechanism, or generic host framework would add state without proving another supported configuration.
 
@@ -36,9 +36,10 @@ ExitType=cgroup
 RemainAfterExit=no
 Restart=no
 KillMode=process
+UMask=0077
 ```
 
-Its exact `ExecStart` invokes the declared host executable with `host run-request --state-root WorkRoot`. Fixed environment entries provide Home, Display, Xauthority, and the UID-derived runtime directory and session bus. Setup performs no enablement or automatic restart. There is no `ExecStop`, `PartOf`, or product use of `systemctl stop`, `restart`, or `kill`.
+Its exact `ExecStart` invokes the declared host executable with `host run-request --state-root WorkRoot`. Fixed environment entries provide Home, Display, Xauthority, and the UID-derived runtime directory and session bus. `UMask=0077` gives daemon, Blender, and Scenario descendants private defaults for generated Run files. Setup performs no enablement or automatic restart. There is no `ExecStop`, `PartOf`, or product use of `systemctl stop`, `restart`, or `kill`.
 
 The unit remains active while descendants remain. That lifetime prevents another Run from silently starting over an unresolved Session. It is not cleanup authority. Only the daemon's exact Session identity authorizes process stop.
 
@@ -58,14 +59,14 @@ The dedicated venv has this bounded layout:
 
 - A UID-owned, owner-only root and a regular `pyvenv.cfg` for system CPython 3.12, with `home=/usr/bin`, `executable=/usr/bin/python3.12`, and disabled system site packages.
 - `bin/python3`, plus optional regular `bin/python` and `bin/python3.12` copies. Each accepted executable matches the trusted system interpreter's bytes.
-- `lib/python3.12/site-packages/blendersessiond`, containing exactly the compiled manifest's package files, including vendor data.
+- `lib/python3.12/site-packages/blendersessiond`, containing exactly the compiled manifest's package files, including vendor data. Every package directory has mode `0500`, and every package file has mode `0400`.
 - An optional empty `include` directory and at most one bounded `blendersessiond-*.dist-info` directory. Only the enumerated metadata filenames are permitted there.
 
 A stock `venv --copies` directory commonly contains activation scripts and a `lib64` symlink. Those entries are rejected. Provisioning a sealed runtime is an external prerequisite. Product setup never removes venv files to make an installation pass.
 
-Verification rejects symlinks, unexpected packages, `.pth` files, customization modules, bytecode, unsafe ownership or permissions, and excessive directory entries. It validates physical paths and `pyvenv.cfg` before a bounded interpreter-prefix and import-origin probe. Trusted Ubuntu standard libraries remain an operating-system prerequisite.
+Verification rejects symlinks, unexpected packages, `.pth` files, customization modules, bytecode, writable package entries, unsafe ownership or permissions, and excessive directory entries. It validates physical paths and `pyvenv.cfg` before a bounded interpreter-prefix and import-origin probe. It never changes permissions or removes drift. Trusted Ubuntu standard libraries remain an operating-system prerequisite.
 
-Each daemon operation repeats provenance verification. Top-level invocation uses the selected Python with `-I -B -m blendersessiond`. Its environment replaces inherited process variables and explicitly carries `PYTHONNOUSERSITE=1`, `PYTHONSAFEPATH=1`, and `PYTHONDONTWRITEBYTECODE=1`. The two recursive `sys.executable -m blendersessiond.posix_launcher` calls inherit those controls. Top-level `-I` alone would not protect them.
+Each daemon operation repeats provenance verification. Top-level invocation uses the selected Python with `-I -B -m blendersessiond`. Its environment replaces inherited process variables and explicitly carries `PYTHONNOUSERSITE=1`, `PYTHONSAFEPATH=1`, and `PYTHONDONTWRITEBYTECODE=1`. The two recursive `sys.executable -m blendersessiond.posix_launcher` calls inherit those controls. Top-level `-I` alone would not protect them. Blender's embedded Python can ignore the bytecode setting, so the read-only package tree is the filesystem boundary that prevents new cache files.
 
 Stage creates private `tmp` and `home` directories inside the owned Run root. Every daemon lifecycle operation receives their derived paths as `TMPDIR` and `HOME`; Blender and Scenario descendants inherit them. Launch validates both directories before daemon Start. Exact settlement removes their contents with the Run root, while Stop and Recover tolerate missing directories. Run HOME is separate from the configured operator passwd home used for desktop checks, unit placement, and user-service commands. Display, Xauthority, the session bus, and `XDG_RUNTIME_DIR` keep their original desktop values.
 
@@ -85,4 +86,4 @@ Physical paths reject symlinks and untrusted writers. Private managed roots and 
 
 Default tests use the real orchestrator, Linux adapter, and host service with fake SSH, desktop service, and daemon boundaries. They cover returned PNG hashes and provenance, dropped SSH, startup failure, replacement identity, and repeated exact stop. A real local Python subprocess test exercises both recursive imports with a decoy working directory. Setup tests cover bounded input and output, active-unit refusal, temporary-file durability, and interrupted replacement.
 
-These tests establish local contract behavior. They do not establish native systemd lifetime, desktop logout behavior, a real Blender Scenario, or hosted recovery retention. The [Linux proof workflow](../linux-proof.md) retains the unconditional hosted-retention preflight refusal until private durable authority and recovery are configured.
+These tests establish local contract behavior. Use the [Linux proof workflow](../linux-proof.md) to establish native systemd lifetime, desktop behavior, and a real Blender Scenario for an exact candidate. The workflow retains the unconditional hosted-retention preflight refusal until private durable authority and recovery are configured.

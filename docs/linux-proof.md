@@ -17,7 +17,7 @@ Use an owned Ubuntu 24.04 LTS amd64 desktop with GNOME on Xorg, systemd 255, and
 
 Provision Blender 5.2.0 and the reviewed daemon runtime separately. The daemon uses a dedicated copied CPython 3.12 environment and the complete reviewed package manifest. Its provenance ID is `blendersessiond-6d40e403-posix-9a54bfb9`. The installed package must actually match that manifest. Declaring this ID or passing the old capability probe cannot make an uncorrected wheel compatible.
 
-The daemon correction has shared POSIX fake-process evidence. It does not yet have native Linux or real Blender proof. Keep the original wheel, source revision, patch digests, and package verification receipts privately. This proof and product setup never install or modify Python, the daemon, Blender, or the desktop.
+The daemon correction has shared POSIX fake-process evidence. Establish native Linux and real Blender acceptance with the candidate-specific proof below. Keep the reviewed package read-only, including its directories, so Blender cannot add bytecode to its sealed import tree. Keep the original wheel, source revision, patch digests, and package verification receipts privately. This proof and product setup never install or modify Python, the daemon, Blender, or the desktop.
 
 Prepare existing SSH trust and an operator-owned fixture before running the proof. Keep the host's shared Host Lock root. A different root is not permission to bypass another Run or unrelated Blender work. See the [Linux target and setup guide](linux.md) for the product contract.
 

@@ -129,6 +129,7 @@ class LinuxProofTests(unittest.TestCase):
         self.assertEqual(report["status"], "pass")
         self.assertEqual(report["proof"], "linux-blender-baseline")
         self.assertEqual(report["host_platform"], "linux")
+        self.assertEqual(report["daemon_capabilities"], ["blender-box-v1", "typed-call-error-reason"])
         self.assertEqual(report["daemon_provenance_id"], linux.PROVENANCE)
         self.assertEqual(report["readiness_checks"], sorted(linux.CHECKS))
         self.assertEqual(report["cleanup"], {key: True for key in proof.CLEANUP})

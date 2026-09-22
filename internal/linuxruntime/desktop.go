@@ -21,7 +21,7 @@ var sessionName = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
 
 func UnitPath(home, unit string) string { return home + "/.config/systemd/user/" + unit }
 func UnitBytes(root, executable, home string, uid uint32, desktop linuxtarget.Desktop) string {
-	return "[Unit]\nDescription=Blender Box owned Run launcher\n\n[Service]\nType=exec\nExitType=cgroup\nRemainAfterExit=no\nRestart=no\nKillMode=process\nExecStart=" + executable + " host run-request --state-root " + root + "\nEnvironment=HOME=" + home + "\nEnvironment=DISPLAY=" + desktop.Display + "\nEnvironment=XAUTHORITY=" + desktop.XAuthority + "\nEnvironment=XDG_RUNTIME_DIR=" + linuxtarget.RuntimeDirectory(uid) + "\nEnvironment=DBUS_SESSION_BUS_ADDRESS=unix:path=" + linuxtarget.RuntimeDirectory(uid) + "/bus\n"
+	return "[Unit]\nDescription=Blender Box owned Run launcher\n\n[Service]\nType=exec\nExitType=cgroup\nRemainAfterExit=no\nRestart=no\nKillMode=process\nUMask=0077\nExecStart=" + executable + " host run-request --state-root " + root + "\nEnvironment=HOME=" + home + "\nEnvironment=DISPLAY=" + desktop.Display + "\nEnvironment=XAUTHORITY=" + desktop.XAuthority + "\nEnvironment=XDG_RUNTIME_DIR=" + linuxtarget.RuntimeDirectory(uid) + "\nEnvironment=DBUS_SESSION_BUS_ADDRESS=unix:path=" + linuxtarget.RuntimeDirectory(uid) + "/bus\n"
 }
 func systemEnvironment(uid uint32, desktop linuxtarget.Desktop, home string) []string {
 	values := linuxtarget.DesktopEnvironment(uid, desktop)
@@ -347,7 +347,7 @@ func CheckUnit(ctx context.Context, root, executable, home, unit string, uid uin
 	}
 	env := systemEnvironment(uid, desktop, home)
 	args := []string{"--user", "show", unit, "--no-pager"}
-	names := []string{"LoadState", "ActiveState", "SubState", "FragmentPath", "DropInPaths", "Names", "Type", "ExitType", "RemainAfterExit", "Restart", "KillMode", "ExecStart", "ExecStartPre", "ExecStartPost", "ExecCondition", "ExecStop", "ExecStopPost", "EnvironmentFiles", "Environment", "PartOf", "Requires", "Wants", "BindsTo", "UnitFileState", "NeedDaemonReload", "Slice"}
+	names := []string{"LoadState", "ActiveState", "SubState", "FragmentPath", "DropInPaths", "Names", "Type", "ExitType", "RemainAfterExit", "Restart", "KillMode", "UMask", "ExecStart", "ExecStartPre", "ExecStartPost", "ExecCondition", "ExecStop", "ExecStopPost", "EnvironmentFiles", "Environment", "PartOf", "Requires", "Wants", "BindsTo", "UnitFileState", "NeedDaemonReload", "Slice"}
 	for _, name := range names {
 		args = append(args, "-p", name)
 	}
@@ -362,7 +362,7 @@ func CheckUnit(ctx context.Context, root, executable, home, unit string, uid uin
 	return facts["ActiveState"], nil
 }
 func validateUnitFacts(facts map[string]string, root, executable, home, unit string, uid uint32, desktop linuxtarget.Desktop) error {
-	expected := map[string]string{"LoadState": "loaded", "FragmentPath": UnitPath(home, unit), "Names": unit, "Type": "exec", "ExitType": "cgroup", "RemainAfterExit": "no", "Restart": "no", "KillMode": "process", "NeedDaemonReload": "no", "Slice": "app.slice"}
+	expected := map[string]string{"LoadState": "loaded", "FragmentPath": UnitPath(home, unit), "Names": unit, "Type": "exec", "ExitType": "cgroup", "RemainAfterExit": "no", "Restart": "no", "KillMode": "process", "UMask": "0077", "NeedDaemonReload": "no", "Slice": "app.slice"}
 	deps := strings.Fields(facts["Requires"])
 	sort.Strings(deps)
 	if strings.Join(deps, " ") != "app.slice basic.target" {

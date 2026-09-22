@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Require read-only Linux daemon package files and a private service file-creation mask so Blender startup preserves runtime integrity and cleanup permissions.
+- Report only Linux-verified daemon capabilities in Linux proof outcomes.
 - Accept systemd 255’s omitted empty service-hook and environment-file arrays during Linux setup verification while rejecting populated overrides.
 - Recognize GNOME Xorg sessions when GDM leaves desktop metadata empty, using exact-session Xorg identity and display socket ownership.
 - Accept official Blender 5.2.0 LTS version banners on Linux and report the normalized version as 5.2.0.

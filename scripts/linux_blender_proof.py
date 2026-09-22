@@ -235,7 +235,7 @@ class LinuxProofHost(proof.WindowsProofHost):
         proof.require(record.get("blender_version") == BLENDER_VERSION, "linux-blender-version-mismatch")
 
     def public_runtime(self, operator):
-        return {"daemon_capabilities": list(proof.CAPABILITIES), "host_platform": "linux",
+        return {"daemon_capabilities": ["blender-box-v1", "typed-call-error-reason"], "host_platform": "linux",
                 "host_architecture": "amd64", "daemon_provenance_id": PROVENANCE,
                 "blender_version": BLENDER_VERSION, "readiness_checks": sorted(CHECKS)}
 

@@ -141,6 +141,15 @@ func verifyContents(selected linuxtarget.DaemonRuntime, uid uint32, systemPython
 			return err
 		}
 		rel, _ := filepath.Rel(selected.VenvRoot, name)
+		if name == packageRoot || strings.HasPrefix(name, packageRoot+"/") {
+			info, err := entry.Info()
+			if err != nil {
+				return err
+			}
+			if info.Mode().Perm()&0222 != 0 {
+				return fmt.Errorf("reviewed daemon package entry %q must not be writable", rel)
+			}
+		}
 		if entry.IsDir() {
 			if filepath.Dir(name) == site && strings.HasSuffix(entry.Name(), ".dist-info") {
 				metadataDirs++

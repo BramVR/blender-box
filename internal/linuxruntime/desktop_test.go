@@ -23,6 +23,7 @@ ExitType=cgroup
 RemainAfterExit=no
 Restart=no
 KillMode=process
+UMask=0077
 ExecStart={ path=/home/operator/box/bin/blender-box ; argv[]=/home/operator/box/bin/blender-box host run-request --state-root /home/operator/box ; ignore_errors=no ; start_time=[n/a] ; stop_time=[n/a] ; pid=0 ; code=(null) ; status=0/0 }
 ExecStartPre=
 ExecStartPost=
@@ -45,7 +46,7 @@ Slice=app.slice
 	if err := validate(properties([]byte(fixture))); err != nil {
 		t.Fatal(err)
 	}
-	for key, value := range map[string]string{"Requires": "basic.target app.slice other.service", "DropInPaths": "/home/operator/override.conf", "EnvironmentFiles": "/home/operator/.profile", "ExitType": "main", "KillMode": "control-group", "Restart": "always", "PartOf": "graphical-session.target", "Slice": "session.slice", "FragmentPath": "/tmp/foreign.service", "NeedDaemonReload": "yes", "ExecStop": "/usr/bin/killall blender"} {
+	for key, value := range map[string]string{"UMask": "0002", "Requires": "basic.target app.slice other.service", "DropInPaths": "/home/operator/override.conf", "EnvironmentFiles": "/home/operator/.profile", "ExitType": "main", "KillMode": "control-group", "Restart": "always", "PartOf": "graphical-session.target", "Slice": "session.slice", "FragmentPath": "/tmp/foreign.service", "NeedDaemonReload": "yes", "ExecStop": "/usr/bin/killall blender"} {
 		t.Run(key, func(t *testing.T) {
 			facts := properties([]byte(fixture))
 			facts[key] = value
@@ -78,7 +79,7 @@ Slice=app.slice
 	if err := validate(facts); err != nil {
 		t.Fatalf("rejected native systemd 255 empty-array output: %v", err)
 	}
-	for _, key := range []string{"DropInPaths", "PartOf", "Wants", "BindsTo", "ExecStart", "LoadState", "FragmentPath", "Names", "Type", "ExitType", "RemainAfterExit", "Restart", "KillMode", "NeedDaemonReload", "Slice", "Requires", "UnitFileState", "Environment"} {
+	for _, key := range []string{"UMask", "DropInPaths", "PartOf", "Wants", "BindsTo", "ExecStart", "LoadState", "FragmentPath", "Names", "Type", "ExitType", "RemainAfterExit", "Restart", "KillMode", "NeedDaemonReload", "Slice", "Requires", "UnitFileState", "Environment"} {
 		t.Run(key+" missing", func(t *testing.T) {
 			facts := properties([]byte(fixture))
 			delete(facts, key)

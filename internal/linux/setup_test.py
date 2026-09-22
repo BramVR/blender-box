@@ -99,7 +99,7 @@ class SetupPublicationTests(unittest.TestCase):
         desktop = {"display": ":0", "xauthority": "/run/user/1000/gdm/Xauthority"}
         self.config = {"uid": 1000, "home": str(self.home), "work_root": str(self.root), "host_executable": str(self.host), "unit_name": "blender-box.service", "desktop": desktop}
         unit_bytes = ("[Unit]\nDescription=Blender Box owned Run launcher\n\n[Service]\n"
-                      "Type=exec\nExitType=cgroup\nRemainAfterExit=no\nRestart=no\nKillMode=process\n"
+                      "Type=exec\nExitType=cgroup\nRemainAfterExit=no\nRestart=no\nKillMode=process\nUMask=0077\n"
                       "ExecStart=" + str(self.host) + " host run-request --state-root " + str(self.root) + "\n"
                       "Environment=HOME=" + str(self.home) + "\nEnvironment=DISPLAY=:0\n"
                       "Environment=XAUTHORITY=" + desktop["xauthority"] + "\n"
@@ -161,6 +161,18 @@ class SetupPublicationTests(unittest.TestCase):
         self.assertEqual(self.commands, [])
         self.assertEqual(list(self.root.iterdir()), [])
         self.assertFalse(self.unit.exists())
+
+    def test_missing_or_permissive_umask_refuses_before_publication(self):
+        original = self.plan["unit_bytes"]
+        for replacement in ("", "UMask=0002\n"):
+            with self.subTest(umask=replacement):
+                self.plan["unit_bytes"] = original.replace("UMask=0077\n", replacement)
+                self.plan["unit_sha256"] = bootstrap.digest(self.plan["unit_bytes"].encode())
+                with self.assertRaisesRegex(RuntimeError, "static unit does not match declared configuration"):
+                    self.apply()
+                self.assertEqual(self.commands, [])
+                self.assertEqual(list(self.root.iterdir()), [])
+                self.assertFalse(self.unit.exists())
 
     def test_publication_with_path_lstat_dispatching_through_stat(self):
         with mock.patch.object(pathlib.Path, "lstat", new=lambda path: path.stat(follow_symlinks=False)):

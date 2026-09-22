@@ -9,7 +9,7 @@ read_when:
 
 This guide is for the operator of an owned Linux Blender host. Setup writes the declared Blender Box binary, private state, and static user unit. It does not install Python, Blender, the daemon, or a desktop.
 
-The implemented Linux path has local tests with fake external boundaries. Native Linux, systemd, Blender, and hosted acceptance remain outstanding. The currently available daemon wheel lacks the reviewed POSIX correction and is rejected. Obtain the corrected runtime from its provider before attempting a real Run.
+Local tests with fake external boundaries do not establish native acceptance. Use the opt-in Linux proof for the exact candidate. Hosted acceptance remains blocked until private durable recovery authority and recovery are configured. The currently available daemon wheel lacks the reviewed POSIX correction and is rejected. Obtain the corrected runtime from its provider before attempting a real Run.
 
 ## Prepare the host prerequisites
 
@@ -17,7 +17,7 @@ Use Ubuntu 24.04 LTS, GNOME on Xorg, systemd 255 with unified cgroup v2, CPython
 
 Provide a safe SSH alias through your existing SSH configuration. Keep Blender's MCP port on host loopback. No port forwarding or desktop service installation is part of setup.
 
-Have the runtime provider supply a dedicated copied CPython venv that matches the [reviewed runtime layout](architecture/0006-linux-host.md#reviewed-runtime-layout). A stock venv is insufficient. The verified package contains the reviewed POSIX launch correction, and the whole import tree must satisfy the allowlist. No product command upgrades or repairs this runtime.
+Have the runtime provider supply a dedicated copied CPython venv that matches the [reviewed runtime layout](architecture/0006-linux-host.md#reviewed-runtime-layout). A stock venv is insufficient. The verified package contains the reviewed POSIX launch correction, and the whole import tree must satisfy the allowlist. Provision every `blendersessiond` package directory with mode `0500` and every package file with mode `0400`. Blender's embedded Python can ignore bytecode environment settings. Read-only package entries prevent it from adding `__pycache__` files that invalidate the reviewed manifest. No product command changes permissions, upgrades, repairs, or cleans this runtime.
 
 ## Create the private target
 
@@ -81,7 +81,7 @@ After verifying the owned target, apply the bounded setup:
 blender-box linux setup --target-name linux-studio --host-binary /tmp/blender-box-linux --apply --json
 ```
 
-Apply refuses a Host Lock, an active or transitioning unit, foreign unit configuration, unsafe paths, and unrecognized existing artifacts. It publishes the host binary before reloading the user manager, verifies the effective static unit, and returns matching publication hashes. It neither enables the unit nor requires linger.
+Apply refuses a Host Lock, an active or transitioning unit, foreign unit configuration, unsafe paths, and unrecognized existing artifacts. It publishes the host binary before reloading the user manager, verifies the effective static unit, and returns matching publication hashes. The unit sets `UMask=0077`, so the daemon, Blender, and Scenario descendants create private Run caches and temporary files by default. Apply neither enables the unit nor requires linger.
 
 A scoped `.linux-setup.json` receipt recognizes later replacement and interrupted publication. Retry can reconcile complete owned temporary files and recorded pending hashes. A completed final ownership temporary is published only when its identity and installed hashes exactly match the prior pending receipt and both installed artifacts. This reconciliation precedes applying the same or a different candidate. A pending ownership temporary for a different candidate still requires inspection or a retry with its matching candidate. Partial or mismatched temporary files remain for operator inspection. Setup does not delete uncertain artifacts. Changing the managed root or unit destination is a separate operator migration.
 
