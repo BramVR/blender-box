@@ -363,7 +363,8 @@ function Assert-Access([string]$Path,[string]$Sid,[bool]$Managed){
 function Task-Definition($service,$s){
  $d=$service.NewTask(0);$d.RegistrationInfo.Description='Blender Box installation '+$s.installation_id;$d.RegistrationInfo.Source=$s.installation_id;$d.RegistrationInfo.Author=$s.owner_sid;$d.RegistrationInfo.URI='\'+$s.name
  if($s.marker){$d.RegistrationInfo.Description=$s.marker;$d.RegistrationInfo.Source=$s.marker}
- $d.Principal.UserId=$s.owner_sid;$d.Principal.LogonType=3;$d.Principal.RunLevel=0
+ $d.Principal.Id='Author';$d.Principal.UserId=$s.owner_sid;$d.Principal.LogonType=3;$d.Principal.RunLevel=0
+ $d.Actions.Context='Author';$d.RegistrationInfo.SecurityDescriptor=Task-Security $s
  $d.Settings.Enabled=$true;$d.Settings.MultipleInstances=2;$d.Settings.ExecutionTimeLimit='PT0S';$d.Settings.DisallowStartIfOnBatteries=$false;$d.Settings.StopIfGoingOnBatteries=$false;$d.Settings.AllowDemandStart=$true
  if($s.execution_time_limit){$d.Settings.ExecutionTimeLimit=$s.execution_time_limit}
  $a=$d.Actions.Create(0);$a.Path=$s.executable;$a.Arguments=$s.arguments;$a.WorkingDirectory=$s.directory
@@ -412,7 +413,7 @@ function Observe($task){
 $observed=Observe $task
 if($r.operation -eq 'create'){
  if($observed.exists){throw 'Task collision'}
- $task=$folder.RegisterTaskDefinition($s.name,$expected,2,$s.owner_sid,$null,3,$security)
+ $task=$folder.RegisterTaskDefinition($s.name,$expected,18,$s.owner_sid,$null,3,$security)
  $observed=Observe $task
 }elseif($r.operation -eq 'delete'){
  if(-not $observed.exists -or -not $observed.matches -or $observed.running){throw 'Task deletion authority mismatch'}
