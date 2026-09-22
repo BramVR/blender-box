@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Wait for the entire owned Windows installer process tree to finish within its operation deadline, allowing children to exit naturally after their root while retaining exact cancellation and cleanup proof.
+
 - Start Windows installer keepers through a temporary limited interactive Scheduled Task with durable launch receipts, a bounded deadline, and exact external task cleanup before releasing setup authority; preserve private worker Job cleanup across SSH disconnects.
 - Add owned Windows runtime installation with pinned artifact manifests, previews that show selected identities and exact managed task changes, durable installation receipts, bounded execution status and recovery, generated targets, repeatable removal, and maintenance fencing; refuse legacy setup apply without ownership and prepare separately authorized host-install proof.
 - Start trusted Windows installer PowerShell commands suspended with `CREATE_NO_WINDOW` to restore execution and output while generic commands remain detached and suspended; retain exact Job-member handles, including any console helper, and require complete membership and physical exit proof within one cleanup deadline before reporting tree cleanup.

@@ -105,6 +105,12 @@ func (fixture *memberFixture) wait(handle uintptr, deadline time.Time) error {
 	if fixture.waitErr != nil {
 		return fixture.waitErr
 	}
+	if deadline.IsZero() {
+		if fixture.handles[handle].signaled {
+			return nil
+		}
+		return fmt.Errorf("process is not signaled")
+	}
 	remaining := deadline.Sub(fixture.now)
 	if remaining < fixture.waitDuration {
 		fixture.now = deadline
@@ -113,6 +119,51 @@ func (fixture *memberFixture) wait(handle uintptr, deadline time.Time) error {
 	fixture.now = fixture.now.Add(fixture.waitDuration)
 	fixture.handles[handle].signaled = true
 	return nil
+}
+
+func TestNativeMembersVerifyNaturalExitBeforeTermination(t *testing.T) {
+	for _, state := range []string{"exited", "active", "listed", "untracked", "unsignaled", "collector-fault", "counts-error", "list-error", "wait-error"} {
+		t.Run(state, func(t *testing.T) {
+			fixture := newMemberFixture()
+			fixture.add(1)
+			fixture.add(2)
+			members := newNativeMembers(fixture)
+			members.retain(1, fixture.processes[1].created)
+			members.event(6, 2)
+			for _, process := range fixture.processes {
+				process.visible = false
+				process.signaled = true
+			}
+			switch state {
+			case "active":
+				fixture.countResults = []nativeJobCounts{{total: 2, active: 1}}
+			case "listed":
+				fixture.countResults = []nativeJobCounts{{total: 2, active: 0}}
+				fixture.processes[2].visible = true
+			case "untracked":
+				fixture.total++
+			case "unsignaled":
+				fixture.processes[2].signaled = false
+			case "collector-fault":
+				members.event(4, 1)
+			case "counts-error":
+				fixture.countsErr = fmt.Errorf("accounting unavailable")
+			case "list-error":
+				fixture.listErr = fmt.Errorf("membership unavailable")
+			case "wait-error":
+				fixture.waitErr = fmt.Errorf("member state unavailable")
+			}
+			err := members.verifyExited()
+			if (err == nil) != (state == "exited") || fixture.terminations != 0 {
+				t.Fatalf("natural exit=%v terminations=%d", err, fixture.terminations)
+			}
+			for _, deadline := range fixture.waitedDeadlines {
+				if !deadline.IsZero() {
+					t.Fatal("natural exit verification waited for a live member")
+				}
+			}
+		})
+	}
 }
 
 func TestNativeMembersRetainExitedObjectsAndIgnoreDuplicateHints(t *testing.T) {

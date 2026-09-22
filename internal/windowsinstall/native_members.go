@@ -149,6 +149,23 @@ func (members *nativeMembers) event(message uint32, pid uintptr) bool {
 	return members.fault == nil
 }
 
+func (members *nativeMembers) verifyExited() error {
+	counts := members.observeCounts()
+	remaining := members.snapshot()
+	if members.fault != nil {
+		return members.fault
+	}
+	if counts.active != 0 || len(remaining) != 0 || counts.total != uint32(len(members.held)) {
+		return fmt.Errorf("native job has not naturally exited with complete lifetime coverage")
+	}
+	for _, member := range members.held {
+		if err := members.api.wait(member.handle, time.Time{}); err != nil {
+			return fmt.Errorf("native job member has not naturally exited: %w", err)
+		}
+	}
+	return nil
+}
+
 func (members *nativeMembers) settle(deadline time.Time) error {
 	withinDeadline := func() bool {
 		if time.Until(deadline) > 0 {

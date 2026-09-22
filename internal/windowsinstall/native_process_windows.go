@@ -117,10 +117,6 @@ func (job *nativeJob) close() {
 	}
 	closeHandles()
 }
-func (job *nativeJob) active() (uint32, error) {
-	counts, err := (nativeMemberWindows{job.handle}).counts()
-	return counts.active, err
-}
 func (job *nativeJob) terminateAndWait() error {
 	return job.settle(time.Now().Add(nativeCleanupTimeout))
 }
@@ -406,21 +402,28 @@ func runNativeJobWithIntent(ctx context.Context, intent nativeLaunchIntent, exec
 			cleanupErr = errors.Join(cleanupErr, errNativeCleanupUnknown, stream.ioErr)
 		}
 	}
+	var recheck <-chan time.Time
+	naturallyEmpty := false
 	running := true
 	for running {
+		check := false
 		select {
 		case <-ctx.Done():
 			operationErr = errors.Join(operationErr, ctx.Err())
 			running = false
 		case result := <-exit:
 			waited = &result
-			active, err := job.active()
-			if err != nil {
-				operationErr = errors.Join(operationErr, err)
-				cleanupErr = errors.Join(cleanupErr, errNativeCleanupUnknown, err)
-			} else if active != 0 {
-				operationErr = errors.Join(operationErr, fmt.Errorf("native operation left running descendants"))
-			}
+			exit = nil
+			// Job-empty notifications are not guaranteed; check physical membership.
+			ticker := time.NewTicker(100 * time.Millisecond)
+			defer ticker.Stop()
+			recheck = ticker.C
+			check = true
+		case <-recheck:
+			check = true
+		case <-job.collector.done:
+			operationErr = errors.Join(operationErr, fmt.Errorf("native collector ended before operation completed"))
+			cleanupErr = errors.Join(cleanupErr, errNativeCleanupUnknown, job.collector.members.fault)
 			running = false
 		case stream := <-streams:
 			receive(stream)
@@ -428,8 +431,30 @@ func runNativeJobWithIntent(ctx context.Context, intent nativeLaunchIntent, exec
 				running = false
 			}
 		}
+		if check {
+			api := nativeMemberWindows{job.handle}
+			counts, err := api.counts()
+			var list nativeMemberList
+			if err == nil {
+				list, err = api.list()
+			}
+			if err != nil {
+				operationErr = errors.Join(operationErr, err)
+				cleanupErr = errors.Join(cleanupErr, errNativeCleanupUnknown, err)
+				running = false
+			} else {
+				naturallyEmpty = counts.active == 0 && len(list.pids) == 0
+				running = !naturallyEmpty
+			}
+		}
+	}
+	if err := ctx.Err(); err != nil && !errors.Is(operationErr, err) {
+		operationErr = errors.Join(operationErr, err)
 	}
 	deadline := time.Now().Add(nativeCleanupTimeout)
+	if waited != nil && naturallyEmpty && operationErr == nil {
+		operationErr = job.verifyExited(deadline)
+	}
 	cleanupErr = errors.Join(cleanupErr, job.settle(deadline))
 	if cleanupErr != nil {
 		job.close()

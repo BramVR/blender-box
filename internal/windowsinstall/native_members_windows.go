@@ -174,6 +174,13 @@ func (job *nativeJob) stopCollection(deadline time.Time) error {
 	}
 }
 
+func (job *nativeJob) verifyExited(deadline time.Time) error {
+	if err := job.stopCollection(deadline); err != nil {
+		return err
+	}
+	return job.collector.members.verifyExited()
+}
+
 func (job *nativeJob) settle(deadline time.Time) error {
 	if job.collector == nil {
 		members := newNativeMembers(nativeMemberWindows{job.handle})

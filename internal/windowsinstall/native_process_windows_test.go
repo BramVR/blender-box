@@ -146,7 +146,7 @@ func TestNativeProcessHelper(t *testing.T) {
 			}
 		}
 		childMode := "leaf"
-		if mode == "probe-early" {
+		if mode == "probe-early" || mode == "parent-natural" {
 			childMode = "early-leaf"
 		}
 		child := exec.Command(os.Args[0], "-test.run=^TestNativeProcessHelper$", "--", childMode, eventName, directory)
@@ -164,7 +164,7 @@ func TestNativeProcessHelper(t *testing.T) {
 			}
 			os.Exit(0)
 		}
-		if mode == "parent-exits" {
+		if mode == "parent-exits" || mode == "parent-natural" {
 			os.Exit(0)
 		}
 		if mode == "overflow" {
@@ -252,7 +252,20 @@ func TestNativeOperationSettlesOwnedDescendants(t *testing.T) {
 					_, _ = syscall.WaitForSingleObject(child, 5000)
 				}
 			}()
-			if mode == "cancel" {
+			if mode == "parent-exits" {
+				rootHandle, err := syscall.OpenProcess(syscall.SYNCHRONIZE|0x1000, false, uint32(root.PID))
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer syscall.CloseHandle(rootHandle)
+				if err := syscall.GetProcessTimes(rootHandle, &created, &exited, &kernel, &user); err != nil || created != root.Created {
+					t.Fatalf("root spawn identity mismatch: %v", err)
+				}
+				if got, err := syscall.WaitForSingleObject(rootHandle, 10000); err != nil || got != syscall.WAIT_OBJECT_0 {
+					t.Fatalf("root did not exit: wait=%d error=%v", got, err)
+				}
+			}
+			if mode == "cancel" || mode == "parent-exits" {
 				cancel()
 			}
 			select {
@@ -263,12 +276,112 @@ func TestNativeOperationSettlesOwnedDescendants(t *testing.T) {
 			if err == nil {
 				t.Fatal("native operation left descendants without an error")
 			}
+			if (mode == "cancel" || mode == "parent-exits") && !errors.Is(err, context.Canceled) {
+				t.Fatalf("operation lost cancellation: %v", err)
+			}
 			operationErr := err
 			if got, waitErr := syscall.WaitForSingleObject(child, 0); waitErr != nil || got != syscall.WAIT_OBJECT_0 {
 				later, laterErr := syscall.WaitForSingleObject(child, uint32(nativeCleanupTimeout/time.Millisecond))
 				t.Fatalf("owned descendant survives native return: wait=%d error=%v operation_error=%v cleanup_unknown=%t later_wait=%d later_error=%v", got, waitErr, operationErr, errors.Is(operationErr, errNativeCleanupUnknown), later, laterErr)
 			}
 		})
+	}
+}
+
+func TestNativeOperationWaitsForNaturalDescendantExit(t *testing.T) {
+	id, err := newID("native-natural-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	eventName := `Local\BlenderBox-` + id
+	createEvent := func(name string) syscall.Handle {
+		wide, err := syscall.UTF16PtrFromString(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		handle, _, err := testCreateEvent.Call(0, 1, 0, uintptr(unsafe.Pointer(wide)))
+		if handle == 0 {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { syscall.CloseHandle(syscall.Handle(handle)) })
+		return syscall.Handle(handle)
+	}
+	ready, release := createEvent(eventName), createEvent(eventName+"-exit")
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	directory := t.TempDir()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	spawned := make(chan syscall.Handle, 1)
+	done := make(chan error, 1)
+	treeExited := make(chan struct{}, 1)
+	environment := append(nativeTestEnvironment(t), "BLENDER_BOX_NATIVE_TEST_HELPER=1")
+	go func() {
+		defer close(done)
+		_, err := runNativeJobGated(ctx, executable, []string{"-test.run=^TestNativeProcessHelper$", "--", "parent-natural", eventName, directory}, nil, environment, &nativeRunGate{
+			Admit: func(spawn nativeSpawn) error {
+				current, err := syscall.GetCurrentProcess()
+				if err != nil {
+					return err
+				}
+				var handle syscall.Handle
+				if err := syscall.DuplicateHandle(current, spawn.Info.Process, current, &handle, syscall.SYNCHRONIZE, false, 0); err != nil {
+					return err
+				}
+				spawned <- handle
+				return nil
+			},
+			TreeExited: func(nativeSpawn) { treeExited <- struct{}{} },
+		})
+		done <- err
+	}()
+	t.Cleanup(func() {
+		cancel()
+		select {
+		case <-done:
+		case <-time.After(nativeCleanupTimeout + time.Second):
+			t.Error("native operation did not finish cleanup")
+		}
+	})
+	var root syscall.Handle
+	select {
+	case root = <-spawned:
+		defer syscall.CloseHandle(root)
+	case err := <-done:
+		t.Fatalf("native launch failed: %v", err)
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	}
+	if got, err := syscall.WaitForSingleObject(ready, 10000); err != nil || got != syscall.WAIT_OBJECT_0 {
+		t.Fatalf("descendant readiness=%d error=%v", got, err)
+	}
+	if got, err := syscall.WaitForSingleObject(root, 10000); err != nil || got != syscall.WAIT_OBJECT_0 {
+		t.Fatalf("root exit=%d error=%v", got, err)
+	}
+	select {
+	case err := <-done:
+		t.Fatalf("operation returned before descendant release: %v", err)
+	case <-treeExited:
+		t.Fatal("tree reported exited before descendant release")
+	default:
+	}
+	if ok, _, err := testSetEvent.Call(uintptr(release)); ok == 0 {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("natural descendant exit failed: %v", err)
+		}
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	}
+	select {
+	case <-treeExited:
+	default:
+		t.Fatal("settled natural tree was not reported")
 	}
 }
 
