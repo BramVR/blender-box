@@ -15,6 +15,7 @@ import (
 	"time"
 	"unicode/utf16"
 
+	"github.com/BramVR/blender-box/internal/linuxruntime"
 	"github.com/BramVR/blender-box/internal/orchestrator"
 )
 
@@ -115,12 +116,34 @@ func powershellArguments(script string) []string {
 	return []string{"-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand", base64.StdEncoding.EncodeToString(encoded)}
 }
 
-func (runtime *Runtime) Launch(ctx context.Context, taskName string) error {
+func (runtime *Runtime) Prepare(ctx context.Context, launch LaunchRequest) error {
+	if data := launch.Request.Body.Linux; data != nil {
+		return linuxruntime.Prepare(ctx, launch.StateRoot, launch.Request.Claim.TaskName, data.UID, data.Desktop)
+	}
+	return nil
+}
+func (runtime *Runtime) Launch(ctx context.Context, launch LaunchRequest) error {
+	taskName := launch.Request.Claim.TaskName
+	if data := launch.Request.Body.Linux; data != nil {
+		return linuxruntime.Launch(ctx, launch.StateRoot, taskName, data.UID, data.Desktop)
+	}
 	_, err := runtime.processes.Run(ctx, "schtasks.exe", []string{"/Run", "/TN", taskName}, nil)
 	return err
 }
 
 func (runtime *Runtime) Start(ctx context.Context, request DaemonStart) (orchestrator.SessionID, error) {
+	if request.Runtime.Linux != nil {
+		if err := linuxruntime.CheckExecutionContext(request.UnitName); err != nil {
+			return "", err
+		}
+		if request.Desktop == nil {
+			return "", fmt.Errorf("Linux daemon start lacks desktop contract")
+		}
+		if err := linuxruntime.CheckDesktop(ctx, request.UID, *request.Desktop); err != nil {
+			return "", err
+		}
+	}
+
 	arguments := []string{
 		"start",
 		"--name", request.Name,
@@ -130,7 +153,7 @@ func (runtime *Runtime) Start(ctx context.Context, request DaemonStart) (orchest
 	if request.EnableUIEvents {
 		arguments = append(arguments, "--enable-ui-events")
 	}
-	output, runErr := runtime.processes.Run(ctx, request.Executable, arguments, request.Environment)
+	output, runErr := runtime.runDaemon(ctx, request.Runtime, arguments, request.Environment)
 	var result struct {
 		SchemaVersion int    `json:"schema_version"`
 		Status        string `json:"status"`
@@ -155,7 +178,7 @@ func (runtime *Runtime) Start(ctx context.Context, request DaemonStart) (orchest
 }
 
 func (runtime *Runtime) Recover(ctx context.Context, request DaemonRecover) (orchestrator.SessionID, bool, error) {
-	output, runErr := runtime.processes.Run(ctx, request.Executable, []string{
+	output, runErr := runtime.runDaemon(ctx, request.Runtime, []string{
 		"status", "--name", request.Name, "--json",
 	}, request.Environment)
 	var result struct {
@@ -193,7 +216,7 @@ func (runtime *Runtime) WaitReady(ctx context.Context, request DaemonReady) erro
 		if err := readyCtx.Err(); err != nil {
 			return fmt.Errorf("blendersessiond readiness: %w", err)
 		}
-		output, runErr := runtime.processes.Run(readyCtx, request.Executable, []string{
+		output, runErr := runtime.runDaemon(readyCtx, request.Runtime, []string{
 			"status", "--name", request.Name, "--json",
 		}, request.Environment)
 		var result struct {
@@ -247,7 +270,7 @@ func (runtime *Runtime) Call(ctx context.Context, request DaemonCall) (json.RawM
 	if err := decodeExtensibleJSON(request.Parameters, &parameters, maxScenarioJSON); err != nil {
 		return nil, fmt.Errorf("invalid daemon parameters: %w", err)
 	}
-	output, err := runtime.processes.Run(ctx, request.Executable, []string{
+	output, err := runtime.runDaemon(ctx, request.Runtime, []string{
 		"call", request.Command,
 		"--name", request.Name,
 		"--expect-session-id", string(request.SessionID),
@@ -280,7 +303,7 @@ func (runtime *Runtime) Stop(ctx context.Context, request DaemonStop) error {
 	if err := request.SessionID.Validate(); err != nil {
 		return err
 	}
-	output, err := runtime.processes.Run(ctx, request.Executable, []string{
+	output, err := runtime.runDaemon(ctx, request.Runtime, []string{
 		"stop",
 		"--name", request.Name,
 		"--expect-session-id", string(request.SessionID),
@@ -394,6 +417,16 @@ func mergedEnvironment(overrides map[string]string) []string {
 		result = append(result, key+"="+overrides[key])
 	}
 	return result
+}
+
+func (runtime *Runtime) runDaemon(ctx context.Context, binding DaemonBinding, arguments []string, environment map[string]string) ([]byte, error) {
+	if binding.Linux != nil {
+		if binding.Executable != binding.Linux.PythonExecutable {
+			return nil, fmt.Errorf("Linux daemon binding mismatch")
+		}
+		return linuxruntime.Run(ctx, *binding.Linux, arguments, environment)
+	}
+	return runtime.processes.Run(ctx, binding.Executable, arguments, environment)
 }
 
 func waitRuntimePoll(ctx context.Context, interval time.Duration) error {

@@ -143,6 +143,8 @@ A Python-only client and host helper would make the first code quick to write, b
 
 ## Implementation status
 
+The Linux adapter now uses the same seven-method boundary and durable Run state machine. Linux request and settlement schema 2 bind the reviewed runtime without changing Windows schema 1. The [Linux host boundary](0006-linux-host.md) records its static user service, fresh-start preparation, provenance, and acceptance gaps.
+
 The first landed seam is `windows check --target <file> --json`. One Go binary serves both the client and the static task entry point; Python remains inside Blender-owned Scenario scripts. The check streams a bounded read-only PowerShell program over SSH, resolves the configured console user to an SID, and validates declared paths and the root Scheduled Task without relying on the SSH user's `PATH`.
 
 The Run contract and deterministic orchestration core are implemented behind `Runner`. A strict Payload loader snapshots the validated bytes, computes transfer size and SHA-256 locally, rejects unsafe Windows paths and symlinks, and enforces file and aggregate bounds. The integrated fake-host test proves the full ordering from inspection and Host Lock acquisition through an exact versioned Session receipt, hash-verified evidence, and known settlement without exposing adapter phases in the CLI. The Run deadline bounds every normal adapter operation; settlement has a separate 30-second attempt bound and retains the last trusted authority after cancellation or transport failure.

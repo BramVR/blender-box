@@ -10,6 +10,7 @@ Use the public CLI to import a target into isolated user-local configuration, se
 - Require explicit `--replace` for a collision. Unsafe names, unknown platforms, and both selector flags fail locally.
 - Exercise `windows setup` preview and `plan` by name. Neither may contact SSH. Check schema 2 capture inventory and schema 3 redacted UI actions in the plan.
 - Exercise named `doctor` through recording fake SSH. Require the requested capture and UI capabilities; a named target must not bypass the file-selected capability checks.
+- Import a Linux target and exercise `linux setup` preview, `plan`, and `doctor` through fake boundaries. Unsupported Blender-window, desktop, and UI requirements must fail before transport for both selector forms.
 - Use recording fake SSH for public status/stop mismatch tests. Require the original-target error and zero transport invocations. A nonzero exit alone is insufficient.
 
 These checks do not prove a Windows Scenario, real evidence transfer, or cleanup.

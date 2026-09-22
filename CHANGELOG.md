@@ -2,8 +2,18 @@
 
 ## Unreleased
 
+- Require read-only Linux daemon package files and a private service file-creation mask so Blender startup preserves runtime integrity and cleanup permissions.
+- Report only Linux-verified daemon capabilities in Linux proof outcomes.
+- Accept systemd 255’s omitted empty service-hook and environment-file arrays during Linux setup verification while rejecting populated overrides.
+- Recognize GNOME Xorg sessions when GDM leaves desktop metadata empty, using exact-session Xorg identity and display socket ownership.
+- Accept official Blender 5.2.0 LTS version banners on Linux and report the normalized version as 5.2.0.
 - Preserve verified Run request and Session identity in failed onboarding proof reports after recovery.
 - Fix Windows named-target replacement while readers hold the previous profile open, preserving complete records and permission failures.
+- Keep Linux daemon, Blender, and Scenario HOME-based caches under each private Run root, with prelaunch validation and exact settlement cleanup while preserving missing-home recovery.
+- Keep Linux daemon and Blender temporary files under each private Run root, with prelaunch validation and exact settlement cleanup.
+- Recover interrupted Linux setup final receipts only when prior pending hashes match both installed artifacts, and reject relative or noncanonical host paths before traversal.
+
+- Add Linux targets, read-only readiness, explicit static-user-unit setup, and fenced Scenario execution with reviewed daemon provenance; preserve Windows wire compatibility and keep native Linux and hosted proof as outstanding acceptance requirements.
 - Add platform-aware named targets with legacy Windows profile support, atomic user-local storage, and recovery bound to original Run authority; prepare named-target proof and block hosted execution until private recovery authority can be retained.
 - Preserve owned command cleanup when onboarding proof receipt or process setup fails.
 - Accept Blender's numeric PNG resolution metadata in onboarding proof and preserve verified cleanup when retained evidence fails validation.
