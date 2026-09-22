@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-"""Render the unqualified controller proposal or validate a bounded dispatch request."""
 
 import argparse
 from contextlib import contextmanager
