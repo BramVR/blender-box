@@ -49,7 +49,7 @@ Read `public/outcome.json` and the private receipts directly. Require a passing 
 
 A fresh `status` invocation proves reconnect through another CLI process. The final `stop` proves idempotent exact recovery after the default Run cleanup. It does not prove stopping a kept Session or surviving a deliberately interrupted SSH transport.
 
-The runner persists the validated Run ID in its public failure result as soon as the CLI emits it. If a command then fails, the runner attempts bounded recovery through public `status` and `stop`. Keep the private configuration root, journal, original target, and receipts when cleanup remains unknown. A Run ID alone cannot reconstruct the controller's original authority after a hosted controller is gone. Do not reset the fixture, remove host state, or stop Blender by name to make the proof pass.
+The runner persists the validated Run ID in its public failure result as soon as the CLI emits it. If a command then fails, the runner attempts bounded recovery through public `status` and `stop`. Successful recovery adds the verified request ID, request hash, and Session ID to the public result. The Session ID is `null` when the Run failed before a Session existed. Keep the private configuration root, journal, original target, and receipts when cleanup remains unknown. Public recovery identity alone cannot reconstruct the controller’s original authority after a hosted controller is gone. Do not reset the fixture, remove host state, or stop Blender by name to make the proof pass.
 
 ## Prove named targets
 

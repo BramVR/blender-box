@@ -60,17 +60,24 @@ func Check(ctx context.Context, config linuxtarget.Config) CheckResult {
 		output, err := execute(ctx, config.BlenderExecutable, []string{"--version"}, CleanEnvironment(nil))
 		blenderErr = err
 		if err == nil {
-			first, _, _ := strings.Cut(string(output), "\n")
-			if first != "Blender 5.2.0" {
+			result.BlenderVersion = blenderVersion(output)
+			if result.BlenderVersion == "" {
 				blenderErr = fmt.Errorf("supported Blender version is 5.2.0")
-			} else {
-				result.BlenderVersion = "5.2.0"
 			}
 		}
 	}
 	add("blender.executable", blenderErr)
 	return result
 }
+
+func blenderVersion(output []byte) string {
+	first, _, _ := strings.Cut(string(output), "\n")
+	if first == "Blender 5.2.0" || first == "Blender 5.2.0 LTS" {
+		return "5.2.0"
+	}
+	return ""
+}
+
 func CheckExecutable(name string, uid uint32) error {
 	if err := SafePath(name, uid, false); err != nil {
 		return err

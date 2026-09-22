@@ -2,10 +2,14 @@
 
 ## Unreleased
 
+- Preserve proof-controller Run authority across interruptions with fenced native attempts, one-use worker admission, and local enrollment previews; native qualification remains required.
+- Require read-only Linux daemon package files and a private service file-creation mask so Blender startup preserves runtime integrity and cleanup permissions.
+- Report only Linux-verified daemon capabilities in Linux proof outcomes.
+- Accept systemd 255’s omitted empty service-hook and environment-file arrays during Linux setup verification while rejecting populated overrides.
+- Recognize GNOME Xorg sessions when GDM leaves desktop metadata empty, using exact-session Xorg identity and display socket ownership.
+- Accept official Blender 5.2.0 LTS version banners on Linux and report the normalized version as 5.2.0.
+- Preserve verified Run request and Session identity in failed onboarding proof reports after recovery.
 - Fix Windows named-target replacement while readers hold the previous profile open, preserving complete records and permission failures.
-- Recover exact native proof-controller receipts after helper interruption and bind baseline or named-target Windows proof to one-use native worker authority; direct hosted execution remains guarded and native qualification remains required.
-- Add fixed Linux proof-controller helper, worker, private file access, and enrollment artifacts; runtime dispatch requires matching native qualification.
-- Add a local persistent proof-controller bootstrap preview and tested admission/recovery model; native dispatch remains unqualified.
 - Keep Linux daemon, Blender, and Scenario HOME-based caches under each private Run root, with prelaunch validation and exact settlement cleanup while preserving missing-home recovery.
 - Keep Linux daemon and Blender temporary files under each private Run root, with prelaunch validation and exact settlement cleanup.
 - Recover interrupted Linux setup final receipts only when prior pending hashes match both installed artifacts, and reject relative or noncanonical host paths before traversal.

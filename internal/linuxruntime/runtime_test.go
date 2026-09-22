@@ -143,6 +143,47 @@ print(json.dumps(items))
 		t.Fatalf("recursive daemon wrote bytecode: %v", err)
 	}
 }
+
+func TestReadOnlyPackageImportsWithoutBytecode(t *testing.T) {
+	if runtime.GOOS == "windows" || os.Geteuid() == 0 {
+		t.Skip("requires POSIX permission denial as a non-root user")
+	}
+	python, err := exec.LookPath("python3")
+	if err != nil {
+		t.Skip("Python is unavailable")
+	}
+	root := t.TempDir()
+	packageRoot := filepath.Join(root, "bbx_readonly_fixture")
+	if err := os.Mkdir(packageRoot, 0700); err != nil {
+		t.Fatal(err)
+	}
+	module := filepath.Join(packageRoot, "__init__.py")
+	if err := os.WriteFile(module, []byte("VALUE = 'reviewed'\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = os.Chmod(packageRoot, 0700)
+		_ = os.Chmod(module, 0600)
+	})
+	if err := os.Chmod(module, 0400); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(packageRoot, 0500); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	command := exec.CommandContext(ctx, python, "-I", "-c", `import sys;assert not sys.dont_write_bytecode;sys.path.insert(0,sys.argv[1]);import bbx_readonly_fixture;print(bbx_readonly_fixture.VALUE)`, root)
+	command.Env = []string{"LANG=C.UTF-8", "PATH=/usr/bin:/bin"}
+	output, err := command.CombinedOutput()
+	if err != nil || string(output) != "reviewed\n" {
+		t.Fatalf("read-only package import: %v %s", err, output)
+	}
+	if _, err := os.Stat(filepath.Join(packageRoot, "__pycache__")); !os.IsNotExist(err) {
+		t.Fatalf("read-only package import wrote bytecode: %v", err)
+	}
+}
+
 func TestCompiledRuntimeManifestPinsCompleteReviewedCorrection(t *testing.T) {
 	var manifest struct {
 		Base   string            `json:"base_commit"`
@@ -163,6 +204,34 @@ func TestCompiledRuntimeManifestPinsCompleteReviewedCorrection(t *testing.T) {
 		}
 	}
 }
+
+func TestRuntimeTreeRefusesWritableReviewedPackage(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX filesystem policy")
+	}
+	for _, relative := range []string{
+		"lib/python3.12/site-packages/blendersessiond",
+		"lib/python3.12/site-packages/blendersessiond/vendor",
+		"lib/python3.12/site-packages/blendersessiond/__init__.py",
+		"lib/python3.12/site-packages/blendersessiond/vendor/addon.py",
+	} {
+		t.Run(relative, func(t *testing.T) {
+			selected, pythonHash, hashes := fakeRuntimeTree(t)
+			name := filepath.Join(selected.VenvRoot, relative)
+			info, err := os.Stat(name)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Chmod(name, info.Mode().Perm()|0200); err != nil {
+				t.Fatal(err)
+			}
+			if err := verifyContents(selected, uint32(os.Getuid()), pythonHash, hashes); err == nil || !strings.Contains(err.Error(), "must not be writable") {
+				t.Fatalf("writable reviewed package entry error = %v", err)
+			}
+		})
+	}
+}
+
 func TestRuntimeTreeRefusesImportDrift(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("POSIX filesystem policy")
@@ -186,6 +255,12 @@ func TestRuntimeTreeRefusesImportDrift(t *testing.T) {
 				t.Fatalf("baseline fixture: %v", err)
 			}
 			name := filepath.Join(selected.VenvRoot, item.path)
+			packageRoot := filepath.Join(selected.VenvRoot, "lib/python3.12/site-packages/blendersessiond")
+			if strings.HasPrefix(name, packageRoot+string(os.PathSeparator)) {
+				if err := chmodPackageTree(packageRoot, 0700, 0600); err != nil {
+					t.Fatal(err)
+				}
+			}
 			if err := os.MkdirAll(filepath.Dir(name), 0700); err != nil {
 				t.Fatal(err)
 			}
@@ -195,6 +270,11 @@ func TestRuntimeTreeRefusesImportDrift(t *testing.T) {
 				}
 			} else if err := os.WriteFile(name, item.contents, 0600); err != nil {
 				t.Fatal(err)
+			}
+			if strings.HasPrefix(name, packageRoot+string(os.PathSeparator)) {
+				if err := chmodPackageTree(packageRoot, 0500, 0400); err != nil {
+					t.Fatal(err)
+				}
 			}
 			if err := verifyContents(selected, uint32(os.Getuid()), pythonHash, hashes); err == nil {
 				t.Fatal("unsafe import tree accepted")
@@ -227,14 +307,15 @@ func fakeRuntimeTree(t *testing.T) (linuxtarget.DaemonRuntime, string, map[strin
 	if err := os.Chmod(root, 0700); err != nil {
 		t.Fatal(err)
 	}
-	for _, dir := range []string{"bin", "lib/python3.12/site-packages/blendersessiond"} {
+	packageRoot := filepath.Join(root, "lib/python3.12/site-packages/blendersessiond")
+	for _, dir := range []string{"bin", "lib/python3.12/site-packages/blendersessiond/vendor"} {
 		if err := os.MkdirAll(filepath.Join(root, dir), 0700); err != nil {
 			t.Fatal(err)
 		}
 	}
 	binary := []byte("copied interpreter fixture")
 	source := []byte("# reviewed fixture\n")
-	for name, data := range map[string][]byte{"bin/python3": binary, "pyvenv.cfg": []byte("include-system-site-packages = false\nhome = /usr/bin\nversion = 3.12.3\nexecutable = /usr/bin/python3.12\n"), "lib/python3.12/site-packages/blendersessiond/__init__.py": source} {
+	for name, data := range map[string][]byte{"bin/python3": binary, "pyvenv.cfg": []byte("include-system-site-packages = false\nhome = /usr/bin\nversion = 3.12.3\nexecutable = /usr/bin/python3.12\n"), "lib/python3.12/site-packages/blendersessiond/__init__.py": source, "lib/python3.12/site-packages/blendersessiond/vendor/addon.py": source} {
 		mode := os.FileMode(0600)
 		if name == "bin/python3" {
 			mode = 0700
@@ -243,7 +324,24 @@ func fakeRuntimeTree(t *testing.T) (linuxtarget.DaemonRuntime, string, map[strin
 			t.Fatal(err)
 		}
 	}
+	t.Cleanup(func() { _ = chmodPackageTree(packageRoot, 0700, 0600) })
+	if err := chmodPackageTree(packageRoot, 0500, 0400); err != nil {
+		t.Fatal(err)
+	}
 	pythonHash := sha256.Sum256(binary)
 	packageHash := sha256.Sum256(source)
-	return linuxtarget.DaemonRuntime{VenvRoot: root, PythonExecutable: root + "/bin/python3", ProvenanceID: linuxtarget.ProvenanceID}, hex.EncodeToString(pythonHash[:]), map[string]string{"__init__.py": hex.EncodeToString(packageHash[:])}
+	return linuxtarget.DaemonRuntime{VenvRoot: root, PythonExecutable: root + "/bin/python3", ProvenanceID: linuxtarget.ProvenanceID}, hex.EncodeToString(pythonHash[:]), map[string]string{"__init__.py": hex.EncodeToString(packageHash[:]), "vendor/addon.py": hex.EncodeToString(packageHash[:])}
+}
+
+func chmodPackageTree(root string, directoryMode, fileMode os.FileMode) error {
+	return filepath.WalkDir(root, func(name string, entry os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		mode := fileMode
+		if entry.IsDir() {
+			mode = directoryMode
+		}
+		return os.Chmod(name, mode)
+	})
 }
