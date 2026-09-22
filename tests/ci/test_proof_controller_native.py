@@ -7,6 +7,7 @@ import json
 import os
 from pathlib import Path
 import socket
+import stat
 import subprocess
 import sys
 import tempfile
@@ -219,9 +220,19 @@ class StopOps(native.LinuxOps):
         self.replace_before_kill = False
         self.group_populated = True
         self.replacement_killed = False
+        self.unit_states = []
+        self.unit_observations = []
 
     def boot(self):
         return self.boot_value
+
+    def unit(self, timeout=10):
+        self.unit_observations.append(timeout)
+        if self.unit_states:
+            return self.unit_states.pop(0)
+        if self.unit_empty:
+            return native.UnitState("inactive", 0, "", "")
+        return native.UnitState("active", invocation().parent_pid, invocation().invocation_id, native.UNIT_CGROUP)
 
     @contextmanager
     def group(self, name):
@@ -254,7 +265,7 @@ class StopOps(native.LinuxOps):
     def end_supervisor(self, receipt):
         self.events.append(("end-supervisor", receipt.invocation.parent_pid, receipt.supervisor_start))
 
-    def whole_empty(self):
+    def whole_empty(self, unit=None):
         return self.unit_empty
 
 
@@ -285,6 +296,31 @@ class NativeStopTests(unittest.TestCase):
             self.ops.supervisor_dead, self.ops.unit_empty = supervisor, unit
             with mock.patch.object(native, "STOP_SECONDS", 0):
                 self.assertFalse(self.ops.stop(self.receipt))
+
+    def test_stop_waits_for_delayed_supervisor_reaping_after_pidfd_ready(self):
+        self.ops.unit_empty = True
+        with mock.patch.object(self.ops, "wait_supervisor", return_value=True), \
+             mock.patch.object(self.ops, "supervisor_gone", side_effect=[False, True]):
+            self.assertTrue(self.ops.stop(self.receipt))
+
+    def test_permanently_unsettled_stop_observes_once_at_zero_deadline(self):
+        self.ops.unit_empty = True
+        with mock.patch.object(native, "STOP_SECONDS", 0), \
+             mock.patch.object(native.time, "monotonic", side_effect=[100, 100, 101]), \
+             mock.patch.object(self.ops, "wait_supervisor", return_value=True), \
+             mock.patch.object(self.ops, "supervisor_gone", return_value=False):
+            self.assertFalse(self.ops.stop(self.receipt))
+        self.assertEqual(len(self.ops.unit_observations), 1)
+
+    def test_stop_rejects_replacement_unit_before_settlement_checks(self):
+        self.ops.supervisor_dead = self.ops.unit_empty = True
+        replacements = (native.UnitState("inactive", 0, "4" * 32, ""),
+                        native.UnitState("active", 999, invocation().invocation_id, native.UNIT_CGROUP))
+        for replacement in replacements:
+            with self.subTest(replacement=replacement):
+                self.ops.unit_states = [replacement]
+                with self.assertRaisesRegex(model.ControllerError, "service-identity-changed"):
+                    self.ops.stop(self.receipt)
 
     def test_replacement_race_targets_old_inode_and_cannot_prove_empty(self):
         self.ops.supervisor_dead = True
@@ -967,10 +1003,18 @@ class NativeLifecycleTests(unittest.TestCase):
                 raise OSError("membership refused")
         ops.write_group.side_effect = write
         endpoints = [mock.Mock() for _ in range(4)]
-        with mock.patch.object(worker.socket, "socketpair", side_effect=[tuple(endpoints[:2]), tuple(endpoints[2:])]), \
-             mock.patch.object(os, "fork", return_value=456), mock.patch.object(worker, "reap_child") as reap:
-            with self.assertRaisesRegex(OSError, "membership refused"):
-                worker.Supervisor(policy(), self.files, ops).serve()
+        previous_umask = os.umask(0o077)
+        try:
+            with mock.patch.object(worker.socket, "socketpair", side_effect=[tuple(endpoints[:2]), tuple(endpoints[2:])]), \
+                 mock.patch.object(os, "fork", return_value=456), mock.patch.object(worker, "reap_child") as reap:
+                with self.assertRaisesRegex(OSError, "membership refused"):
+                    worker.Supervisor(policy(), self.files, ops).serve()
+        finally:
+            os.umask(previous_umask)
+        leaf = next(parent_dir.iterdir())
+        permissions = stat.S_IMODE(leaf.stat().st_mode)
+        self.assertEqual(permissions, 0o755)
+        self.assertEqual(permissions & 0o007, stat.S_IROTH | stat.S_IXOTH)
         for endpoint in endpoints:
             endpoint.close.assert_called()
             endpoint.sendall.assert_not_called()

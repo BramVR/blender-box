@@ -53,7 +53,7 @@ Check the fixed resources against the intended host:
 - `/var/lib/blender-box-proof/candidate` selects the candidate checkout.
 - `/run/blender-box-proof` holds the root supervisor rendezvous. The generated `/etc/tmpfiles.d/blender-box-proof.conf` recreates it with root ownership and mode `0700` at boot.
 
-The control account can request the fixed privileged helper operation. The runner account executes candidate work and cannot choose privileged paths, commands, units, identities, or environment. Launchers check protected source ownership before imports. Root loads the protected driver and fixture. Candidate directories cannot supply its Python imports.
+The control account can request the fixed privileged helper operation. The runner account executes candidate work and cannot choose privileged paths, commands, units, identities, or environment. The root-owned attempt cgroup permits the runner to read and verify its identity. Only root can change membership, terminate the cgroup, or create child groups. Launchers check protected source ownership before imports. Root loads the protected driver and fixture. Candidate directories cannot supply its Python imports.
 
 Verify the generated privilege rule allows only the fixed helper invocation. Do not replace it with a general shell, `systemctl`, `systemd-run`, or wildcard sudo grant. Review account and filesystem access, dedicated Windows trust, network reachability, fixture restoration, and candidate authorization before installation.
 
@@ -65,7 +65,7 @@ See [CI architecture](architecture/ci.md#persistent-controller-milestone) for th
 
 Retain the complete original target, expected host, authorization, and dedicated SSH connection and trust bytes. A copied SSH config that still refers to another account's mutable files is insufficient.
 
-The accepted policy pins the client binary hash before launch. Original inputs publish before service start. Exact invocation authorization publishes before worker release. A result alone cannot establish local process termination.
+The accepted policy pins the client binary hash before launch. Original inputs publish before service start. Exact invocation authorization publishes before worker release. A result alone cannot establish local process termination. Exact stop waits within its deadline for both supervisor reaping and an empty settled service. A replacement service identity refuses settlement.
 
 Keep the original live `BLENDER_BOX_CONFIG_DIR` at the job's `baseline/private/config` directory. The product's immutable Run claim and separate Session pin remain authority. Do not substitute a backup or reconstruct authority from a host reply.
 

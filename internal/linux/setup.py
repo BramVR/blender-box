@@ -203,7 +203,7 @@ def apply(document):
     desktop = config["desktop"]
     require(re.fullmatch(r":[0-9]{1,2}", desktop["display"]) is not None, "invalid local X11 display")
     expected_unit = ("[Unit]\nDescription=Blender Box owned Run launcher\n\n[Service]\n"
-                     "Type=exec\nExitType=cgroup\nRemainAfterExit=no\nRestart=no\nKillMode=process\n"
+                     "Type=exec\nExitType=cgroup\nRemainAfterExit=no\nRestart=no\nKillMode=process\nUMask=0077\n"
                      "ExecStart=" + host_path + " host run-request --state-root " + root + "\n"
                      "Environment=HOME=" + home + "\nEnvironment=DISPLAY=" + desktop["display"] + "\n"
                      "Environment=XAUTHORITY=" + desktop["xauthority"] + "\n"

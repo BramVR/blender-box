@@ -326,7 +326,8 @@ class FakeCommands(proof.Commands):
             if self.fault == "local-cleanup-unknown":
                 self.group_cleanup_known = False
                 raise proof.ProofError("command-cleanup-unknown")
-            if self.fault in ("run-failed", "status-failed", "cleanup-failed", "pre-session", "discovered-session"):
+            if self.fault in ("run-failed", "status-failed", "cleanup-failed", "pre-session",
+                              "discovered-session", "recovery-mismatch"):
                 raise proof.ProofError("command-failed")
             return proof.canonical(self.record)
         if operation == "status":
@@ -335,6 +336,8 @@ class FakeCommands(proof.Commands):
             record = copy.deepcopy(self.record)
             if self.fault == "cleanup-failed":
                 record["cleanup"]["lock_released"] = False
+            if self.fault == "recovery-mismatch":
+                record["request_hash"] = "f" * 64
             return proof.canonical(record)
         if operation == "stop":
             if self.fault in ("pre-session", "discovered-session"):
@@ -415,14 +418,38 @@ class BaselineTests(ProofFixture):
         self.assertEqual(result["status"], "fail")
         self.assertEqual(result["cleanup"], {key: True for key in proof.CLEANUP})
         self.assertEqual(result["outcomes"]["recovery"]["status"], "pass")
-        self.assertEqual(result["outcomes"]["scenario"]["status"], "fail")
+        self.assertEqual(result["outcomes"]["scenario"], {"status": "fail", "code": "command-failed"})
+        persisted = json.loads((self.request.output / "public/outcome.json").read_text())
+        self.assertEqual(persisted["run"], {
+            "run_id": RUN,
+            "request_id": "req_" + "b" * 32,
+            "request_hash": "c" * 64,
+            "session_id": None,
+        })
 
     def test_session_discovered_by_stop(self):
         result = self.execute("discovered-session")
         self.assertEqual(result["status"], "fail")
         self.assertEqual(result["cleanup"], {key: True for key in proof.CLEANUP})
         self.assertEqual(result["outcomes"]["recovery"]["status"], "pass")
-        self.assertEqual(result["outcomes"]["scenario"]["status"], "fail")
+        self.assertEqual(result["outcomes"]["scenario"], {"status": "fail", "code": "command-failed"})
+        persisted = json.loads((self.request.output / "public/outcome.json").read_text())
+        self.assertEqual(persisted["run"], {
+            "run_id": RUN,
+            "request_id": "req_" + "b" * 32,
+            "request_hash": "c" * 64,
+            "session_id": "bss_" + "d" * 32,
+        })
+
+    def test_recovery_mismatch_does_not_publish_unverified_identity(self):
+        result = self.execute("recovery-mismatch")
+        self.assertEqual(result["status"], "fail")
+        self.assertEqual(result["outcomes"]["recovery"], {
+            "status": "fail",
+            "code": "recovery-identity-changed",
+        })
+        persisted = json.loads((self.request.output / "public/outcome.json").read_text())
+        self.assertEqual(persisted["run"], {"run_id": RUN})
 
     def test_missing_configuration_before_any_command(self):
         with mock.patch.object(proof.Commands, "run") as command:

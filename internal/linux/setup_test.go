@@ -53,6 +53,9 @@ func TestLinuxSetupPlanNeverContactsHostAndApplyBindsExactBytes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if !strings.Contains(plan.UnitBytes, "\nUMask=0077\n") {
+		t.Fatal("static user service must declare private descendant file permissions")
+	}
 	hash := sha256.Sum256(contents)
 	unitHash := sha256.Sum256([]byte(plan.UnitBytes))
 	if ssh.calls != 0 || plan.Applied || plan.Status != "plan" || plan.HostSize != int64(len(contents)) || plan.HostSHA256 != hex.EncodeToString(hash[:]) || plan.UnitSHA256 != hex.EncodeToString(unitHash[:]) || plan.UnitDestination != "/home/operator/.config/systemd/user/blender-box.service" || len(plan.Prerequisites) == 0 {

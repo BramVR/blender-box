@@ -1,6 +1,6 @@
 ---
 name: verify-blender-box
-description: "Launch and verify the Blender Box CLI against an explicitly authorized owned Windows Blender host."
+description: "Verify Blender Box CLI workflows on authorized Windows or Linux hosts."
 ---
 
 # Verify Blender Box
@@ -8,6 +8,8 @@ description: "Launch and verify the Blender Box CLI against an explicitly author
 Use this skill for real user-facing proof of the Blender Box CLI. The host is shared operator state: require explicit authorization for setup or Blender launch, never expose Blender's loopback MCP port, and never stop a process except through the exact Run and Session identities recovered by Blender Box.
 
 ## Launch
+
+Choose the host platform before building. For Linux, follow [Linux host lifecycle](features/linux-host.md), including its private operator document and integrated proof runner. The Windows launch and drive commands below do not apply to Linux. Read [capture kinds and UI actions](features/captures-ui.md) when verifying those surfaces.
 
 Before asking for a target, check `~/.config/blender-box/verification-hosts.json`. This private operator inventory may select a default owned test host and record its live-discovery bootstrap. A listed host is a candidate, not authorization: still require explicit permission before setup or Blender launch. Never copy the inventory, resolved host details, or generated target into the repository or public proof.
 

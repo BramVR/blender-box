@@ -1440,6 +1440,9 @@ def baseline(request, commands_factory=Commands, host=None, *, native_authority=
             try:
                 require(all(record is not None for record in recovered), "recovery-unavailable")
                 cleanup = verify_recovery(run or recovered[0], *recovered)
+                fence = Fence.parse(recovered[-1], require_session=False)
+                report["run"] = {key: getattr(fence, key) for key in
+                                 ("run_id", "request_id", "request_hash", "session_id")}
                 report["cleanup"] = cleanup
                 report["outcomes"]["recovery"] = {"status": "pass", "code": "reconnect-exact-identity"}
                 report["outcomes"]["cleanup"] = {"status": "pass", "code": "settled-and-reobserved"}

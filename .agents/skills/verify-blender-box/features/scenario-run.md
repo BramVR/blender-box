@@ -34,7 +34,7 @@ Preconditions:
 ## Gotchas
 
 - `RUN_ID=` is stderr progress; stdout remains one JSON document.
-- A viewport capture does not prove Blender window chrome or the Windows desktop.
+- A viewport capture does not prove Blender window chrome or the Windows desktop. Use [capture kinds and UI actions](captures-ui.md) for payload schemas 2 and 3.
 - Never treat a Session name as stop authority.
 - Never reuse a Run ID whose durable receipt became terminal or lost its Host Lock.
 - Evidence directory publication is exclusive; reuse of the same Run directory fails closed.
