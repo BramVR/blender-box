@@ -39,7 +39,7 @@ Capacity refusal preserves existing records and cleanup authority. Expired launc
 
 Linux cases are `uid-confinement`, `storage-lock`, `startup-withheld`, `peer-rejection`, `descendant-stop`, `crash-before-release`, `crash-after-release`, `initiator-disconnect`, `reboot-observation`, and `network-local`. They run protected fixed code without reading Windows operator, key, or trust inputs. Review the actual observations for each category; a local network probe cannot establish the dedicated Windows trust boundary.
 
-The `initiator-disconnect` start keeps the helper attached until its output channel closes or the deadline expires. A pass requires a retained channel-loss record, the exact initiator process gone, and the worker still alive; deadline expiry stops the exact worker and fails the case.
+The `initiator-disconnect` start keeps the helper attached until its output channel closes or the deadline expires. Status and stop remain available through another connection while it waits. A pass requires a retained channel-loss record, the exact initiator process gone, and the worker still alive; deadline expiry stops the exact worker and fails the case.
 
 Windows cases are `windows-baseline`, `windows-named-target`, `windows-crash-recover`, and `windows-reboot-recover`. The first two must match the installed policy variant. Recovery cases use that same variant with the protected hold Scenario. The driver checks the built client before product commands and the expected host binary before setup transfer.
 

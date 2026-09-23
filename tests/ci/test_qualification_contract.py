@@ -293,6 +293,45 @@ class LinuxQualificationLifecycleTests(unittest.TestCase):
         with self.assertRaisesRegex(model.ControllerError, "qualification-channel-invalid"):
             native.wait_channel_loss(writer, time.time() + 5)
 
+    def test_disconnect_wait_releases_global_lock_for_status_and_stop(self):
+        control = self.control.parent / "fresh-control"
+        control.mkdir(mode=0o700)
+        runtime = self.control.parent / "runtime"
+        runtime.mkdir(mode=0o700)
+        chosen = fixtures.policy()
+        command = linux() | {"operation": "start", "case": "initiator-disconnect",
+                             "policy_sha256": chosen.digest,
+                             "installation_sha256": native.installation_digest(chosen),
+                             "deadline_unix": int(time.time()) + 300}
+        command.pop("accepted_boot_id")
+        root = control / "qualification" / command["qualification_id"]
+        def start(_):
+            intent = native.LinuxIntent.parse(model.document(self.files.read(root / "intent.json")))
+            receipt = native.NativeFixtureReceipt(intent.digest, self.owner)
+            self.files.publish(root / "native.json", model.proof.canonical(asdict(receipt)))
+        def exchange(receipt, _):
+            action = self.jobs / "qualification" / command["qualification_id"] / "action.json"
+            self.files.publish(action, model.proof.canonical({"schema_version": 1, "intent_sha256": receipt.intent_sha256,
+                              "case": "initiator-disconnect", "observations": {
+                                  "uid": chosen.value["runner_uid"], "euid": chosen.value["runner_uid"],
+                                  "gid": chosen.value["runner_gid"], "groups": [], "no_new_privs": 1}}))
+            return {"schema_version": 1, "released": True, "intent_sha256": receipt.intent_sha256}
+        def wait(path, predicate, _):
+            return predicate()
+        def channel(_, __):
+            with self.files.locked(control):
+                pass
+            return False
+        self.ops.systemctl.side_effect = start
+        self.ops.exchange.side_effect = exchange
+        self.ops.process.return_value = native.Process(os.getpid(), 1, 123, native.UNIT_CGROUP)
+        with mock.patch.object(native, "CONTROL", control), mock.patch.object(native, "RUNTIME", runtime), \
+             mock.patch.object(native, "wait_file", side_effect=wait), \
+             mock.patch.object(native, "wait_channel_loss", side_effect=channel), \
+             mock.patch.object(native, "linux_observe", return_value={"phase": "unresolved"}) as observe:
+            native.linux_qualification_command(command, chosen, self.files, self.ops)
+        self.assertTrue(observe.call_args.kwargs["stop"])
+
     def test_noop_descendant_stop_cannot_pass_and_exact_stop_binds_live_child(self):
         from contextlib import contextmanager
         self.intent = native.LinuxIntent.parse(linux() | {"case": "descendant-stop"})

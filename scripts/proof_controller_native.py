@@ -972,14 +972,17 @@ def linux_qualification_command(command, policy, files, ops):
             helper = ops.process(os.getpid())
             files.publish(root / "initiator.json", model.proof.canonical({"schema_version": 1,
                           "boot_id": ops.boot(), "pid": helper.pid, "start": helper.start}))
-            if intent.value["case"] == "initiator-disconnect":
-                import sys
-                if wait_channel_loss(sys.stdout.fileno(), intent.value["deadline_unix"]):
-                    files.publish(root / "initiator-channel-lost.json", model.proof.canonical(
-                        {"schema_version": 1, "intent_sha256": intent.digest}))
-                else:
-                    return linux_observe(intent, files, ops, stop=True)
-        return linux_observe(intent, files, ops)
+            if intent.value["case"] != "initiator-disconnect":
+                return linux_observe(intent, files, ops)
+        else:
+            return linux_observe(intent, files, ops)
+    import sys
+    disconnected = wait_channel_loss(sys.stdout.fileno(), intent.value["deadline_unix"])
+    with files.locked(CONTROL):
+        if disconnected and not files.exists(root / "settled.json"):
+            files.publish(root / "initiator-channel-lost.json", model.proof.canonical(
+                {"schema_version": 1, "intent_sha256": intent.digest}))
+        return linux_observe(intent, files, ops, stop=not disconnected)
 
 
 def original_windows_fence(job, files):
