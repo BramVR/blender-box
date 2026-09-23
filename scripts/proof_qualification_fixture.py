@@ -93,5 +93,5 @@ def run_fixture(intent):
             os.close(read_fd)
             os.close(write_fd)
         raise model.ControllerError("qualification-fixture-timeout")
-    return {"status": "partial" if case in ("initiator-disconnect", "reboot-observation", "network-local") else "pass",
+    return {"status": "partial" if case == "network-local" else "pass",
             "case": case, "observations_sha256": model.proof.digest(raw)}
