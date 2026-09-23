@@ -1,6 +1,8 @@
 from dataclasses import replace
 import json
 from pathlib import Path
+import shutil
+import subprocess
 import tempfile
 import unittest
 
@@ -44,8 +46,22 @@ class DispatchTests(unittest.TestCase):
             with self.assertRaisesRegex(model.ControllerError, "request-not-authorized"):
                 policy.admit(replace(command, installer_operator_sha256=digest))
         self.assertEqual((self.root / "operator.json").read_bytes(), self.env["INSTALL_OPERATOR_CONFIG"].encode())
-        self.assertIn(b'IdentityAgent "none"', (self.root / "ssh-config").read_bytes())
         self.assertEqual((self.root / "key").stat().st_mode & 0o777, 0o600)
+
+    @unittest.skipUnless(shutil.which("ssh"), "OpenSSH configuration parser")
+    def test_generated_ssh_config_disables_commands_and_preserves_spaced_paths(self):
+        self.root = self.root.parent / "dispatch inputs"
+        dispatch.prepare(self.root, self.env)
+        parsed = subprocess.run(["ssh", "-G", "-F", str(self.root / "ssh-config"), "-T", "--",
+                                 "proof-controller", "dispatch"], capture_output=True, text=True, timeout=10)
+        self.assertEqual(parsed.returncode, 0, parsed.stderr)
+        options = dict(line.split(" ", 1) for line in parsed.stdout.splitlines())
+        for key in ("remotecommand", "proxycommand", "proxyjump", "knownhostscommand"):
+            self.assertNotIn(key, options)
+        self.assertEqual(options["identityagent"], "none")
+        self.assertEqual(options["certificatefile"], "none")
+        self.assertEqual(options["identityfile"], str(self.root / "key"))
+        self.assertEqual(options["userknownhostsfile"], str(self.root / "known_hosts"))
 
     def test_start_polls_same_execution_and_upload_projection_is_fixed(self):
         dispatch.prepare(self.root, self.env)

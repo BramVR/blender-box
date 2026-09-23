@@ -306,7 +306,8 @@ def normalized_ssh(connection, root):
              "ClearAllForwardings": "yes", "RequestTTY": "no", "RemoteCommand": "none"}
     require(all('"' not in value and "\n" not in value and "\r" not in value and "%" not in value
                 and "${" not in value and "\\" not in value for value in fixed.values()), "unsafe-private-path")
-    return "".join(f'{key} "{value}"\n' for key, value in fixed.items()).encode()
+    return "".join(f'{key} none\n' if value == "none" else f'{key} "{value}"\n'
+                   for key, value in fixed.items()).encode()
 
 
 def snapshot_inputs(control, job, policy, files=None):
