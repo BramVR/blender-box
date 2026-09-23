@@ -196,6 +196,9 @@ func (service *Service) Acquire(ctx context.Context, root string, request Acquir
 		return err
 	}
 	defer release()
+	if err := RejectPendingSetup(root); err != nil {
+		return err
+	}
 	if err := os.MkdirAll(filepath.Join(root, "receipts"), 0o700); err != nil {
 		return err
 	}
@@ -352,6 +355,9 @@ func (service *Service) Start(ctx context.Context, root string, request orchestr
 		return orchestrator.RunReceipt{}, err
 	}
 	defer release()
+	if err := RejectPendingSetup(root); err != nil {
+		return orchestrator.RunReceipt{}, err
+	}
 	lock, err := service.authorizeClaim(root, request.Claim)
 	if err != nil {
 		return orchestrator.RunReceipt{}, err
@@ -496,6 +502,9 @@ func (service *Service) ExecutePending(ctx context.Context, root string) error {
 			release()
 		}
 	}()
+	if err := RejectPendingSetup(root); err != nil {
+		return err
+	}
 	lock, err := service.authorizeClaim(root, request.Claim)
 	if err != nil {
 		return err

@@ -14,7 +14,7 @@ This map covers public CLI workflows against explicitly authorized owned Windows
 
 - Run commands from the repository root.
 - Treat stderr `RUN_ID=` as the pre-work recovery handle and stdout as one versioned result document.
-- Use platform-specific `windows check/setup` or `linux check/setup`, then shared `plan`, `doctor`, `run`, `status`, and `stop` entry points.
+- Use public Windows installation `setup`, `windows check`, legacy `windows setup` preview, or `linux check/setup`, then shared `plan`, `doctor`, `run`, `status`, and `stop` entry points.
 - A Session name routes; only the opaque `session_id` is authority.
 - Never remove remote state manually or stop a process by name, port, path, or guessed PID.
 
@@ -33,7 +33,7 @@ Each feature file uses the public CLI, names its observable result, and lists co
 ## Features
 
 - [Windows inspection](./windows-inspection.md) covers the bounded read-only target check.
-- [Explicit Windows setup](./windows-setup.md) covers dry-run planning and authorized apply.
+- [Owned Windows setup](./windows-setup.md) covers runtime installation, preview, retries, removal, and legacy apply refusal.
 - [Scenario run and evidence](./scenario-run.md) covers payload transfer, interactive launch, bounded drive, Evidence Bundle return, and known cleanup.
 - [Recovery status and exact stop](./recovery-stop.md) covers reconnect observation and idempotent exact cleanup.
 - [Linux host lifecycle](./linux-host.md) covers Linux readiness, explicit setup, real Scenario proof, and exact recovery.

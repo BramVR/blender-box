@@ -121,19 +121,7 @@ func TestTargetsCLIProcessHelper(t *testing.T) {
 	root := os.Getenv("BLENDER_BOX_CONFIG_DIR")
 	host := diskHost{root: root, receiptPath: os.Getenv("BBX_TEST_RECEIPT"), auditPath: os.Getenv("BBX_TEST_AUDIT")}
 	ssh := &fakeSSH{stdout: passingChecks()}
-	if len(args) > 1 && args[0] == "windows" && args[1] == "setup" {
-		for i, arg := range args {
-			if arg == "--host-binary" && i+1 < len(args) {
-				data, err := os.ReadFile(args[i+1])
-				if err != nil {
-					continue
-				}
-				hash := sha256.Sum256(data)
-				ssh.stdout, _ = json.Marshal(windows.SetupResult{SchemaVersion: 1, Status: "applied", Applied: true, HostSize: int64(len(data)), HostSHA256: hex.EncodeToString(hash[:])})
-				setSetupOwnerResult(t, ssh)
-			}
-		}
-	}
+
 	code := Run(context.Background(), args, strings.NewReader(""), os.Stdout, os.Stderr, Dependencies{Runner: orchestrator.New(host, root), SSH: ssh})
 	if ssh.host != "" {
 		if err := host.record("ssh"); err != nil {
@@ -265,7 +253,10 @@ func TestPublicNamedTargetsAcrossProcessesAndBothVersions(t *testing.T) {
 		if cli.calls() != before {
 			t.Fatal("setup preview contacted host")
 		}
-		cli.call(0, append([]string{"windows", "setup", "--host-binary", hostBinary, "--apply", "--json"}, selector...)...)
+		cli.call(1, append([]string{"windows", "setup", "--host-binary", hostBinary, "--apply", "--json"}, selector...)...)
+		if cli.calls() != before {
+			t.Fatal("legacy apply refusal contacted host")
+		}
 		cli.call(0, append([]string{"windows", "check", "--json"}, selector...)...)
 		before = cli.calls()
 		cli.call(0, append([]string{"plan", "--payload", cliPayload(t), "--json"}, selector...)...)

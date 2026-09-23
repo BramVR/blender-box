@@ -17,10 +17,15 @@ import proof_controller as model
 import proof_controller_native as native
 
 
-def receive(connection, limit, flags=0):
+def receive(connection, limit, flags=0, *, versions=(1,)):
     raw, _, flags, _ = connection.recvmsg(limit + 1, 0, flags)
     model.require(raw and len(raw) <= limit and not flags & socket.MSG_TRUNC, "native-message-invalid")
-    return model.document(raw, limit)
+    for version in versions:
+        try:
+            return model.document(raw, limit, version=version)
+        except model.ControllerError:
+            if version == versions[-1]:
+                raise
 
 
 def parse_release(value, receipt, authorization):
@@ -43,13 +48,18 @@ def worker_envelope(policy, files, receipt, mode):
     model.require(state["invocation"] == asdict(inv) and state["phase"] == ("running" if mode == "baseline" else "recovering"),
                   "native-authorization-invalid")
     job = controller.job(root, state)
-    policy.admit(model.Command("start", job.request.execution_id, job.request))
+    policy.admit(model.Command("start", job.request.execution_id, job.request,
+                 policy.value.get("installer_inputs", {}).get("operator.json")))
     model.verify_inputs(root, job, state["inputs_digest"], files)
     if mode == "baseline":
         model.require(datetime.now(timezone.utc) < model.utc(job.request.expires_at), "execution-expired")
+    retained = state["recovery_inputs"]
+    if job.request.variant == "host-install":
+        import proof_installation
+        retained = {"anchor": retained, "latest": proof_installation.read_chain(root, job, retained, files)}
     return {"schema_version": 1, "envelope_version": 2, "native_receipt": asdict(receipt), "request": asdict(job.request), "attempt": job.attempt,
             "expected_client_sha256": job.expected_client_sha256, "inputs_digest": job.inputs_digest,
-            "mode": mode, "retained": state["recovery_inputs"]}
+            "mode": mode, "retained": retained}
 
 
 def parse_envelope(value):
@@ -67,6 +77,13 @@ def parse_envelope(value):
     inv = receipt.invocation
     model.require((inv.execution_id, inv.attempt, inv.request_digest) == (request.execution_id, job.attempt, request.digest)
                   and (value["mode"] == "baseline") == (job.attempt == 1), "native-message-invalid")
+    if request.variant == "host-install":
+        import proof_installation
+        proof_installation.exact(value["retained"], ("anchor", "latest"))
+        proof_installation.validate_anchor(value["retained"]["anchor"], job)
+        latest = value["retained"]["latest"]
+        model.require(isinstance(latest, dict) and latest.get("anchor_sha256") ==
+                      model.proof.digest(model.proof.canonical(value["retained"]["anchor"])), "native-message-invalid")
     return job, value["mode"], value["retained"], receipt
 
 
@@ -77,6 +94,8 @@ class NativeAdmission:
         gate.set_inheritable(False)
         gate.settimeout(native.STARTUP_SECONDS)
         self.job, self.mode, self.retained, receipt = parse_envelope(receive(gate, model.MAX_FILE, socket.MSG_PEEK))
+        self.receipt = receipt
+        self.checkpoints = None
         NativeAdmission.check_process(gate, receipt)
 
     @staticmethod
@@ -135,7 +154,20 @@ def run_worker(gate, result, worker=None):
     if mode == "recover":
         job, mode, retained = NativeAdmission.consume(authority)
         model.require(mode == "recover", "native-request-changed")
-    completed = worker.baseline(job, native_authority=authority) if mode == "baseline" else worker.recover(job, retained)
+    if job.request.variant == "host-install":
+        import proof_installation
+        def exchange(frame):
+            raw = model.proof.canonical(frame)
+            model.require(len(raw) <= proof_installation.MAX_CHECKPOINT, "installation-checkpoint-limit")
+            result.settimeout(native.STARTUP_SECONDS)
+            result.sendall(raw)
+            return receive(result, model.MAX_WIRE, versions=(2,))
+        authority.checkpoints = proof_installation.Checkpoints(job, retained["anchor"], retained["latest"],
+                                                              authority.receipt.invocation, exchange)
+        completed = (worker.baseline(job, native_authority=authority) if mode == "baseline" else
+                     worker.recover(job, retained, checkpoints=authority.checkpoints))
+    else:
+        completed = worker.baseline(job, native_authority=authority) if mode == "baseline" else worker.recover(job, retained)
     raw = model.proof.canonical({"schema_version": 1, "result": completed})
     model.require(len(raw) <= model.MAX_FILE, "native-result-invalid")
     result.sendall(raw)
@@ -232,9 +264,7 @@ class Supervisor:
                 receipt = native.NativeReceipt(inv, supervisor.start, info.st_dev, info.st_ino)
                 self.release(receipt, gate_parent, pending["mode"])
                 result_parent.settimeout(3 * 3600)
-                completed = receive(result_parent, model.MAX_FILE)
-                model.require(set(completed) == {"schema_version", "result"} and completed["schema_version"] == 1
-                              and isinstance(completed["result"], dict), "native-result-invalid")
+                completed = self.collect(receipt, result_parent)
                 self.files.publish(root / f"result-{inv.attempt:04d}.json", model.proof.canonical({"schema_version": 1,
                                    "invocation": asdict(inv), "mode": pending["mode"], "result": completed["result"]}))
             except Exception:
@@ -255,6 +285,25 @@ class Supervisor:
                                                     supervisor.pid, supervisor.start, native.UNIT_CGROUP + "/" + leaf,
                                                     info.st_dev, info.st_ino)
                     self.files.publish(native.attempt_path(pending, "startup-failure"), model.proof.canonical(asdict(failure)))
+
+    def collect(self, receipt, connection):
+        import proof_installation
+        root = native.CONTROL / receipt.invocation.execution_id
+        controller = model.Controller(native.CONTROL, native.JOBS, self.policy.controller, None, files=self.files)
+        while True:
+            frame = receive(connection, model.MAX_FILE, versions=(1, 2))
+            if set(frame) == {"schema_version", "result"} and frame["schema_version"] == 1:
+                model.require(isinstance(frame["result"], dict), "native-result-invalid")
+                return frame
+            model.require(set(frame) == {"schema_version", "type", "record"} and frame["schema_version"] == 2
+                          and frame["type"] == "checkpoint", "native-checkpoint-invalid")
+            state = controller.load(root)
+            job = controller.job(root, state)
+            model.require(job.request.variant == "host-install" and state["invocation"] == asdict(receipt.invocation),
+                          "native-checkpoint-invalid")
+            ack = proof_installation.publish_checkpoint(root, job, state["recovery_inputs"], receipt.invocation,
+                                                       frame["record"], self.files)
+            connection.sendall(model.proof.canonical(ack))
 
     def release(self, receipt, gate, expected_mode):
         native.reject_unreleased(self.files, {"execution_id": receipt.invocation.execution_id, "attempt": receipt.invocation.attempt})

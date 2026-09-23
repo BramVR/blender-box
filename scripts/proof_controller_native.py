@@ -33,11 +33,20 @@ CGROUP = Path("/sys/fs/cgroup")
 SOCKET = RUNTIME / "supervisor.sock"
 TOOLS = ("/usr/bin/python3", "/usr/bin/git", "/usr/bin/ssh", "/usr/local/go/bin/go", "/usr/bin/systemctl", "/usr/bin/scp")
 SOURCES = ("scripts/proof_controller.py", "scripts/proof_controller_native.py", "scripts/proof_controller_store.py",
-           "scripts/proof_controller_worker.py", "scripts/onboarding_proof.py",
+           "scripts/proof_controller_worker.py", "scripts/onboarding_proof.py", "scripts/proof_installation.py",
            "tests/fixtures/onboarding-baseline/payload.json", "tests/fixtures/onboarding-baseline/scenario.py")
 QUALIFICATIONS = ("separate-uids", "source-and-tool-confinement", "fsync-flock", "startup-gate", "peer-credentials",
                   "exact-cgroup-stop", "supervisor-crash-containment", "disconnect-reboot", "network-policy",
                   "original-journal-recovery", "owned-windows-fixture")
+INSTALL_PREFLIGHT_SCOPE = "host-install-native-admission-v1"
+INSTALL_PREFLIGHT = QUALIFICATIONS[:-2] + ("controller-journal-integrity", "fixture-preflight")
+INSTALL_INPUTS = ("operator.json", "runtime-manifest.json", "ssh-config", "key", "known_hosts")
+
+
+def qualifications(variant):
+    return INSTALL_PREFLIGHT if variant == "host-install" else QUALIFICATIONS
+
+
 PROPERTIES = ("Id", "LoadState", "ActiveState", "MainPID", "InvocationID", "ControlGroup", "Job")
 STARTUP_SECONDS = 30
 STOP_SECONDS = 15
@@ -153,20 +162,26 @@ class NativePolicy:
         value = model.document(raw)
         fields = {"schema_version", "control_uid", "control_gid", "runner_uid", "runner_gid", "candidate_sha",
                   "driver_sha", "expected_client_sha256", "tool_sha256", "artifacts", "variant"}
-        model.require(set(value) == fields and value["schema_version"] == 1 and value["variant"] in ("baseline", "named-target"),
+        model.require(set(value) == fields | ({"installer_inputs"} if value.get("variant") == "host-install" else set())
+                      and value["schema_version"] == 1 and value["variant"] in ("baseline", "named-target", "host-install"),
                       "native-policy-invalid")
-        validate_enrollment({key: item for key, item in value.items() if key not in ("artifacts", "variant")}, _policy=True)
+        validate_enrollment({key: item for key, item in value.items() if key != "artifacts"}, _policy=True)
         model.require(isinstance(value["artifacts"], dict) and set(value["artifacts"]) == set(artifact_paths())
                       and all(model.proof.matches(model.proof.HASH, item) for item in value["artifacts"].values()),
                       "native-policy-invalid")
         return cls(value, model.proof.digest(raw))
 
     def qualify(self, raw):
-        value = model.document(raw)
-        model.require(set(value) == {"schema_version", "qualified", "policy_sha256", "evidence"}
-                      and value["schema_version"] == 1 and value["qualified"] is True
+        installation = self.value["variant"] == "host-install"
+        try:
+            value = model.document(raw, version=2 if installation else 1)
+        except model.ControllerError as error:
+            raise model.ControllerError("native-adapter-unqualified") from error
+        fields = {"schema_version", "qualified", "policy_sha256", "evidence"} | ({"scope"} if installation else set())
+        model.require(set(value) == fields and value["qualified"] is True
+                      and (not installation or value["scope"] == INSTALL_PREFLIGHT_SCOPE)
                       and value["policy_sha256"] == self.digest and isinstance(value["evidence"], dict)
-                      and set(value["evidence"]) == set(QUALIFICATIONS)
+                      and set(value["evidence"]) == set(qualifications(self.value["variant"]))
                       and all(model.proof.matches(model.proof.HASH, item) for item in value["evidence"].values()),
                       "native-adapter-unqualified")
 
@@ -174,6 +189,9 @@ class NativePolicy:
         if command.request:
             request = command.request
             model.require(request.variant == self.value["variant"], "variant-driver-unavailable")
+            if request.variant == "host-install":
+                model.require(command.installer_operator_sha256 == self.value["installer_inputs"]["operator.json"],
+                              "request-not-authorized")
             model.require((request.candidate_sha, request.driver_sha) ==
                           (self.value["candidate_sha"], self.value["driver_sha"]), "request-not-authorized")
 
@@ -189,7 +207,7 @@ def artifact_paths():
 
 
 def validate_enrollment(value, *, _policy=False):
-    model.require(isinstance(value, dict) and set(value) - {"variant"} == {"schema_version", "control_uid", "control_gid", "runner_uid",
+    model.require(isinstance(value, dict) and set(value) - {"variant", "installer_inputs"} == {"schema_version", "control_uid", "control_gid", "runner_uid",
                   "runner_gid", "candidate_sha", "driver_sha", "expected_client_sha256", "tool_sha256"} | (set() if _policy else {"public_key"})
                   and type(value["schema_version"]) is int and value["schema_version"] == 1, "native-enrollment-invalid")
     model.require(all(type(value[k]) is int and 0 < value[k] < (1 << 31)
@@ -200,7 +218,14 @@ def validate_enrollment(value, *, _policy=False):
                   and isinstance(value["tool_sha256"], dict) and set(value["tool_sha256"]) == set(TOOLS)
                   and all(model.proof.matches(model.proof.HASH, item) for item in value["tool_sha256"].values()),
                   "native-enrollment-invalid")
-    model.require(value.get("variant", "baseline") in ("baseline", "named-target"), "native-enrollment-invalid")
+    model.require(value.get("variant", "baseline") in ("baseline", "named-target", "host-install"), "native-enrollment-invalid")
+    if value.get("variant") == "host-install":
+        pins = value.get("installer_inputs")
+        model.require(isinstance(pins, dict) and set(pins) == set(INSTALL_INPUTS)
+                      and all(model.proof.matches(model.proof.HASH, item) for item in pins.values()),
+                      "native-enrollment-invalid")
+    else:
+        model.require("installer_inputs" not in value, "native-enrollment-invalid")
     if _policy:
         return
     model.require(model.proof.matches(r"ssh-ed25519 [A-Za-z0-9+/]{68}", value["public_key"]), "native-enrollment-invalid")
@@ -251,8 +276,12 @@ UMask=0077
     policy.update(variant=value.get("variant", "baseline"), artifacts={path: model.proof.digest(raw) for path, raw in contents.items()})
     policy_raw = model.proof.canonical(policy)
     contents[str(CONFIG / "policy.json")] = policy_raw
-    contents[str(CONFIG / "qualification.json")] = model.proof.canonical({"schema_version": 1, "qualified": False,
-                             "policy_sha256": model.proof.digest(policy_raw), "evidence": {key: None for key in QUALIFICATIONS}})
+    qualification = {"schema_version": 2 if policy["variant"] == "host-install" else 1, "qualified": False,
+                     "policy_sha256": model.proof.digest(policy_raw),
+                     "evidence": {key: None for key in qualifications(policy["variant"])}}
+    if policy["variant"] == "host-install":
+        qualification["scope"] = INSTALL_PREFLIGHT_SCOPE
+    contents[str(CONFIG / "qualification.json")] = model.proof.canonical(qualification)
     model.private_directory(output, create=True)
     resources = []
     for index, (path, raw) in enumerate(sorted(contents.items())):
@@ -279,8 +308,9 @@ UMask=0077
                 known_directories.add(str(parent))
     directories.append({"path": "/var/lib/blender-box-proof", "uid": 0, "gid": 0, "mode": "0755"})
     manifest = {"schema_version": 1, "status": "unqualified", "installable": False, "resources": resources,
-                "directories": directories, "missing_qualification": list(QUALIFICATIONS),
-                "operator_inputs": [str(CONFIG / name) for name in ("operator.json", "ssh-config", "key", "known_hosts")],
+                "directories": directories, "missing_qualification": list(qualifications(policy["variant"])),
+                "operator_inputs": [str(CONFIG / name) for name in (INSTALL_INPUTS if policy["variant"] == "host-install" else
+                                  ("operator.json", "ssh-config", "key", "known_hosts"))],
                 "policy_sha256": model.proof.digest(policy_raw)}
     model.publish(output / "manifest.json", model.proof.canonical(manifest))
     return manifest
@@ -348,10 +378,18 @@ def load_runtime():
             info = path.stat()
             model.require(stat.S_ISDIR(info.st_mode) and info.st_uid == 0 and info.st_mode & 0o022 == 0,
                           "native-source-untrusted")
+        if policy.value["variant"] == "host-install":
+            for name, expected in policy.value["installer_inputs"].items():
+                model.require(model.proof.digest(protected_read(CONFIG / name, 128 << 10, private=True)) == expected,
+                              "native-source-untrusted")
         operator = model.document(protected_read(CONFIG / "operator.json", 64 << 10, private=True))
+        if policy.value["variant"] == "host-install":
+            model.require(operator.get("runtime", {}).get("local_manifest") == str(CONFIG / "runtime-manifest.json"),
+                          "native-source-untrusted")
+            model.proof.InstallOperator.load(CONFIG / "operator.json", policy.value["candidate_sha"])
         model.require(operator.get("ssh_config") == str(CONFIG / "ssh-config"), "native-source-untrusted")
         connection = model.ssh_connection(protected_read(CONFIG / "ssh-config", 64 << 10, private=True),
-                                          operator["target"]["ssh_alias"])
+                                          operator["connection" if policy.value["variant"] == "host-install" else "target"]["ssh_alias"])
         model.require(connection["identityfile"] == str(CONFIG / "key")
                       and connection["userknownhostsfile"] == str(CONFIG / "known_hosts"), "native-source-untrusted")
         for name in ("key", "known_hosts"):
@@ -361,7 +399,7 @@ def load_runtime():
                              RootedFiles(JOBS, policy.value["runner_uid"], policy.value["runner_gid"]),
                              RootedFiles(CONFIG, 0, 0), RootedFiles(RUNTIME, 0, 0))
         return policy, files
-    except (OSError, model.ControllerError, KeyError, TypeError) as error:
+    except (OSError, model.ControllerError, model.proof.ProofError, KeyError, TypeError) as error:
         raise model.ControllerError("native-adapter-unqualified") from error
 
 
@@ -679,7 +717,11 @@ class NativeService:
                                      "mode": "baseline" if attempt == 1 else "recover"}, "native-attempt-invalid")
         original = model.ProofExecutionRequest.parse(model.document(self.files.read(CONTROL / request.execution_id / "request.json")))
         model.require(original == request, "native-attempt-invalid")
-        self.policy.admit(model.Command("start", request.execution_id, request))
+        operator_sha256 = None
+        if request.variant == "host-install":
+            original = self.files.read(CONTROL / request.execution_id / "inputs/original-operator.json", 64 << 10)
+            operator_sha256 = model.proof.digest(original)
+        self.policy.admit(model.Command("start", request.execution_id, request, operator_sha256))
         issuer_path = attempt_path(identity, "start-command")
         if self.files.exists(issuer_path):
             model.require(model.document(self.files.read(issuer_path)) == {"schema_version": 1,

@@ -28,7 +28,7 @@ Separate identities remain deferred until Design A is implemented and proven as 
 
 ## Consequences
 
-- `windows setup` verifies SID equality before applying changes.
+- Host-local `setup install` verifies SID equality before applying changes. Legacy `windows setup --apply` refuses unowned mutation before transport.
 - `windows check` reports failure unless the SSH and console/task identities resolve to the same SID.
 - Setup does not grant a distinct interactive identity access to managed paths or task execution.
 - Existing targets that name different users are rejected before a Run.
