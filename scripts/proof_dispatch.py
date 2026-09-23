@@ -36,6 +36,8 @@ def prepare(root, env):
     secrets = {"key": env["INSTALL_CONTROLLER_KEY"].encode(), "known_hosts": env["INSTALL_CONTROLLER_KNOWN_HOSTS"].encode()}
     model.require(all(0 < len(value) <= 64 << 10 and b"\x00" not in value for value in secrets.values()),
                   "controller-credentials-invalid")
+    if not secrets["key"].endswith(b"\n"):
+        secrets["key"] += b"\n"
     model.private_directory(root, create=True)
     for name in ("private", "public"):
         model.private_directory(root / name, create=True)

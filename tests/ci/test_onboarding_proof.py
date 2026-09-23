@@ -653,6 +653,33 @@ class NamedTargetTests(ProofFixture):
 
 
 class OperatorTests(unittest.TestCase):
+    @unittest.skipUnless(os.name == "posix" and shutil.which("ssh-keygen"), "POSIX OpenSSH private key parser")
+    def test_hosted_key_secret_without_final_newline_remains_usable(self):
+        with tempfile.TemporaryDirectory() as temp:
+            source = Path(temp) / "generated-key"
+            subprocess.run(["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-f", str(source)],
+                           capture_output=True, check=True, timeout=10)
+            expected = source.with_suffix(".pub").read_text().split()[:2]
+            config = operator_config()
+            config["fixture"] = {"id": "windows-onboarding-prepared-v1", "kind": "dedicated", "state": "prepared"}
+            config["authorization"]["candidate_sha"] = "protected-environment-approval"
+            for newline in ("", "\n"):
+                with self.subTest(newline=bool(newline)):
+                    runner = Path(temp) / ("newline" if newline else "trimmed")
+                    runner.mkdir()
+                    env = {"OPERATOR_CONFIG": json.dumps(config), "SSH_KEY": source.read_text().rstrip("\r\n") + newline,
+                           "KNOWN_HOSTS": "TEST_KNOWN_HOST", "SSH_HOSTNAME": "test.invalid", "TS_CLIENT_ID": "test",
+                           "TS_CLIENT_SECRET": "test", "CANDIDATE_SHA": SHA, "RUNNER_TEMP": str(runner)}
+                    previous = os.umask(0o077)
+                    try:
+                        proof.prepare_hosted_credentials(env)
+                    finally:
+                        os.umask(previous)
+                    parsed = subprocess.run(["ssh-keygen", "-y", "-P", "", "-f", str(runner / "onboarding-credentials/key")],
+                                            capture_output=True, text=True, timeout=10)
+                    self.assertEqual(parsed.returncode, 0, parsed.stderr)
+                    self.assertEqual(parsed.stdout.split()[:2], expected)
+
     def test_target_versions_reject_unknown_fields_types_and_platforms(self):
         v1 = operator_config()["target"]
         v2 = proof.target_document(v1)

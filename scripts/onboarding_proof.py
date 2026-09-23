@@ -823,7 +823,8 @@ def prepare_hosted_credentials(env):
     root = Path(env["RUNNER_TEMP"]) / "onboarding-credentials"
     require(root.is_absolute(), "ssh-config-invalid")
     root.mkdir(mode=0o700)
-    (root / "key").write_text(env["SSH_KEY"])
+    key = env["SSH_KEY"]
+    (root / "key").write_text(key if key.endswith("\n") else key + "\n")
     (root / "known_hosts").write_text(env["KNOWN_HOSTS"])
     ssh = root / "config"
     ssh.write_text(f'Host {alias}\n  HostName {host}\n  User "{user.replace(chr(92), chr(92)*2)}"\n'

@@ -63,6 +63,23 @@ class DispatchTests(unittest.TestCase):
         self.assertEqual(options["identityfile"], str(self.root / "key"))
         self.assertEqual(options["userknownhostsfile"], str(self.root / "known_hosts"))
 
+    @unittest.skipUnless(shutil.which("ssh-keygen"), "OpenSSH private key parser")
+    def test_key_secret_without_final_newline_remains_usable(self):
+        source = self.root.parent / "generated-key"
+        subprocess.run(["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-f", str(source)],
+                       capture_output=True, check=True, timeout=10)
+        expected = source.with_suffix(".pub").read_text().split()[:2]
+        for newline in ("", "\n"):
+            with self.subTest(newline=bool(newline)):
+                self.root = self.root.parent / ("dispatch-newline" if newline else "dispatch-trimmed")
+                self.env["INSTALL_CONTROLLER_KEY"] = source.read_text().rstrip("\r\n") + newline
+                dispatch.prepare(self.root, self.env)
+                parsed = subprocess.run(["ssh-keygen", "-y", "-P", "", "-f", str(self.root / "key")],
+                                        capture_output=True, text=True, timeout=10)
+                self.assertEqual(parsed.returncode, 0, parsed.stderr)
+                self.assertEqual(parsed.stdout.split()[:2], expected)
+                self.assertEqual((self.root / "operator.json").read_bytes(), self.env["INSTALL_OPERATOR_CONFIG"].encode())
+
     def test_start_polls_same_execution_and_upload_projection_is_fixed(self):
         dispatch.prepare(self.root, self.env)
         received, now = [], [0]

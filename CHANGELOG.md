@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-- Retain Windows installation and original Run authority on the persistent proof controller across hosted job loss; require durable checkpoint acknowledgement before mutations and exact cleanup before settlement. Render disabled SSH commands as OpenSSH sentinels so explicit proof dispatch reaches the controller.
+- Retain Windows installation and original Run authority on the persistent proof controller across hosted job loss; require durable checkpoint acknowledgement before mutations and exact cleanup before settlement. Render disabled SSH commands as OpenSSH sentinels and restore SSH key terminal newlines stripped by secret storage so hosted proof can authenticate.
 
 - Seal installed Windows Python packages before use so Blender imports cannot add bytecode that blocks repeated installation or exact removal; retain interrupted permission changes in installation ownership records. Batch read-only permission checks to stay within installer process limits.
 
