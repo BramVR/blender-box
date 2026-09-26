@@ -1,4 +1,6 @@
-from dataclasses import replace
+import base64
+import copy
+from dataclasses import asdict, replace
 import json
 from pathlib import Path
 import shutil
@@ -7,6 +9,7 @@ import tempfile
 import unittest
 
 import test_proof_controller as baseline
+import test_proof_installation as installation_tests
 import test_proof_controller_native as native_tests
 import proof_dispatch as dispatch
 
@@ -127,3 +130,101 @@ class DispatchTests(unittest.TestCase):
             with self.assertRaises(model.ControllerError):
                 dispatch.prepare(self.root, self.env | changes)
             self.assertFalse(self.root.exists())
+
+
+@unittest.skipUnless(model.fcntl is not None, "POSIX private controller files")
+class CollectTests(unittest.TestCase):
+    def setUp(self):
+        self.fixture = installation_tests.InstallationTests("test_collect_projects_baseline_evidence_without_installer_settlement")
+        self.fixture.setUp()
+        self.addCleanup(self.fixture.doCleanups)
+        self.fixture.prove()
+        record = self.fixture.base.service.completed[self.fixture.base.service.invocation.invocation_id]
+        baseline.private_file(self.fixture.control / "result-0001.json", proof.canonical(record))
+        self.fixture.controller.dispatch(baseline.command("status"))
+        self.response = self.fixture.base.reopen().dispatch(baseline.command("collect"))
+        self.root = self.fixture.base.root / "dispatch"
+        model.private_directory(self.root, create=True)
+        model.private_directory(self.root / "public", create=True)
+        model.publish(self.root / "request.json", proof.canonical({"schema_version": 1, "operation": "start",
+                                                                   "request": asdict(self.fixture.job.request)}))
+
+    def files(self, response=None):
+        return {item["name"]: base64.b64decode(item["content_base64"]) for item in (response or self.response)["files"]}
+
+    def rebuilt(self, change, viewport=None):
+        files = self.files()
+        envelope = json.loads(files["outcome.json"])
+        change(envelope)
+        files["outcome.json"] = proof.canonical(envelope)
+        if viewport is not None:
+            files["viewport.png"] = viewport
+        return {**self.response, "files": [{"name": name, "size": len(content), "sha256": proof.digest(content),
+                                            "content_base64": base64.b64encode(content).decode()}
+                                           for name, content in files.items()]}
+
+    def collect(self, response):
+        sent = []
+
+        class Commands:
+            def run(self, args, **options):
+                sent.append(model.parse_command(options["stdin"]))
+                return proof.canonical(response)
+        try:
+            return dispatch.collect(self.root, commands=Commands())
+        finally:
+            self.assertEqual([(command.operation, command.execution_id) for command in sent], [("collect", "gha_123_1")])
+
+    def test_settled_pass_publishes_exact_controller_outcome(self):
+        self.assertTrue(self.collect(self.response))
+        files = self.files()
+        self.assertEqual((self.root / "public/outcome.json").read_bytes(), files["outcome.json"])
+        self.assertEqual(json.loads(files["outcome.json"])["request"]["variant"], "host-install")
+        self.assertNotIn(b"installation_settlement", files["outcome.json"])
+
+    def test_viewport_must_match_the_reported_capture(self):
+        image = baseline.baseline_tests.png(3, 2)
+
+        def capture(envelope):
+            artifact = next(item for item in envelope["baseline"]["report"]["artifacts"] if item["type"] == "viewport")
+            artifact.update(size=len(image), local_sha256=proof.digest(image), remote_sha256=proof.digest(image), width=3, height=2)
+        self.assertTrue(self.collect(self.rebuilt(capture, viewport=image)))
+        self.assertEqual((self.root / "public/viewport.png").read_bytes(), image)
+        (self.root / "public/viewport.png").unlink()
+        (self.root / "public/outcome.json").unlink()
+        with self.assertRaisesRegex(model.ControllerError, "collect-viewport-invalid"):
+            self.collect(self.rebuilt(capture, viewport=baseline.baseline_tests.png(2, 2)))
+        self.assertFalse((self.root / "public/viewport.png").exists())
+
+    def test_failed_report_is_published_but_never_passes(self):
+        def fail(envelope):
+            envelope["baseline"]["report"]["status"] = "fail"
+            envelope["baseline"]["report"]["outcomes"]["scenario"]["status"] = "fail"
+        self.assertFalse(self.collect(self.rebuilt(fail)))
+        self.assertEqual(json.loads((self.root / "public/outcome.json").read_bytes())["baseline"]["report"]["status"], "fail")
+
+    def test_unexpected_report_fields_never_reach_the_public_artifact(self):
+        def planted(section):
+            def change(envelope):
+                report = envelope["baseline"]["report"]
+                target = {"report": report, "run": report["run"], "outcome": report["outcomes"]["scenario"],
+                          "artifact": report["artifacts"][0], "settlement": envelope["settlement"],
+                          "baseline": envelope["baseline"]}[section]
+                target["private"] = "PRIVATE_HOST_SENTINEL"
+            return change
+        for section in ("report", "run", "outcome", "artifact", "settlement", "baseline"):
+            with self.subTest(section=section), self.assertRaises((model.ControllerError, proof.ProofError)):
+                self.collect(self.rebuilt(planted(section)))
+            self.assertFalse((self.root / "public/outcome.json").exists())
+
+    def test_tampered_or_rebound_response_is_not_published(self):
+        tampered = copy.deepcopy(self.response)
+        tampered["files"][0]["sha256"] = "0" * 64
+        rebound = self.rebuilt(lambda envelope: envelope["request"].update(execution_id="gha_other"))
+        extra = {**self.response, "files": self.response["files"] + [{"name": "key", "size": 0, "sha256": proof.digest(b""),
+                                                                      "content_base64": ""}]}
+        missing = self.rebuilt(lambda envelope: envelope["baseline"]["report"]["outcomes"].pop("fixture-preserved"))
+        for response in (tampered, rebound, extra, missing):
+            with self.subTest(response=response["files"][0]["sha256"]), self.assertRaises(model.ControllerError):
+                self.collect(response)
+            self.assertFalse((self.root / "public/outcome.json").exists())

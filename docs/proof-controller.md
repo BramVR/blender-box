@@ -102,6 +102,22 @@ Host-install admission uses a schema-2 qualification receipt with scope `host-in
 
 Installer checkpoint acknowledgement, lost-reply recovery, real Run/removal, and installer reboot recovery are mandatory post-admission acceptance experiments. Record their actual evidence separately, bound to candidate, driver, policy, execution, fixture, and retained original authority. A normal successful hosted run does not prove the fault cases. Use separately authorized fixtures for destructive experiments; preserve their tombstones and recovery records. Prequalification must leave the final hosted fixture absent: running install/remove first would consume its immutable before-state. Admission authorizes the experiment; it does not report acceptance.
 
+## Collect public baseline evidence
+
+The native dispatch entry accepts a read-only collection command with exactly these fields:
+
+```json
+{"schema_version":1,"operation":"collect","execution_id":"gha_123_1"}
+```
+
+Collection succeeds only for a settled `baseline` or `host-install` execution whose controller receipt proves local termination and Windows cleanup. A host-install report must carry the baseline and installation outcomes; collection drops its private `installation_settlement`. Its Windows cleanup comes from the installation chain that reconcile already verified, so a failed report without a Run cleanup map remains collectable, and a recovered attempt records its record hash with a `null` cleanup map. It revalidates the accepted request, immutable attempt-one result, final attempt identity, retained inputs, and the final native result. A recovered execution keeps the attempt-one report and its original pass or fail status; its schema version 2 `baseline-collect` envelope adds the final controller receipt plus the final recovery attempt number, exact record SHA-256, and validated cleanup map. The runner's `public/outcome.json` is never evidence authority.
+
+The response has `schema_version`, `operation`, `execution_id`, and `files`. Each file has the exact `name`, byte `size`, SHA-256, and `content_base64`. The file allowlist is `outcome.json` plus optional `viewport.png`. The root-generated outcome is limited to 1 MiB. A viewport is limited to 16 MiB, and the complete canonical response is limited to 24 MiB before base64 materialization.
+
+`proof_dispatch.py collect` sends this command, requires the returned hashes, request binding, settled receipt, and viewport bytes to agree, then publishes `public/outcome.json` and any approved `public/viewport.png`. It applies the controller's exact report key sets so no unexpected field reaches the public artifact, and exits nonzero unless the report, every outcome, and the settlement pass. The controller remains the authority for report contents.
+
+The retained original operator's `publish_viewport` value controls image release. When enabled, collection requires the immutable baseline report's one `screenshots/viewport.png` artifact and rechecks its type, size, remote and local hashes, offscreen capture method, dimensions, file ownership, symlink boundary, and PNG bytes. A missing, changed, planted, unapproved, or additional public file fails collection. Collection returns no private config, trust, key, journal, invocation, path, or command log.
+
 ## Run the local checks
 
 Run the controller tests and full repository gate:

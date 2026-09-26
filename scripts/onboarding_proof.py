@@ -32,6 +32,7 @@ REQUIRED = ("preparation", "readiness", "scenario", "evidence", "recovery", "cle
 NAMED_REQUIRED = ("target-catalog", "target-binding", "target-restoration", "target-forget")
 INSTALL_REQUIRED = ("install-inspect", "install-preview", "install-apply", "install-target",
                     "install-repeat", "remove-preview", "remove-apply", "remove-repeat", "fixture-preserved")
+INSTALL_NOT_EXERCISED = ("installer-interruption", "active-run-removal-refusal", "active-session-removal-refusal")
 PROOF_TARGET = "onboarding-proof"
 CLEANUP = ("session_stopped", "payload_removed", "run_root_removed", "lock_released")
 CHECKS = {
@@ -1366,7 +1367,7 @@ def baseline(request, commands_factory=Commands, host=None, *, native_authority=
               "outcomes": {name: {"status": "not-run", "code": "not-run"} for name in required},
               "not_exercised": list(host.not_exercised), "artifacts": []}
     if installing:
-        report["not_exercised"] += ["installer-interruption", "active-run-removal-refusal", "active-session-removal-refusal"]
+        report["not_exercised"] += list(INSTALL_NOT_EXERCISED)
     commands = commands_factory(private, request.candidate_checkout)
     commands.task = host.name + "-baseline"
     commands.env["BLENDER_BOX_CONFIG_DIR"] = str((private / "config").absolute())

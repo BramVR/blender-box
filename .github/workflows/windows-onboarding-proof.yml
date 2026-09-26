@@ -59,7 +59,7 @@ jobs:
           resolved=$(gh api "repos/$GITHUB_REPOSITORY/commits/$CANDIDATE_SHA" --jq .sha)
           [[ "$resolved" == "$CANDIDATE_SHA" ]]
           printf 'sha=%s\n' "$CANDIDATE_SHA" >> "$GITHUB_OUTPUT"
-          printf 'Approve candidate [%s](https://github.com/%s/commit/%s) for prepared fixture windows-onboarding-prepared-v1. Permitted operations are the declared baseline and named-target Runs with exact recovery. Setup requires separately bound operator authorization. Reruns are refused; dispatch a fresh approval.\n' "$CANDIDATE_SHA" "$GITHUB_REPOSITORY" "$CANDIDATE_SHA" >> "$GITHUB_STEP_SUMMARY"
+          printf 'Approve candidate [%s](https://github.com/%s/commit/%s) for prepared fixture windows-onboarding-prepared-v1. Permitted operations are one owned install, baseline Run, and removal on the dedicated controller fixture and the declared named-target Run, each with exact recovery. Reruns are refused; dispatch a fresh approval.\n' "$CANDIDATE_SHA" "$GITHUB_REPOSITORY" "$CANDIDATE_SHA" >> "$GITHUB_STEP_SUMMARY"
 
   authorize:
     needs: candidate
@@ -90,13 +90,17 @@ jobs:
     name: baseline
     needs: [candidate, authorize]
     runs-on: ubuntu-latest
-    timeout-minutes: 75
-    environment: windows-onboarding-host
+    timeout-minutes: 90
+    environment: windows-onboarding-installer
+    permissions:
+      contents: read
+      id-token: write
     env:
       CANDIDATE_SHA: ${{ needs.candidate.outputs.sha }}
       DRIVER_SHA: ${{ github.workflow_sha }}
+      PROOF_EXECUTION_ID: gha_${{ github.run_id }}_onboarding
     steps:
-      - name: Reject reruns before credentials or candidate code
+      - name: Reject reruns before controller authorization
         env:
           RUN_ATTEMPT: ${{ github.run_attempt }}
           REQUEST_REF: ${{ github.ref }}
@@ -122,58 +126,48 @@ jobs:
           ref: ${{ needs.candidate.outputs.sha }}
           path: candidate
           persist-credentials: false
-      - name: Verify both checkouts
+      - name: Verify both immutable checkouts
         run: |
           set -euo pipefail
           [[ "$(git -C driver rev-parse HEAD)" == "$DRIVER_SHA" ]]
           [[ "$(git -C candidate rev-parse HEAD)" == "$CANDIDATE_SHA" ]]
-      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
-        with:
-          go-version-file: candidate/go.mod
-          cache: false
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
-      - name: Prepare task-local SSH credentials
+      - name: Bind protected fixture grant and dedicated controller trust
         env:
-          OPERATOR_CONFIG: ${{ secrets.ONBOARDING_OPERATOR_CONFIG }}
-          SSH_KEY: ${{ secrets.ONBOARDING_SSH_KEY }}
-          KNOWN_HOSTS: ${{ secrets.ONBOARDING_KNOWN_HOSTS }}
-          SSH_HOSTNAME: ${{ secrets.ONBOARDING_SSH_HOSTNAME }}
-          TS_CLIENT_ID: ${{ secrets.ONBOARDING_TS_CLIENT_ID }}
-          TS_CLIENT_SECRET: ${{ secrets.ONBOARDING_TS_CLIENT_SECRET }}
+          INSTALL_OPERATOR_CONFIG: ${{ secrets.ONBOARDING_INSTALL_OPERATOR_CONFIG }}
+          INSTALL_CONTROLLER_CONFIG: ${{ secrets.ONBOARDING_INSTALL_CONTROLLER_CONFIG }}
+          INSTALL_CONTROLLER_KEY: ${{ secrets.ONBOARDING_INSTALL_CONTROLLER_KEY }}
+          INSTALL_CONTROLLER_KNOWN_HOSTS: ${{ secrets.ONBOARDING_INSTALL_CONTROLLER_KNOWN_HOSTS }}
         run: |
           set -euo pipefail
-          umask 077
-          python3 - <<'PY'
-          import os, sys
-          sys.path.insert(0, "driver/scripts")
-          from onboarding_proof import ProofError, prepare_hosted_credentials
-          try:
-              prepare_hosted_credentials(os.environ)
-          except (ProofError, OSError, ValueError, KeyError):
-              raise SystemExit("Onboarding credential preparation failed.")
-          PY
-      - name: Connect ephemeral controller
+          python3 driver/scripts/proof_dispatch.py prepare --directory "$RUNNER_TEMP/onboarding-proof"
+      - name: Connect to the qualified persistent controller
         uses: tailscale/github-action@53acf823325fe9ca47f4cdaa951f90b4b0de5bb9 # v4.1.1
         with:
-          oauth-client-id: ${{ secrets.ONBOARDING_TS_CLIENT_ID }}
-          oauth-secret: ${{ secrets.ONBOARDING_TS_CLIENT_SECRET }}
-          tags: tag:blender-box-onboarding
+          oauth-client-id: ${{ secrets.ONBOARDING_INSTALL_TS_CLIENT_ID }}
+          audience: ${{ vars.ONBOARDING_INSTALL_TS_AUDIENCE }}
+          tags: tag:blender-box-install-dispatch
           use-cache: false
-          hostname: blender-box-proof-${{ github.run_id }}
-      - name: Run the approved baseline
+          hostname: blender-box-proof-dispatch-${{ github.run_id }}
+      - name: Dispatch the retained onboarding proof
+        timeout-minutes: 65
         run: |
           set -euo pipefail
-          python3 driver/scripts/onboarding_proof.py baseline \
-            --candidate "$CANDIDATE_SHA" \
-            --candidate-checkout "$GITHUB_WORKSPACE/candidate" \
-            --operator-config "$RUNNER_TEMP/onboarding-credentials/operator.json" \
-            --output "$RUNNER_TEMP/onboarding-proof" \
-            --execution hosted --driver-sha "$DRIVER_SHA"
-      - name: Require a public result
+          python3 driver/scripts/proof_dispatch.py start --directory "$RUNNER_TEMP/onboarding-proof"
+      - name: Recover through the durable owner and require settlement
         if: always()
-        run: test -f "$RUNNER_TEMP/onboarding-proof/public/outcome.json"
+        timeout-minutes: 20
+        run: |
+          set -euo pipefail
+          python3 driver/scripts/proof_dispatch.py recover --directory "$RUNNER_TEMP/onboarding-proof"
+      - name: Collect the controller-validated baseline evidence
+        if: always()
+        timeout-minutes: 10
+        run: |
+          set -euo pipefail
+          python3 driver/scripts/proof_dispatch.py collect --directory "$RUNNER_TEMP/onboarding-proof"
       - name: Upload allowlisted proof
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
@@ -182,17 +176,18 @@ jobs:
           if-no-files-found: error
           retention-days: 14
           path: |
+            ${{ runner.temp }}/onboarding-proof/public/receipt.json
             ${{ runner.temp }}/onboarding-proof/public/outcome.json
             ${{ runner.temp }}/onboarding-proof/public/viewport.png
-      - name: Remove only this job's credentials
+      - name: Remove only this job's dispatch credentials
         if: always()
         run: |
-          python3 - <<'PY'
+          python3 - <<'PYTHON'
           import os, pathlib
-          root = pathlib.Path(os.environ["RUNNER_TEMP"]) / "onboarding-credentials"
-          for name in ("key", "known_hosts", "config", "operator.json"):
+          root = pathlib.Path(os.environ["RUNNER_TEMP"]) / "onboarding-proof"
+          for name in ("key", "known_hosts", "ssh-config", "operator.json"):
               (root / name).unlink(missing_ok=True)
-          PY
+          PYTHON
 
   named-target:
     name: named-target
@@ -304,8 +299,8 @@ jobs:
 
   host-install:
     name: host-install
-    needs: [candidate, named-target]
-    if: always() && needs.candidate.result == 'success'
+    needs: [candidate, authorize, baseline]
+    if: always() && needs.candidate.result == 'success' && needs.authorize.result == 'success'
     runs-on: ubuntu-latest
     timeout-minutes: 90
     environment: windows-onboarding-installer
@@ -315,7 +310,7 @@ jobs:
     env:
       CANDIDATE_SHA: ${{ needs.candidate.outputs.sha }}
       DRIVER_SHA: ${{ github.workflow_sha }}
-      PROOF_EXECUTION_ID: gha_${{ github.run_id }}_host_install
+      PROOF_EXECUTION_ID: gha_${{ github.run_id }}_onboarding
     steps:
       - name: Reject reruns before installer authorization
         env:
@@ -368,13 +363,7 @@ jobs:
           tags: tag:blender-box-install-dispatch
           use-cache: false
           hostname: blender-box-install-dispatch-${{ github.run_id }}
-      - name: Dispatch the retained host-install proof
-        timeout-minutes: 65
-        run: |
-          set -euo pipefail
-          python3 driver/scripts/proof_dispatch.py start --directory "$RUNNER_TEMP/onboarding-host-install-proof"
-      - name: Recover through the durable owner and require settlement
-        if: always()
+      - name: Recover the onboarding execution and require installer settlement
         timeout-minutes: 20
         run: |
           set -euo pipefail

@@ -606,6 +606,49 @@ class InstallationTests(unittest.TestCase):
         self.assertNotIn(b"request_sha256", public)
 
 
+    def test_collect_publishes_failed_scenario_evidence_after_owned_removal(self):
+        self.host_fault = "run-failed"
+        result = self.prove()
+        record = self.base.service.completed[self.base.service.invocation.invocation_id]
+        baseline.private_file(self.control / "result-0001.json", proof.canonical(record))
+        receipt = self.controller.dispatch(baseline.command("status"))
+        self.assertEqual((receipt["phase"], receipt["proof_result"], receipt["windows_cleanup"]), ("settled", "fail", "proven"))
+        envelope, _ = self.base.collected()
+        self.assertEqual(envelope["baseline"]["report"]["status"], "fail")
+        self.assertEqual(envelope["baseline"]["report"]["outcomes"], result["outcomes"])
+        self.assertEqual(envelope["settlement"], {"receipt": receipt, "recovery": None})
+
+    def test_collect_publishes_failure_when_no_run_cleanup_map_exists(self):
+        self.host_fault = "run-failed"
+        self.prove()
+        record = self.base.service.completed[self.base.service.invocation.invocation_id]
+        record["result"].update(run=None, cleanup=None, artifacts=[])
+        for key in ("binaries", "daemon_capabilities", "blender_version"):
+            record["result"].pop(key, None)
+        baseline.private_file(self.control / "result-0001.json", proof.canonical(record))
+        receipt = self.controller.dispatch(baseline.command("status"))
+        self.assertEqual((receipt["phase"], receipt["proof_result"], receipt["windows_cleanup"]), ("settled", "fail", "proven"))
+        envelope, _ = self.base.collected()
+        self.assertEqual((envelope["baseline"]["report"]["run"], envelope["baseline"]["report"]["cleanup"]), (None, None))
+
+    def test_collect_projects_baseline_evidence_without_installer_settlement(self):
+        result = self.prove()
+        record = self.base.service.completed[self.base.service.invocation.invocation_id]
+        baseline.private_file(self.control / "result-0001.json", proof.canonical(record))
+        self.assertEqual(self.controller.dispatch(baseline.command("status"))["proof_result"], "pass")
+        envelope, files = self.base.collected()
+        self.assertEqual(envelope["request"]["variant"], "host-install")
+        report = envelope["baseline"]["report"]
+        self.assertEqual(report, {key: value for key, value in result.items() if key != "installation_settlement"})
+        self.assertEqual(set(report["outcomes"]), set(proof.REQUIRED + proof.INSTALL_REQUIRED))
+        self.assertEqual(report["run"]["session_id"], result["run"]["session_id"])
+        self.assertNotIn(b"installation_settlement", files["outcome.json"])
+        self.assertNotIn(b"precious.blend", files["outcome.json"])
+        record["result"]["outcomes"].pop("fixture-preserved")
+        baseline.private_file(self.control / "result-0001.json", proof.canonical(record))
+        with self.assertRaisesRegex(model.ControllerError, "collect-report-invalid"):
+            self.base.collected()
+
 
 class InstallationPolicyTests(unittest.TestCase):
     def test_host_install_enrollment_requires_exact_private_pins_and_new_qualification(self):
