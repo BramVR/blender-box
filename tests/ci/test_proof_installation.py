@@ -606,6 +606,24 @@ class InstallationTests(unittest.TestCase):
         self.assertNotIn(b"request_sha256", public)
 
 
+    def test_collect_projects_baseline_evidence_without_installer_settlement(self):
+        result = self.prove()
+        record = self.base.service.completed[self.base.service.invocation.invocation_id]
+        baseline.private_file(self.control / "result-0001.json", proof.canonical(record))
+        self.assertEqual(self.controller.dispatch(baseline.command("status"))["proof_result"], "pass")
+        envelope, files = self.base.collected()
+        self.assertEqual(envelope["request"]["variant"], "host-install")
+        report = envelope["baseline"]["report"]
+        self.assertEqual(report, {key: value for key, value in result.items() if key != "installation_settlement"})
+        self.assertEqual(set(report["outcomes"]), set(proof.REQUIRED + proof.INSTALL_REQUIRED))
+        self.assertEqual(report["run"]["session_id"], result["run"]["session_id"])
+        self.assertNotIn(b"installation_settlement", files["outcome.json"])
+        self.assertNotIn(b"precious.blend", files["outcome.json"])
+        record["result"]["outcomes"].pop("fixture-preserved")
+        baseline.private_file(self.control / "result-0001.json", proof.canonical(record))
+        with self.assertRaisesRegex(model.ControllerError, "collect-report-invalid"):
+            self.base.collected()
+
 
 class InstallationPolicyTests(unittest.TestCase):
     def test_host_install_enrollment_requires_exact_private_pins_and_new_qualification(self):

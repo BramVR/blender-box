@@ -131,7 +131,7 @@ def baseline_report(value, request, expected_client):
         installation = value["installation"]
         require(isinstance(installation, dict) and set(installation) == {"installation_id", "state"}
                 and proof.matches(r"bbxi_[a-f0-9]{32}", installation["installation_id"])
-                and installation["state"] == "installed", "collect-report-invalid")
+                and installation["state"] in ("installed", "removed"), "collect-report-invalid")
         # Settlement carries private installer tokens; the public outcome omits it as write_outcome does.
         value = {key: item for key, item in value.items() if key != "installation_settlement"}
     outcomes = value["outcomes"]
@@ -638,7 +638,10 @@ class Controller:
         except proof.ProofError as error:
             raise ControllerError("collect-report-invalid") from error
         require(report["status"] == state["proof_result"], "collect-result-changed")
-        retained = state["recovery_inputs"]
+        # Host-install retains its installation anchor, not a Run ID, and settles recovery through that chain.
+        installing = job.request.variant == "host-install"
+        require(not installing or state["attempt"] == 1, "collect-recovery-unavailable")
+        retained = None if installing else state["recovery_inputs"]
         if retained is not None:
             require(report["run"] is not None and report["run"]["run_id"] == retained["run_id"],
                     "collect-run-changed")
