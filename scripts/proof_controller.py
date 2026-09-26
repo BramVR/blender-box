@@ -117,10 +117,10 @@ def parse_command(raw):
 def baseline_report(value, request, expected_client):
     installing = request.variant == "host-install"
     fields = {"schema_version", "proof", "candidate_sha", "driver_sha", "execution", "status",
-              "run", "cleanup", "outcomes", "not_exercised", "artifacts"} | (
-              {"installation", "installation_settlement"} if installing else set())
+              "run", "cleanup", "outcomes", "not_exercised", "artifacts"} | ({"installation"} if installing else set())
     require(isinstance(value, dict) and fields <= set(value)
-            and set(value) <= fields | {"binaries", "daemon_capabilities", "blender_version"}
+            and set(value) <= fields | {"binaries", "daemon_capabilities", "blender_version"} | (
+                {"installation_settlement"} if installing else set())
             and type(value["schema_version"]) is int and value["schema_version"] == 1
             and value["proof"] == "windows-onboarding-" + request.variant and value["execution"] == "hosted"
             and value["candidate_sha"] == request.candidate_sha and value["driver_sha"] == request.driver_sha
@@ -131,7 +131,7 @@ def baseline_report(value, request, expected_client):
         installation = value["installation"]
         require(isinstance(installation, dict) and set(installation) == {"installation_id", "state"}
                 and proof.matches(r"bbxi_[a-f0-9]{32}", installation["installation_id"])
-                and installation["state"] in ("installed", "removed"), "collect-report-invalid")
+                and installation["state"] in ("installed", "removed", "unknown"), "collect-report-invalid")
         # Settlement carries private installer tokens; the public outcome omits it as write_outcome does.
         value = {key: item for key, item in value.items() if key != "installation_settlement"}
     outcomes = value["outcomes"]
@@ -640,27 +640,28 @@ class Controller:
         require(report["status"] == state["proof_result"], "collect-result-changed")
         # Host-install retains its installation anchor, not a Run ID, and settles recovery through that chain.
         installing = job.request.variant == "host-install"
-        require(not installing or state["attempt"] == 1, "collect-recovery-unavailable")
         retained = None if installing else state["recovery_inputs"]
         if retained is not None:
             require(report["run"] is not None and report["run"]["run_id"] == retained["run_id"],
                     "collect-run-changed")
         recovery = None
         final = baseline
-        if state["attempt"] == 1:
+        if state["attempt"] > 1:
+            require(installing or retained is not None, "collect-recovery-unavailable")
+            recovery_raw, final = self.collection_record(control, job.request, state["attempt"], "recover")
+            cleanup = None
+            if not installing:
+                try:
+                    cleanup = proof.verify_cleanup({"cleanup": final["result"]})
+                except proof.ProofError as error:
+                    raise ControllerError("collect-cleanup-invalid") from error
+            recovery = {"attempt": state["attempt"], "record_sha256": proof.digest(recovery_raw), "cleanup": cleanup}
+        elif not installing:
+            # Host-install proves Windows cleanup through its installation chain, which reconcile already verified.
             try:
                 proof.verify_cleanup(report)
             except proof.ProofError as error:
                 raise ControllerError("collect-cleanup-invalid") from error
-        else:
-            require(retained is not None, "collect-recovery-unavailable")
-            recovery_raw, final = self.collection_record(control, job.request, state["attempt"], "recover")
-            try:
-                cleanup = proof.verify_cleanup({"cleanup": final["result"]})
-            except proof.ProofError as error:
-                raise ControllerError("collect-cleanup-invalid") from error
-            recovery = {"attempt": state["attempt"], "record_sha256": proof.digest(recovery_raw),
-                        "cleanup": cleanup}
         require(final["invocation"] == state["invocation"], "collect-record-invalid")
         attempt = self.bound_attempt(control, state)
         if attempt is not None:

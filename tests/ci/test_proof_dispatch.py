@@ -203,6 +203,20 @@ class CollectTests(unittest.TestCase):
         self.assertFalse(self.collect(self.rebuilt(fail)))
         self.assertEqual(json.loads((self.root / "public/outcome.json").read_bytes())["baseline"]["report"]["status"], "fail")
 
+    def test_unexpected_report_fields_never_reach_the_public_artifact(self):
+        def planted(section):
+            def change(envelope):
+                report = envelope["baseline"]["report"]
+                target = {"report": report, "run": report["run"], "outcome": report["outcomes"]["scenario"],
+                          "artifact": report["artifacts"][0], "settlement": envelope["settlement"],
+                          "baseline": envelope["baseline"]}[section]
+                target["private"] = "PRIVATE_HOST_SENTINEL"
+            return change
+        for section in ("report", "run", "outcome", "artifact", "settlement", "baseline"):
+            with self.subTest(section=section), self.assertRaises((model.ControllerError, proof.ProofError)):
+                self.collect(self.rebuilt(planted(section)))
+            self.assertFalse((self.root / "public/outcome.json").exists())
+
     def test_tampered_or_rebound_response_is_not_published(self):
         tampered = copy.deepcopy(self.response)
         tampered["files"][0]["sha256"] = "0" * 64

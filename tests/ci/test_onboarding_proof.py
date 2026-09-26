@@ -1089,7 +1089,8 @@ class WorkflowTests(unittest.TestCase):
     def test_installer_job_uses_durable_owner_and_uploads_only_public_receipt(self):
         workflow = (ROOT / ".github/workflows/windows-onboarding-proof.yml").read_text()
         installer = workflow.split("  host-install:\n", 1)[1]
-        for value in ("name: host-install", "needs: [candidate, baseline]", "if: always() && needs.candidate.result == 'success'",
+        for value in ("name: host-install", "needs: [candidate, authorize, baseline]",
+                      "if: always() && needs.candidate.result == 'success' && needs.authorize.result == 'success'",
                       "environment: windows-onboarding-installer", "DRIVER_SHA: ${{ github.workflow_sha }}",
                       "ref: ${{ github.workflow_sha }}", "ref: ${{ needs.candidate.outputs.sha }}",
                       "PROOF_EXECUTION_ID: gha_${{ github.run_id }}_onboarding",

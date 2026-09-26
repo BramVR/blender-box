@@ -123,13 +123,17 @@ def collect(root, *, commands=None):
                   and envelope["request"] == {"execution_id": request.execution_id, "request_sha256": request.digest,
                                               "candidate_sha": request.candidate_sha, "driver_sha": request.driver_sha,
                                               "variant": request.variant}, "collect-outcome-invalid")
-    report = envelope["baseline"].get("report") if isinstance(envelope["baseline"], dict) else None
-    settled = receipt(proof.canonical(envelope["settlement"].get("receipt")), request.execution_id)
-    model.require(isinstance(report, dict) and isinstance(report.get("outcomes"), dict)
-                  and set(report["outcomes"]) == set(proof.REQUIRED + proof.INSTALL_REQUIRED)
-                  and all(isinstance(item, dict) for item in report["outcomes"].values())
-                  and isinstance(report.get("artifacts"), list) and all(isinstance(item, dict) for item in report["artifacts"])
-                  and (report.get("run") is None or isinstance(report["run"], dict)), "collect-outcome-invalid")
+    baseline, settlement = envelope["baseline"], envelope["settlement"]
+    model.require(isinstance(baseline, dict) and set(baseline) == {"record_sha256", "report"}
+                  and isinstance(settlement, dict) and set(settlement) == {"receipt", "recovery"}
+                  and isinstance(baseline["report"], dict) and "installation_settlement" not in baseline["report"],
+                  "collect-outcome-invalid")
+    settled = receipt(proof.canonical(settlement["receipt"]), request.execution_id)
+    # Exact key sets keep unexpected private fields out of the public artifact. The controller binds the
+    # client hash to its enrolled policy; this runner has no independent copy of that pin.
+    binaries = baseline["report"].get("binaries")
+    report = model.baseline_report(baseline["report"], request,
+                                   binaries.get("client_sha256") if isinstance(binaries, dict) else None)
     outcomes = report["outcomes"]
     viewport = [item for item in report["artifacts"] if item.get("type") == "viewport"]
     if "viewport.png" in files:

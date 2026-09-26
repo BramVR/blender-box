@@ -3,7 +3,7 @@
 ## Unreleased
 
 - Run the hosted `baseline` onboarding job through the persistent proof controller: one owned install, baseline Run, and removal execution per dispatch, with the controller-validated outcome and viewport published; `host-install` settles that same execution instead of consuming a second fixture.
-- Add a bounded proof-controller `collect` operation that exports only root-bound baseline evidence, including the baseline outcomes of a first-attempt host-install execution without its private installer settlement, after exact settlement and retained viewport opt-in validation.
+- Add a bounded proof-controller `collect` operation that exports only root-bound baseline evidence, including passing or failed host-install executions without their private installer settlement, after exact settlement and retained viewport opt-in validation.
 - Add bounded root-only proof-controller qualification cases and original-Run cleanup authority while keeping ordinary dispatch closed until all native evidence is approved.
 - Retain Windows installation and original Run authority on the persistent proof controller across hosted job loss; require durable checkpoint acknowledgement before mutations and exact cleanup before settlement. Render disabled SSH commands as OpenSSH sentinels and restore SSH key terminal newlines stripped by secret storage so hosted proof can authenticate.
 

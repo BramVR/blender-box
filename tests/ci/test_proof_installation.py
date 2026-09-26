@@ -606,6 +606,31 @@ class InstallationTests(unittest.TestCase):
         self.assertNotIn(b"request_sha256", public)
 
 
+    def test_collect_publishes_failed_scenario_evidence_after_owned_removal(self):
+        self.host_fault = "run-failed"
+        result = self.prove()
+        record = self.base.service.completed[self.base.service.invocation.invocation_id]
+        baseline.private_file(self.control / "result-0001.json", proof.canonical(record))
+        receipt = self.controller.dispatch(baseline.command("status"))
+        self.assertEqual((receipt["phase"], receipt["proof_result"], receipt["windows_cleanup"]), ("settled", "fail", "proven"))
+        envelope, _ = self.base.collected()
+        self.assertEqual(envelope["baseline"]["report"]["status"], "fail")
+        self.assertEqual(envelope["baseline"]["report"]["outcomes"], result["outcomes"])
+        self.assertEqual(envelope["settlement"], {"receipt": receipt, "recovery": None})
+
+    def test_collect_publishes_failure_when_no_run_cleanup_map_exists(self):
+        self.host_fault = "run-failed"
+        self.prove()
+        record = self.base.service.completed[self.base.service.invocation.invocation_id]
+        record["result"].update(run=None, cleanup=None, artifacts=[])
+        for key in ("binaries", "daemon_capabilities", "blender_version"):
+            record["result"].pop(key, None)
+        baseline.private_file(self.control / "result-0001.json", proof.canonical(record))
+        receipt = self.controller.dispatch(baseline.command("status"))
+        self.assertEqual((receipt["phase"], receipt["proof_result"], receipt["windows_cleanup"]), ("settled", "fail", "proven"))
+        envelope, _ = self.base.collected()
+        self.assertEqual((envelope["baseline"]["report"]["run"], envelope["baseline"]["report"]["cleanup"]), (None, None))
+
     def test_collect_projects_baseline_evidence_without_installer_settlement(self):
         result = self.prove()
         record = self.base.service.completed[self.base.service.invocation.invocation_id]

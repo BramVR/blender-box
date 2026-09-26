@@ -299,8 +299,8 @@ jobs:
 
   host-install:
     name: host-install
-    needs: [candidate, baseline]
-    if: always() && needs.candidate.result == 'success'
+    needs: [candidate, authorize, baseline]
+    if: always() && needs.candidate.result == 'success' && needs.authorize.result == 'success'
     runs-on: ubuntu-latest
     timeout-minutes: 90
     environment: windows-onboarding-installer
