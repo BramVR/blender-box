@@ -1089,14 +1089,17 @@ class WorkflowTests(unittest.TestCase):
     def test_installer_job_uses_durable_owner_and_uploads_only_public_receipt(self):
         workflow = (ROOT / ".github/workflows/windows-onboarding-proof.yml").read_text()
         installer = workflow.split("  host-install:\n", 1)[1]
-        for value in ("name: host-install", "needs: [candidate, named-target]", "if: always() && needs.candidate.result == 'success'",
+        for value in ("name: host-install", "needs: [candidate, baseline]", "if: always() && needs.candidate.result == 'success'",
                       "environment: windows-onboarding-installer", "DRIVER_SHA: ${{ github.workflow_sha }}",
                       "ref: ${{ github.workflow_sha }}", "ref: ${{ needs.candidate.outputs.sha }}",
-                      "proof_dispatch.py prepare", "proof_dispatch.py start", "proof_dispatch.py recover",
+                      "PROOF_EXECUTION_ID: gha_${{ github.run_id }}_onboarding",
+                      "proof_dispatch.py prepare", "proof_dispatch.py recover",
                       "tag:blender-box-install-dispatch", "onboarding-host-install-proof/public/receipt.json"):
             self.assertIn(value, installer)
+        # The one-use fixture is consumed by the baseline job's execution; this job may only settle it.
         for value in ("ONBOARDING_SSH", "ONBOARDING_TS", "prepare_hosted_credentials", "onboarding_proof.py host-install",
-                      "protected-environment-approval", "candidate/scripts", "continue-on-error", "/private/", "*.json"):
+                      "proof_dispatch.py start", "protected-environment-approval", "candidate/scripts",
+                      "continue-on-error", "/private/", "*.json"):
             self.assertNotIn(value, installer)
         self.assertEqual(set(proof.re.findall(r"secrets\.([A-Z_]+)", installer)), {
             "ONBOARDING_INSTALL_OPERATOR_CONFIG", "ONBOARDING_INSTALL_CONTROLLER_CONFIG", "ONBOARDING_INSTALL_CONTROLLER_KEY",
@@ -1105,6 +1108,22 @@ class WorkflowTests(unittest.TestCase):
         self.assertIn("audience: ${{ vars.ONBOARDING_INSTALL_TS_AUDIENCE }}", installer)
         self.assertNotIn("oauth-secret:", installer)
         self.assertIn("group: windows-onboarding-prepared-v1", workflow)
+
+    def test_baseline_job_dispatches_collects_and_publishes_only_validated_evidence(self):
+        workflow = (ROOT / ".github/workflows/windows-onboarding-proof.yml").read_text()
+        job = workflow.split("  baseline:\n", 1)[1].split("  named-target:\n", 1)[0]
+        for value in ("name: baseline", "needs: [candidate, authorize]", "environment: windows-onboarding-installer",
+                      "PROOF_EXECUTION_ID: gha_${{ github.run_id }}_onboarding", "id-token: write",
+                      "proof_dispatch.py prepare", "proof_dispatch.py start", "proof_dispatch.py recover",
+                      "proof_dispatch.py collect", "tag:blender-box-install-dispatch",
+                      "onboarding-proof/public/receipt.json", "onboarding-proof/public/outcome.json",
+                      "onboarding-proof/public/viewport.png"):
+            self.assertIn(value, job)
+        for value in ("ONBOARDING_SSH", "ONBOARDING_TS_CLIENT_SECRET", "prepare_hosted_credentials", "onboarding_proof.py",
+                      "oauth-secret:", "candidate/scripts", "continue-on-error", "/private/"):
+            self.assertNotIn(value, job)
+        self.assertNotIn("*", job.split("name: Upload allowlisted proof", 1)[1].split("name: Remove only", 1)[0])
+        self.assertEqual(job.count("if: always()"), 4)
 
     def test_named_job_requires_successful_baseline_and_reuses_trusted_boundaries(self):
         workflow = (ROOT / ".github/workflows/windows-onboarding-proof.yml").read_text()
@@ -1118,20 +1137,20 @@ class WorkflowTests(unittest.TestCase):
                       '"$RUN_ATTEMPT" == 1', "tags: tag:blender-box-onboarding", "use-cache: false"):
             self.assertIn(value, named)
         self.assertNotIn('config["target"]["ssh_user"]', workflow)
-        self.assertEqual(workflow.count("from onboarding_proof import ProofError, prepare_hosted_credentials"), 2)
-        baseline_secrets = set(proof.re.findall(r"secrets\.([A-Z_]+)", workflow.split("  baseline:\n")[1].split("  named-target:\n")[0]))
-        self.assertEqual(set(proof.re.findall(r"secrets\.([A-Z_]+)", named)), baseline_secrets)
+        self.assertEqual(workflow.count("from onboarding_proof import ProofError, prepare_hosted_credentials"), 1)
+        self.assertEqual(set(proof.re.findall(r"secrets\.([A-Z_]+)", named)), {
+            "ONBOARDING_OPERATOR_CONFIG", "ONBOARDING_SSH_KEY", "ONBOARDING_KNOWN_HOSTS", "ONBOARDING_SSH_HOSTNAME",
+            "ONBOARDING_TS_CLIENT_ID", "ONBOARDING_TS_CLIENT_SECRET"})
         self.assertFalse(named.lstrip().startswith("if:"))
 
     def test_trusted_driver_authorization_and_public_upload_contract(self):
         workflow = (ROOT / ".github/workflows/windows-onboarding-proof.yml").read_text()
         for text in ("name: Windows onboarding proof", "name: baseline", "workflow_dispatch:",
                      "needs: [candidate, authorize]", "environment: windows-onboarding-approval",
-                     "environment: windows-onboarding-host", "cancel-in-progress: false", "timeout-minutes: 75",
+                     "cancel-in-progress: false",
                      '"$RUN_ATTEMPT" == 1', '"$REQUEST_REF" != refs/heads/main', '"$REQUEST_ACTOR" == BramVR',
                      "ref: ${{ github.workflow_sha }}", "ref: ${{ needs.candidate.outputs.sha }}",
-                     "python3 driver/scripts/onboarding_proof.py baseline", "--execution hosted", "persist-credentials: false",
-                     "windows-onboarding-prepared-v1", "if-no-files-found: error", "prepare_hosted_credentials(os.environ)"):
+                     "persist-credentials: false", "windows-onboarding-prepared-v1", "if-no-files-found: error"):
             self.assertIn(text, workflow)
         for forbidden in ("pull_request:", "push:", "continue-on-error", "candidate/scripts/onboarding_proof.py",
                           "artifacts/**", "/private/", "~/.ssh", "$HOME", "StrictHostKeyChecking no"):

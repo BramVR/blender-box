@@ -2,6 +2,8 @@
 """Trusted hosted client for the fixed persistent controller commands."""
 
 import argparse
+import base64
+import binascii
 from dataclasses import asdict
 from datetime import datetime, timedelta, timezone
 import os
@@ -89,9 +91,61 @@ def dispatch(root, operation, *, commands=None, clock=time.monotonic, wait=time.
         command = proof.canonical({"schema_version": 1, "operation": "status", "execution_id": request.execution_id})
 
 
+def collect(root, *, commands=None):
+    request = model.parse_command(model.read_private(root / "request.json", model.MAX_WIRE)).request
+    model.require(request is not None and request.variant == "host-install", "invalid-command")
+    if commands is None:
+        attempt = root / "private" / "collect"
+        model.private_directory(attempt, create=True)
+        commands = proof.Commands(attempt, root)
+    command = proof.canonical({"schema_version": 1, "operation": "collect", "execution_id": request.execution_id})
+    raw = commands.run(["ssh", "-F", root / "ssh-config", "-T", "--", "proof-controller", "dispatch"],
+                       stdin=command, timeout=300, limit=model.MAX_COLLECT_RESPONSE)
+    value = model.document(raw, model.MAX_COLLECT_RESPONSE)
+    model.require(set(value) == {"schema_version", "operation", "execution_id", "files"}
+                  and value["operation"] == "collect" and value["execution_id"] == request.execution_id
+                  and isinstance(value["files"], list) and 1 <= len(value["files"]) <= 2, "collect-response-invalid")
+    files = {}
+    for item in value["files"]:
+        model.require(isinstance(item, dict) and set(item) == {"name", "size", "sha256", "content_base64"}
+                      and item["name"] in ("outcome.json", "viewport.png") and item["name"] not in files
+                      and isinstance(item["content_base64"], str), "collect-response-invalid")
+        try:
+            content = base64.b64decode(item["content_base64"], validate=True)
+        except (binascii.Error, ValueError) as error:
+            raise model.ControllerError("collect-response-invalid") from error
+        model.require(len(content) == item["size"] and proof.digest(content) == item["sha256"], "collect-response-invalid")
+        files[item["name"]] = content
+    model.require("outcome.json" in files, "collect-response-invalid")
+    envelope = model.document(files["outcome.json"], model.MAX_FILE, version=2)
+    model.require(set(envelope) == {"schema_version", "kind", "request", "baseline", "settlement"}
+                  and envelope["kind"] == "baseline-collect"
+                  and envelope["request"] == {"execution_id": request.execution_id, "request_sha256": request.digest,
+                                              "candidate_sha": request.candidate_sha, "driver_sha": request.driver_sha,
+                                              "variant": request.variant}, "collect-outcome-invalid")
+    report = envelope["baseline"].get("report") if isinstance(envelope["baseline"], dict) else None
+    settled = receipt(proof.canonical(envelope["settlement"].get("receipt")), request.execution_id)
+    model.require(isinstance(report, dict) and isinstance(report.get("outcomes"), dict)
+                  and set(report["outcomes"]) == set(proof.REQUIRED + proof.INSTALL_REQUIRED)
+                  and all(isinstance(item, dict) for item in report["outcomes"].values())
+                  and isinstance(report.get("artifacts"), list) and all(isinstance(item, dict) for item in report["artifacts"])
+                  and (report.get("run") is None or isinstance(report["run"], dict)), "collect-outcome-invalid")
+    outcomes = report["outcomes"]
+    viewport = [item for item in report["artifacts"] if item.get("type") == "viewport"]
+    if "viewport.png" in files:
+        model.require(len(viewport) == 1 and len(files["viewport.png"]) == viewport[0]["size"]
+                      and proof.digest(files["viewport.png"]) == viewport[0]["local_sha256"], "collect-viewport-invalid")
+        proof.verify_png(files["viewport.png"], viewport[0]["width"], viewport[0]["height"])
+        model.publish(root / "public/viewport.png", files["viewport.png"], exclusive=False)
+    model.publish(root / "public/outcome.json", files["outcome.json"], exclusive=False)
+    return (report["status"] == "pass" and all(item["status"] == "pass" for item in outcomes.values())
+            and settled["phase"] == "settled" and settled["proof_result"] == "pass"
+            and report["run"] is not None and report["run"].get("session_id") is not None)
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("operation", choices=("prepare", "start", "status", "recover"))
+    parser.add_argument("operation", choices=("prepare", "start", "status", "recover", "collect"))
     parser.add_argument("--directory", type=Path, required=True)
     args = parser.parse_args(argv)
     os.umask(0o077)
@@ -99,9 +153,11 @@ def main(argv=None):
         if args.operation == "prepare":
             prepare(args.directory.absolute(), os.environ)
             return 0
+        if args.operation == "collect":
+            return 0 if collect(args.directory.absolute()) else 1
         result = dispatch(args.directory.absolute(), args.operation)
         return 0 if result["phase"] == "settled" and result["proof_result"] == "pass" else 1
-    except (OSError, KeyError, ValueError, model.ControllerError, proof.ProofError):
+    except (OSError, KeyError, TypeError, AttributeError, ValueError, model.ControllerError, proof.ProofError):
         print("Persistent controller proof remains unconfirmed.", file=sys.stderr)
         return 1
 
