@@ -264,7 +264,7 @@ class StopOps(native.LinuxOps):
         return self.supervisor_dead
 
     def end_supervisor(self, receipt):
-        self.events.append(("end-supervisor", receipt.invocation.parent_pid, receipt.supervisor_start))
+        self.events.append(("end-supervisor", receipt.owner.parent_pid, receipt.owner.supervisor_start))
 
     def whole_empty(self, unit=None):
         return self.unit_empty
@@ -286,6 +286,13 @@ class NativeStopTests(unittest.TestCase):
         self.assertEqual(self.ops.events[0], ("open", invocation().cgroup))
         self.assertEqual(self.ops.events[1], ("cgroup.kill", self.receipt.cgroup_inode, b"1\n"))
         self.assertEqual(self.ops.events[2], ("end-supervisor", 300, 3000))
+
+    def test_qualification_fixture_receipt_stops_by_the_same_owner_identity(self):
+        self.ops.supervisor_dead = self.ops.unit_empty = True
+        fixture = native.NativeFixtureReceipt("a" * 64, self.receipt.owner)
+        self.assertTrue(self.ops.stop(fixture))
+        self.assertEqual(self.ops.events[:3], [("open", invocation().cgroup), ("cgroup.kill", self.receipt.cgroup_inode, b"1\n"),
+                                               ("end-supervisor", 300, 3000)])
 
     def test_inode_mismatch_sends_zero_signals(self):
         with self.assertRaisesRegex(model.ControllerError, "native-cgroup-changed"):
