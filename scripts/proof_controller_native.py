@@ -1735,9 +1735,9 @@ class LinuxOps:
                 return False
             unit = self.unit(timeout=max(0.001, min(10, remaining)))
             observed = True
-            invocation = receipt.invocation
-            model.require(unit.invocation_id in ("", invocation.invocation_id)
-                          and unit.main_pid in (0, invocation.parent_pid), "service-identity-changed")
+            owner = receipt.owner
+            model.require(unit.invocation_id in ("", owner.invocation_id)
+                          and unit.main_pid in (0, owner.parent_pid), "service-identity-changed")
             if self.whole_empty(unit) and self.supervisor_gone(receipt):
                 return True
 
