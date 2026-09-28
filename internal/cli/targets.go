@@ -110,6 +110,9 @@ func targetsCommand(args []string, stdout, stderr io.Writer) int {
 	if err != nil {
 		return fail(stderr, operation+" target", err)
 	}
+	if _, paired := selected.Connection().Direct(); operation == "forget" && paired {
+		fmt.Fprintln(stderr, pairedForgetWarning(root, name))
+	}
 	if operation == "show" {
 		return writeJSON(stdout, stderr, struct {
 			SchemaVersion int           `json:"schema_version"`

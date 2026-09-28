@@ -47,7 +47,8 @@ func main() {
 				}
 				return orchestrator.New(windows.NewAdapter(sshRunner), configRoot)
 			},
-			Host: hostService,
+			Host:       hostService,
+			PairRemote: windows.NewAdapter(sshRunner),
 		},
 	))
 }
