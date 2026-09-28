@@ -24,7 +24,7 @@ type recordingSSH struct {
 	hook      func([]byte) []byte
 }
 
-func (fake *recordingSSH) Run(_ context.Context, _ string, arguments []string, input []byte) ([]byte, error) {
+func (fake *recordingSSH) Run(_ context.Context, _ target.Connection, arguments []string, input []byte) ([]byte, error) {
 	fake.calls++
 	fake.arguments = arguments
 	fake.input = append([]byte(nil), input...)

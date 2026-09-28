@@ -2,6 +2,7 @@ package windows
 
 import (
 	"context"
+	"github.com/BramVR/blender-box/internal/target"
 	"strings"
 	"testing"
 	"time"
@@ -12,7 +13,7 @@ type checkSSH struct {
 	deadlineWindow time.Duration
 }
 
-func (fake *checkSSH) Run(ctx context.Context, _ string, _ []string, _ []byte) ([]byte, error) {
+func (fake *checkSSH) Run(ctx context.Context, _ target.Connection, _ []string, _ []byte) ([]byte, error) {
 	deadline, ok := ctx.Deadline()
 	if ok {
 		fake.deadlineWindow = time.Until(deadline)

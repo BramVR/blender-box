@@ -9,6 +9,7 @@ import (
 	"time"
 	"unicode/utf16"
 
+	sshtransport "github.com/BramVR/blender-box/internal/ssh"
 	"github.com/BramVR/blender-box/internal/target"
 	"github.com/BramVR/blender-box/internal/windowstarget"
 )
@@ -358,14 +359,9 @@ $requiredFailed = @($checks | Where-Object { $_.required -and -not $_.passed }).
 [ordered]@{schema_version=1; status=$(if ($requiredFailed -eq 0) {'pass'} else {'fail'}); checks=$checks} | ConvertTo-Json -Compress -Depth 8
 `
 
-type SSH interface {
-	Run(context.Context, string, []string, []byte) ([]byte, error)
-}
+type SSH = sshtransport.CommandRunner
 
-type SetupSSH interface {
-	SSH
-	Upload(context.Context, string, string, string) error
-}
+type SetupSSH = sshtransport.Transport
 
 type CheckResult struct {
 	SchemaVersion int             `json:"schema_version"`
@@ -420,7 +416,7 @@ func Check(ctx context.Context, ssh SSH, selected target.Target) (CheckResult, e
 		"-EncodedCommand",
 		encodePowerShell("[Console]::In.ReadToEnd() | Invoke-Expression"),
 	}
-	output, err := ssh.Run(ctx, selected.SSHAlias(), arguments, []byte(scriptInput))
+	output, err := ssh.Run(ctx, selected.Connection(), arguments, []byte(scriptInput))
 	if err != nil {
 		return CheckResult{}, fmt.Errorf("inspect Windows host: %w", err)
 	}

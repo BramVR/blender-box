@@ -50,13 +50,19 @@ func (store Store) Import(name, source string, replace bool) (Target, error) {
 	if err != nil {
 		return Target{}, err
 	}
+	return store.Save(name, selected, replace)
+}
+func (store Store) Save(name string, selected Target, replace bool) (Target, error) {
+	if err := ValidateName(name); err != nil {
+		return Target{}, err
+	}
 	encoded, err := json.Marshal(selected)
 	if err != nil {
 		return Target{}, err
 	}
 	if err := privatefile.Publish(store.Root, profilePath(name), append(encoded, '\n'), replace); err != nil {
 		if os.IsExist(err) {
-			return Target{}, fmt.Errorf("target name already exists; use --replace")
+			return Target{}, fmt.Errorf("target name already exists; use --replace: %w", err)
 		}
 		return Target{}, fmt.Errorf("import target: %w", err)
 	}
@@ -69,6 +75,18 @@ func (store Store) Show(name string) (Target, error) {
 	content, err := privatefile.Read(store.Root, profilePath(name), MaxDocumentSize)
 	if err != nil {
 		return Target{}, fmt.Errorf("read saved target: %w", err)
+	}
+	return Decode(content)
+}
+
+// ShowDurable confirms publication before a caller accepts a saved recovery authority.
+func (store Store) ShowDurable(name string) (Target, error) {
+	if err := ValidateName(name); err != nil {
+		return Target{}, err
+	}
+	content, err := privatefile.ReadDurable(store.Root, profilePath(name), MaxDocumentSize)
+	if err != nil {
+		return Target{}, fmt.Errorf("read durable saved target: %w", err)
 	}
 	return Decode(content)
 }
