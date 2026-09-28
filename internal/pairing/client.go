@@ -268,9 +268,23 @@ func (client Client) Complete(ctx context.Context, name string, trusted TrustedR
 	return target.Target{}, fmt.Errorf("receipt retained; target publication conflicts with existing target")
 }
 func (client Client) Inspect(ctx context.Context, name string) (PairView, error) {
+	if err := target.ValidateName(name); err != nil {
+		return PairView{}, err
+	}
+	if record, err := client.readRevocation(name); err == nil {
+		if _, err := privatefile.ReadDurable(client.Root, recordPath(name, "receipt"), MaxDocumentSize); errors.Is(err, os.ErrNotExist) {
+			return PairView{1, record.PairID, "forget-pending", "unchecked", "repeat pair forget to finish removing local state"}, nil
+		}
+		return PairView{1, record.PairID, "revocation-pending", "unchecked", "repeat pair revoke to prove a fresh paired connection is rejected"}, nil
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return PairView{}, err
+	}
 	value, err := client.read(name)
 	if errors.Is(err, os.ErrNotExist) {
 		reservation, reserveErr := client.readPreparation(name)
+		if errors.Is(reserveErr, os.ErrNotExist) {
+			return PairView{1, "", "none", "unchecked", "no local pairing state; prepare a pairing from a trusted host offer"}, nil
+		}
 		if reserveErr != nil {
 			return PairView{}, reserveErr
 		}
@@ -293,18 +307,11 @@ func (client Client) Inspect(ctx context.Context, name string) (PairView, error)
 		}
 		return view, nil
 	}
-	data, err := privatefile.ReadDurable(client.Root, recordPath(name, "receipt"), MaxDocumentSize)
+	receipt, err := client.readReceipt(value)
 	if errors.Is(err, os.ErrNotExist) {
 		return view, nil
 	}
 	if err != nil {
-		return PairView{}, err
-	}
-	var receipt EnrollmentReceipt
-	if err := strictjson.Decode(data, &receipt); err != nil {
-		return PairView{}, err
-	}
-	if _, err := matchReceipt(value, receipt); err != nil {
 		return PairView{}, err
 	}
 	view.Access = "enrolled-publication-pending"

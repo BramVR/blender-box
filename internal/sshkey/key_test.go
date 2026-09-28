@@ -229,3 +229,34 @@ func TestKeygenOutputBoundAndRedaction(t *testing.T) {
 		}
 	}
 }
+
+func TestRemoveDeletesOnlyThatCredentialAndRepeats(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("credential generation requires POSIX")
+	}
+	root := filepath.Join(t.TempDir(), "private")
+	ctx := context.Background()
+	_, removed, err := Generate(ctx, root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, kept, err := Generate(ctx, root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := Remove(root, removed); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "credentials", removed)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("credential directory remains: %v", err)
+	}
+	if _, err := Read(ctx, root, kept); err != nil {
+		t.Fatalf("unrelated credential changed: %v", err)
+	}
+	if err := Remove(root, removed); err != nil {
+		t.Fatalf("repeated removal = %v", err)
+	}
+	if err := Remove(root, "../"+kept); err == nil {
+		t.Fatal("non-fingerprint path accepted")
+	}
+}
