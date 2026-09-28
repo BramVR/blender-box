@@ -19,7 +19,7 @@ The current implementation covers the local client. It requires a separately tru
 
 Preparation checks the complete retained record's size before creating credentials. It durably reserves the name, offer and request IDs, then retains one winning Ed25519 seed under that preparation. Concurrent callers use the same reservation and seed. The client derives the key in memory, retains the immutable enrollment intent, publishes the fingerprint-addressed credential, and exports only the public request. A repeated preparation returns the original intent after checking its key. A different offer or preexisting target name refuses.
 
-The seed reproduces the original OpenSSH private key after an interrupted publication. New preparation paths validate durable credential bytes without temporary private-key copies outside pairing storage. Legacy intents without a reservation retain their existing credential checks. The unencrypted single-Ed25519 encoding follows [OpenSSH's key format](https://github.com/openssh/openssh-portable/blob/master/PROTOCOL.key); tests verify it with the real `ssh-keygen` reader.
+The seed reproduces the original OpenSSH private key after an interrupted publication. New preparation paths validate durable credential bytes without temporary private-key copies outside pairing storage. An intent without its retained preparation refuses retry, completion and status. The unencrypted single-Ed25519 encoding follows [OpenSSH's key format](https://github.com/openssh/openssh-portable/blob/master/PROTOCOL.key); tests verify it with the real `ssh-keygen` reader.
 
 `pair complete NAME --receipt PATH --trust-receipt SHA256` verifies the independent receipt digest, then matches the receipt against the retained Pair ID, operation, intent, public key and complete expected target. It retains the accepted receipt before saving the target. Saving uses `target.Store.Save`, the same publication path as import, without replacing an existing profile.
 
@@ -47,6 +47,6 @@ SSH preparation requires an explicit owned setup operation with its own preview 
 
 ## Verification
 
-Focused tests cover strict target parsing, legacy compatibility, changed connection fields before Run recovery, local trust and retry behavior, secret-key checks, and both platform transport callers. Public CLI proof uses disposable keys and fake SSH/SCP processes. OpenSSH configuration parsing can be checked with `ssh -G` without contacting a host.
+Focused tests cover strict target parsing, alias schema compatibility, changed connection fields before Run recovery, local trust and retry behavior, secret-key checks, and both platform transport callers. Public CLI proof uses disposable keys and fake SSH/SCP processes. OpenSSH configuration parsing can be checked with `ssh -G` without contacting a host.
 
 The full repository gate remains `./scripts/ci all`. Windows cross-compilation establishes compilation only. Native Windows/Linux credential behavior, host enrollment, Blender, revocation and hosted pairing remain separate proof requirements.

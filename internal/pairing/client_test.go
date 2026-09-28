@@ -3,6 +3,7 @@ package pairing
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -160,5 +161,24 @@ func TestReceiptConflictAndMissingKeyPreserveRecovery(t *testing.T) {
 	}
 	if _, err := client.Complete(ctx, "work", trustedReceipt(t, receiptFor(t, offer, intent))); err == nil {
 		t.Fatal("missing credential accepted")
+	}
+}
+func TestIntentWithoutPreparationRefusesRetryAndCompletion(t *testing.T) {
+	client, offer := fixture(t)
+	intent, err := client.Prepare(context.Background(), "work", trustedOffer(t, client, offer))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(filepath.Join(client.Root, recordPath("work", "preparation"))); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.Prepare(context.Background(), "work", trustedOffer(t, client, offer)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("retry without preparation = %v", err)
+	}
+	if _, err := client.Complete(context.Background(), "work", trustedReceipt(t, receiptFor(t, offer, intent))); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("completion without preparation = %v", err)
+	}
+	if _, err := (target.Store{Root: client.Root}).Show("work"); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("target published without preparation: %v", err)
 	}
 }

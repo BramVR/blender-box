@@ -201,13 +201,6 @@ func (client Client) Prepare(ctx context.Context, name string, offer TrustedOffe
 			return EnrollmentIntent{}, fmt.Errorf("name already has a different pairing intent")
 		}
 		reservation, reserveErr := client.readPreparation(name)
-		if errors.Is(reserveErr, os.ErrNotExist) {
-			fingerprint, _ := sshkey.Fingerprint(existing.Intent.PublicKey)
-			if _, err := sshkey.Read(ctx, client.Root, fingerprint); err != nil {
-				return EnrollmentIntent{}, err
-			}
-			return existing.Intent, nil
-		}
 		if reserveErr != nil {
 			return EnrollmentIntent{}, reserveErr
 		}

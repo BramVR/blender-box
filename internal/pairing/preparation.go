@@ -134,11 +134,6 @@ func (client Client) prepareReserved(ctx context.Context, reservation pending) (
 
 func (client Client) verifyCredential(ctx context.Context, value pending) error {
 	reservation, err := client.readPreparation(value.Name)
-	if errors.Is(err, os.ErrNotExist) {
-		fingerprint, _ := sshkey.Fingerprint(value.Intent.PublicKey)
-		_, err := sshkey.Read(ctx, client.Root, fingerprint)
-		return err
-	}
 	if err != nil {
 		return err
 	}
