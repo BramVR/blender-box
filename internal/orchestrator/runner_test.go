@@ -443,11 +443,11 @@ func TestForgedPayloadFailsBeforeHostInspection(t *testing.T) {
 func TestRunReportsFailedHostInspectionBeforeAcquisition(t *testing.T) {
 	host := &fakeHost{
 		evidence:   testEvidence(),
-		inspection: HostInspection{SchemaVersion: 1, Status: "fail"},
+		inspection: HostInspection{SchemaVersion: 1, Status: "fail", Problems: []HostProblem{{Class: "interactive-desktop-unavailable", Check: "host.console-user"}}},
 	}
 
 	_, err := New(host, filepath.Join(t.TempDir(), "private")).Run(context.Background(), testIntent(t))
-	if err == nil || !strings.Contains(err.Error(), "host checks failed") || strings.Contains(err.Error(), "capture") {
+	if err == nil || err.Error() != "inspect host: host checks failed: interactive-desktop-unavailable (host.console-user); run doctor for next steps" {
 		t.Fatalf("Run() error = %v", err)
 	}
 	if !reflect.DeepEqual(host.operations, []string{"inspect"}) {
