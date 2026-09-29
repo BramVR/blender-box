@@ -275,7 +275,6 @@ func missingIsDone(err error) error {
 	return err
 }
 
-// hostCommand names the host-local pairing command an operator runs on the host console.
 func hostCommand(installed target.Target, operation, pairID string) string {
 	root := installed.Windows().WorkRoot
 	if installed.Platform() == "linux" {
