@@ -497,6 +497,60 @@ func TestExecutionProvenNoStartReleasesFenceAndResumes(t *testing.T) {
 	}
 }
 
+func TestExecutionLostWorkerResultSettlesOnlyWithoutPendingTaskMutation(t *testing.T) {
+	for _, tc := range []struct {
+		operation, interrupt, taskMutation, fence string
+	}{
+		{"install", "after-seal:" + sitePackagesRoot + "/blendersessiond/__main__.py", "settled", "released"},
+		{"install", "before-create:task", "unknown", "held"},
+		{"remove", "after-delete:runtime/", "settled", "released"},
+		{"remove", "before-delete:task", "unknown", "held"},
+	} {
+		t.Run(tc.operation+" "+tc.interrupt, func(t *testing.T) {
+			owner, _, request := ownerFixture(t)
+			if tc.operation == "remove" {
+				if _, err := owner.Execute(context.Background(), request); err != nil {
+					t.Fatal(err)
+				}
+				request.Operation = "remove"
+				request.OperationID = OperationID("bbxo_" + strings.Repeat("e", 32))
+				request.ExpectedPlan = ""
+			}
+			run := owner.run
+			owner.run = func(ctx context.Context, record executionRequest, publish func(executionOwnership) error) (workerOutcome, *treeExit, error) {
+				owner.installer.checkpoint = func(point string) error {
+					if strings.HasPrefix(point, tc.interrupt) {
+						return context.DeadlineExceeded
+					}
+					return nil
+				}
+				defer func() { owner.installer.checkpoint = nil }()
+				_, exit, _ := run(ctx, record, publish)
+				return workerOutcome{}, exit, context.DeadlineExceeded
+			}
+			expired, err := owner.Execute(context.Background(), request)
+			if err == nil || expired.Execution == nil || expired.Execution.TreeCleanup != "known" || expired.Execution.TaskMutation != tc.taskMutation || expired.Execution.FenceState != tc.fence {
+				t.Fatalf("expired=%+v %v", expired.Execution, err)
+			}
+			if tc.fence == "held" {
+				if err := host.RejectPendingSetup(request.StateRoot); err == nil {
+					t.Fatal("pending task mutation released fence")
+				}
+				return
+			}
+			if expired.State != "partial" || expired.Completion != "known" {
+				t.Fatalf("expired result=%s/%s", expired.State, expired.Completion)
+			}
+			owner.run = run
+			resumed, err := owner.Execute(context.Background(), request)
+			want := map[string]string{"install": "installed", "remove": "removed"}[tc.operation]
+			if err != nil || resumed.State != want || resumed.Execution.Token == expired.Execution.Token {
+				t.Fatalf("resumed=%+v %v", resumed, err)
+			}
+		})
+	}
+}
+
 func TestExecutionTerminalFenceRecoveredByExactStopBeforeRunAdmission(t *testing.T) {
 	owner, machine, request := ownerFixture(t)
 	run := owner.run
