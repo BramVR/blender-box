@@ -117,14 +117,6 @@ func (job *nativeJob) close() {
 	}
 	closeHandles()
 }
-func (job *nativeJob) terminateAndWait() error {
-	return job.settle(time.Now().Add(nativeCleanupTimeout))
-}
-
-func (job *nativeJob) start(executable string, args, environment []string, files [3]*os.File) (nativeSpawn, error) {
-	return job.startFlags(executable, args, environment, files, 0)
-}
-
 func (job *nativeJob) startFlags(executable string, args, environment []string, files [3]*os.File, creationFlags uint32) (nativeSpawn, error) {
 	var spawn nativeSpawn
 	application, err := syscall.UTF16PtrFromString(executable)

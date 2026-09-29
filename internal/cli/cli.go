@@ -36,13 +36,19 @@ type Dependencies struct {
 	Setup         windowsinstall.Executor
 	SSHPreparer   windowsinstall.SSHPreparer
 	Pairing       func(platform string) (pairing.Platform, error)
-	SSH           windows.SetupSSH
-	Runner        RunService
+	SSH           windows.SSH
 	RunnerFor     func(target.Target) RunService
 	Now           func() time.Time
 	NewIdentities func() (orchestrator.RunID, orchestrator.RequestID, string, error)
 	Host          HostService
 	PairRemote    pairing.Remote
+}
+
+func (dependencies Dependencies) runService(selected target.Target) RunService {
+	if dependencies.RunnerFor == nil {
+		return nil
+	}
+	return dependencies.RunnerFor(selected)
 }
 
 func Run(ctx context.Context, args []string, stdin io.Reader, stdout io.Writer, stderr io.Writer, dependencies Dependencies) int {
@@ -137,10 +143,7 @@ func doctorCommand(ctx context.Context, args []string, stdout io.Writer, stderr 
 	if err != nil {
 		return fail(stderr, "load payload", err)
 	}
-	runner := dependencies.Runner
-	if runner == nil && dependencies.RunnerFor != nil {
-		runner = dependencies.RunnerFor(selected)
-	}
+	runner := dependencies.runService(selected)
 	if runner == nil {
 		return fail(stderr, "doctor", fmt.Errorf("Run service is unavailable"))
 	}
@@ -190,10 +193,7 @@ func planCommand(args []string, stdout io.Writer, stderr io.Writer, dependencies
 	if err != nil {
 		return fail(stderr, "load payload", err)
 	}
-	runner := dependencies.Runner
-	if runner == nil && dependencies.RunnerFor != nil {
-		runner = dependencies.RunnerFor(selected)
-	}
+	runner := dependencies.runService(selected)
 	if runner == nil {
 		return fail(stderr, "plan", fmt.Errorf("Run service is unavailable"))
 	}
@@ -230,7 +230,7 @@ func windowsSetupCommand(ctx context.Context, args []string, stdout io.Writer, s
 	if err != nil {
 		return fail(stderr, "load target", err)
 	}
-	result, err := windows.Setup(ctx, dependencies.SSH, selected, *hostBinary, *apply)
+	result, err := windows.Setup(selected, *hostBinary, *apply)
 	if err != nil {
 		return fail(stderr, "Windows setup", err)
 	}
@@ -321,10 +321,7 @@ func runCommand(ctx context.Context, args []string, stdout io.Writer, stderr io.
 	if err != nil {
 		return failRunResult(stdout, stderr, *asJSON, orchestrator.RunResult{SchemaVersion: 1, RunID: runID, State: orchestrator.StateFailed, Error: err.Error()}, err)
 	}
-	runner := dependencies.Runner
-	if runner == nil && dependencies.RunnerFor != nil {
-		runner = dependencies.RunnerFor(selected)
-	}
+	runner := dependencies.runService(selected)
 	if runner == nil {
 		err := fmt.Errorf("Run service is unavailable")
 		return failRunResult(stdout, stderr, *asJSON, orchestrator.RunResult{SchemaVersion: 1, RunID: runID, State: orchestrator.StateFailed, Error: err.Error()}, err)
@@ -400,10 +397,7 @@ func statusCommand(ctx context.Context, args []string, stdout io.Writer, stderr 
 	if err != nil {
 		return failRun(stderr, orchestrator.RunID(*runID), err)
 	}
-	runner := dependencies.Runner
-	if runner == nil && dependencies.RunnerFor != nil {
-		runner = dependencies.RunnerFor(selected)
-	}
+	runner := dependencies.runService(selected)
 	if runner == nil {
 		return failRun(stderr, orchestrator.RunID(*runID), fmt.Errorf("Run service is unavailable"))
 	}
@@ -444,10 +438,7 @@ func stopCommand(ctx context.Context, args []string, stdout io.Writer, stderr io
 	if err != nil {
 		return failRun(stderr, orchestrator.RunID(*runID), err)
 	}
-	runner := dependencies.Runner
-	if runner == nil && dependencies.RunnerFor != nil {
-		runner = dependencies.RunnerFor(selected)
-	}
+	runner := dependencies.runService(selected)
 	if runner == nil {
 		return failRun(stderr, orchestrator.RunID(*runID), fmt.Errorf("Run service is unavailable"))
 	}

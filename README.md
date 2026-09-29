@@ -98,7 +98,7 @@ Keep operator configuration outside the consuming repository. The [installer](do
 
 Keep credentials, hostnames, IP addresses, and private network details out of this file. `ssh_alias` selects an entry from your SSH config.
 
-Both `session_broker_executable` and `host_executable` must be inside `work_root` and below a dedicated executable directory. Blender may be installed elsewhere. The work root must be an ASCII drive path without spaces for the Run transport's legacy SCP support.
+Both `session_broker_executable` and `host_executable` must be inside `work_root` and below a dedicated executable directory. Blender may be installed elsewhere. The work root must be an ASCII drive path without spaces.
 
 Version 2 also accepts a strict `linux` body for Ubuntu 24.04 GNOME on Xorg. Follow the [Linux host guide](docs/linux.md) for its UID, desktop, static unit, and reviewed runtime requirements. Existing flat schema version 1 Windows files remain valid input with unchanged normalized bytes and fingerprints. Unsupported platforms and malformed documents fail before a connection or setup change.
 
@@ -137,7 +137,7 @@ blender-box pair complete studio --receipt /path/to/receipt.json --trust-receipt
 
 Do not compute a digest from an untrusted file and treat that as host approval. Preparation reserves recovery state before retaining a private key and outputs only the durable public intent. Oversized requests refuse before credential creation. Repeating preparation after a failure or concurrent attempt preserves the original request and key. Completion verifies the original intent and saves a schema-3 target without replacing another profile. Readiness stays unchecked until `doctor` succeeds.
 
-Paired transport pins the host's Ed25519 key and the dedicated client key for both SSH and SCP. It refuses missing or changed credentials. Windows clients refuse paired credentials until native owner and ACL checks are available. Existing alias profiles remain supported.
+Paired transport pins the host's Ed25519 key and the dedicated client key for SSH. It refuses missing or changed credentials. Windows clients refuse paired credentials until native owner and ACL checks are available. Existing alias profiles remain supported.
 
 Keep pairing state private and retain it after an interrupted request. Local cancellation does not revoke a grant. `pair revoke NAME` removes remote access and reports success only after the host confirms removal and a fresh paired connection is rejected. `pair forget NAME` and `targets forget NAME` change only local state. See the [client pairing contract](docs/architecture/0008-client-pairing.md) for trust and recovery.
 

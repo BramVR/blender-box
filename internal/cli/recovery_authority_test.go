@@ -142,7 +142,7 @@ func TestRunJSONRetainsMalformedRecoverySession(t *testing.T) {
 					want = append(want, "settle", "status")
 				}
 				var stdout, stderr bytes.Buffer
-				code := Run(context.Background(), []string{"run", "--target", targetPath, "--payload", payloadPath, "--evidence-dir", filepath.Join(t.TempDir(), "evidence"), "--json"}, strings.NewReader(""), &stdout, &stderr, Dependencies{Runner: runner})
+				code := Run(context.Background(), []string{"run", "--target", targetPath, "--payload", payloadPath, "--evidence-dir", filepath.Join(t.TempDir(), "evidence"), "--json"}, strings.NewReader(""), &stdout, &stderr, Dependencies{RunnerFor: fixedRunner(runner)})
 				var result orchestrator.RunResult
 				if err := json.Unmarshal(stdout.Bytes(), &result); err != nil {
 					t.Fatal(err)
@@ -204,7 +204,7 @@ func TestRunJSONDoesNotRepinAfterDeferredSettlement(t *testing.T) {
 					return nil, errors.New("unexpected operation")
 				})
 				var stdout, stderr bytes.Buffer
-				code := Run(context.Background(), []string{"run", "--target", writeTarget(t, t.TempDir()), "--payload", cliPayload(t), "--evidence-dir", filepath.Join(t.TempDir(), "evidence"), "--json"}, strings.NewReader(""), &stdout, &stderr, Dependencies{Runner: orchestrator.New(windows.NewAdapter(ssh), root)})
+				code := Run(context.Background(), []string{"run", "--target", writeTarget(t, t.TempDir()), "--payload", cliPayload(t), "--evidence-dir", filepath.Join(t.TempDir(), "evidence"), "--json"}, strings.NewReader(""), &stdout, &stderr, Dependencies{RunnerFor: fixedRunner(orchestrator.New(windows.NewAdapter(ssh), root))})
 				want := []string{"check", "acquire", "stage", "start", "status", "fetch", "settle"}
 				if !losePin {
 					want = append(want, "status")
@@ -267,7 +267,7 @@ func TestRunJSONPinsValidStartBeforeUIBatchMismatch(t *testing.T) {
 		return nil, errors.New("unexpected operation")
 	})
 	var stdout, stderr bytes.Buffer
-	code := Run(context.Background(), []string{"run", "--target", writeTarget(t, t.TempDir()), "--payload", recoveryUIPayload(t), "--evidence-dir", filepath.Join(t.TempDir(), "evidence"), "--json"}, strings.NewReader(""), &stdout, &stderr, Dependencies{Runner: orchestrator.New(windows.NewAdapter(ssh), root)})
+	code := Run(context.Background(), []string{"run", "--target", writeTarget(t, t.TempDir()), "--payload", recoveryUIPayload(t), "--evidence-dir", filepath.Join(t.TempDir(), "evidence"), "--json"}, strings.NewReader(""), &stdout, &stderr, Dependencies{RunnerFor: fixedRunner(orchestrator.New(windows.NewAdapter(ssh), root))})
 	var result orchestrator.RunResult
 	if err := json.Unmarshal(stdout.Bytes(), &result); err != nil {
 		t.Fatal(err)

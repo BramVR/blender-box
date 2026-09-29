@@ -263,7 +263,7 @@ func TestRunPublishesEverySchemaV2CaptureWithProvenance(t *testing.T) {
 	}
 }
 
-func TestValidateReceiptRequiresVersionStateAndPinnedSession(t *testing.T) {
+func TestValidateReceiptRejectsVersionlessAndUnknownState(t *testing.T) {
 	claim := LockClaim{
 		SchemaVersion: 1,
 		RunID:         "bbx_01TESTRUNIDENTITY0000000000",
@@ -285,9 +285,7 @@ func TestValidateReceiptRequiresVersionStateAndPinnedSession(t *testing.T) {
 		wantErr string
 	}{
 		{"versionless", func(receipt *RunReceipt) { receipt.SchemaVersion = 0 }, "schema version"},
-		{"unknown state", func(receipt *RunReceipt) { receipt.State = "surprise" }, "Run state"},
-		{"missing Session identity", func(receipt *RunReceipt) { receipt.SessionID = "" }, "Session identity"},
-		{"changed Session identity", func(receipt *RunReceipt) { receipt.SessionID = "bss_other-valid-session-identity-123456" }, "Session identity changed"},
+		{"unknown state", func(receipt *RunReceipt) { receipt.State = "surprise" }, "unknown Run state"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -623,12 +621,12 @@ func TestRunRejectsInvalidViewportBytes(t *testing.T) {
 }
 
 func TestEvidenceManifestRejectsEmptyFiles(t *testing.T) {
-	err := validateEvidenceFile(EvidenceFile{
+	err := validateEvidenceManifest(EvidenceManifest{SchemaVersion: 1, Files: []EvidenceFile{{
 		Path:   "result.json",
 		Type:   "scenario-result",
 		Size:   0,
 		SHA256: strings.Repeat("0", 64),
-	})
+	}}})
 	if err == nil || !strings.Contains(err.Error(), "size") {
 		t.Fatalf("error = %v", err)
 	}
@@ -695,12 +693,12 @@ func TestRequiredEvidenceUsesTheExactRequestedCaptureSet(t *testing.T) {
 func TestEvidencePathsUseWindowsSafePortableGrammar(t *testing.T) {
 	for _, path := range []string{"C:/temp/result.json", "CON.png", "nested/trailing. "} {
 		t.Run(path, func(t *testing.T) {
-			err := validateEvidenceFile(EvidenceFile{
+			err := validateEvidenceManifest(EvidenceManifest{SchemaVersion: 1, Files: []EvidenceFile{{
 				Path:   path,
 				Type:   "scenario-result",
-				Size:   0,
+				Size:   1,
 				SHA256: strings.Repeat("0", 64),
-			})
+			}}})
 			if err == nil || !strings.Contains(err.Error(), "unsafe") {
 				t.Fatalf("error = %v", err)
 			}

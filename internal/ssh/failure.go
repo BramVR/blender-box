@@ -23,7 +23,7 @@ var nextSteps = map[FailureClass]string{
 	AuthRejected:         "the host refused this client key; check the pairing on the host with `pair status --state-root`, or pair again",
 }
 
-// Failure is an SSH or SCP error that OpenSSH itself reported before any remote command ran.
+// Failure is an SSH error that OpenSSH itself reported before any remote command ran.
 type Failure struct {
 	Class  FailureClass
 	Detail string

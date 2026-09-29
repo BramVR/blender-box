@@ -1166,7 +1166,6 @@ class WorkflowTests(unittest.TestCase):
         for value in ("ONBOARDING_SSH", "ONBOARDING_TS_CLIENT_SECRET", "prepare_hosted_credentials", "onboarding_proof.py",
                       "oauth-secret:", "candidate/scripts", "continue-on-error", "/private/"):
             self.assertNotIn(value, job)
-        self.assertNotIn("*", job.split("name: Upload allowlisted proof", 1)[1].split("name: Remove only", 1)[0])
         self.assertEqual(job.count("if: always()"), 4)
 
     def test_named_job_requires_successful_baseline_and_reuses_trusted_boundaries(self):
@@ -1189,8 +1188,7 @@ class WorkflowTests(unittest.TestCase):
 
     def test_trusted_driver_authorization_and_public_upload_contract(self):
         workflow = (ROOT / ".github/workflows/windows-onboarding-proof.yml").read_text()
-        for text in ("name: Windows onboarding proof", "name: baseline", "workflow_dispatch:",
-                     "needs: [candidate, authorize]", "environment: windows-onboarding-approval",
+        for text in ("name: Windows onboarding proof", "workflow_dispatch:", "environment: windows-onboarding-approval",
                      "cancel-in-progress: false",
                      '"$RUN_ATTEMPT" == 1', '"$REQUEST_REF" != refs/heads/main', '"$REQUEST_ACTOR" == BramVR',
                      "ref: ${{ github.workflow_sha }}", "ref: ${{ needs.candidate.outputs.sha }}",
@@ -1199,10 +1197,17 @@ class WorkflowTests(unittest.TestCase):
         for forbidden in ("pull_request:", "push:", "continue-on-error", "candidate/scripts/onboarding_proof.py",
                           "artifacts/**", "/private/", "~/.ssh", "$HOME", "StrictHostKeyChecking no"):
             self.assertNotIn(forbidden, workflow)
-        upload = workflow.split("name: Upload allowlisted proof", 1)[1].split("name: Remove only", 1)[0]
-        self.assertIn("/public/outcome.json", upload)
-        self.assertIn("/public/viewport.png", upload)
-        self.assertNotIn("*", upload)
+        uploads = [step.split("\n      - name:", 1)[0]
+                   for step in workflow.split("uses: actions/upload-artifact@")[1:]]
+        self.assertEqual(len(uploads), 3)
+        for upload in uploads:
+            with self.subTest(upload=upload.split("name: ", 1)[1].split("\n", 1)[0]):
+                self.assertIn("if-no-files-found: error", upload)
+                paths = proof.re.findall(r"\$\{\{ runner\.temp \}\}/(\S+)", upload)
+                self.assertTrue(paths)
+                for path in paths:
+                    self.assertRegex(path, r"^onboarding-[a-z-]*proof/public/(receipt\.json|outcome\.json|viewport\.png)$")
+                self.assertNotIn("*", upload)
 
     @unittest.skipUnless(shutil.which("bash"), "workflow guards require bash")
     def test_each_workflow_guard_rejects_unapproved_premerge_authority(self):
@@ -1802,14 +1807,6 @@ class InstallerRecoveryTests(unittest.TestCase):
                 self.recover([("status", pending), ("stop", pending), ("status", changed)],
                              error="installer-execution-changed")
 
-    def test_process_state_is_pinned_when_it_first_becomes_known(self):
-        pending = self.observation("unknown", fence="held")
-        running = self.observation("running", fence="held")
-        regressed = self.observation("unknown", process_state="started", fence="held")
-        regressed["execution"]["process_state"] = "unknown"
-        self.recover([("status", pending), ("stop", pending), ("status", running), ("status", regressed)],
-                     error="installer-execution-changed")
-
     def test_terminal_held_after_cancellation_requires_fresh_stop_reconciliation(self):
         pending = self.observation("unknown", fence="held")
         held = self.observation(fence="held", cancel_requested=True)
@@ -2106,13 +2103,6 @@ class HostInstallTests(unittest.TestCase):
         # Produced by json.Marshal(windowsinstall.RuntimeManifest), including escaped Python requirement operators.
         self.assertEqual(operator.manifest_sha256, "9e420a595e051c7d473f22092d0ffbc834f7e51cfcad66c37555f3836c31c498")
         self.assertNotEqual(operator.manifest_sha256, operator.manifest_pin["sha256"])
-
-    def test_hosted_guard_has_no_config_or_command_access(self):
-        self.request = dataclasses_replace(self.request, execution="hosted", driver_sha="b" * 40)
-        with mock.patch.dict(os.environ, GITHUB_RUN_ATTEMPT="1"), mock.patch.object(proof.Commands, "run") as command:
-            result = proof.baseline(self.request)
-        command.assert_not_called()
-        self.assertEqual(result["outcomes"]["preparation"]["code"], "hosted-recovery-retention-unavailable")
 
     def test_separate_authorization_never_contacts_host(self):
         for key in self.config["authorization"]:

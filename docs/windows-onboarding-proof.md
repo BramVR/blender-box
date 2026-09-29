@@ -64,7 +64,7 @@ python3 scripts/onboarding_proof.py named-target \
 	--execution local
 ```
 
-Both variants use an isolated `BLENDER_BOX_CONFIG_DIR` beneath private output. Named-target proof imports a version 1 profile, checks version 2 output through public show/list commands, and uses the saved name for setup, check, the baseline Scenario, and fresh-process recovery. It then replaces the name with valid configuration whose SSH alias differs while the task name stays identical. Both `status` and `stop` must reject the replacement as an original-target mismatch before attempting SSH or SCP; private tripwires verify that boundary.
+Both variants use an isolated `BLENDER_BOX_CONFIG_DIR` beneath private output. Named-target proof imports a version 1 profile, checks version 2 output through public show/list commands, and uses the saved name for setup, check, the baseline Scenario, and fresh-process recovery. It then replaces the name with valid configuration whose SSH alias differs while the task name stays identical. Both `status` and `stop` must reject the replacement as an original-target mismatch before attempting SSH; private tripwires verify that boundary.
 
 The runner restores original configuration before exact recovery and cleanup, including after a failed assertion. Require the baseline outcomes plus `target-catalog`, `target-binding`, `target-restoration`, and `target-forget` in `public/outcome.json`. Forgetting proof names removes only saved profiles; retain private Run authority until cleanup is verified. Fake transport tests establish local refusal behavior, but full feature proof still needs the real Scenario and hosted job.
 

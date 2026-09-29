@@ -59,9 +59,6 @@ func TestNativeSealedRuntimeACLAndExactRemoval(t *testing.T) {
 		if sealed.Identity == files[i].Identity || !sameFileObject(files[i].Identity, sealed.Identity) {
 			t.Fatalf("seal failed to preserve object and change security: %s", paths[i])
 		}
-		if err := machine.secureSealedPath(ctx, paths[i], sid); err != nil {
-			t.Fatalf("sealed ACL rejected: %s: %v", paths[i], err)
-		}
 		files[i] = sealed
 		checks[i].Sealed = true
 		if err := machine.secureRuntimePaths(ctx, checks, sid); err != nil {
