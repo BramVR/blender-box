@@ -127,7 +127,10 @@ func (nativeKeys) read(ctx context.Context, path string) (keysObservation, error
 
 // replace checks, writes and verifies in one PowerShell process. The temp file is created with
 // its final descriptor, then swapped in with ReplaceFile, which also carries the replaced file's
-// DACL onto the replacement. A compare failure is reported through the KEYS_CHANGED marker.
+// DACL onto the replacement. ReplaceFile gets a backup name because without one a failed rename
+// can leave no file at the path, and a retry would then create an admin file holding only the
+// pairing line; with a backup the original is moved back. A compare failure is reported through
+// the KEYS_CHANGED marker.
 func (nativeKeys) replace(ctx context.Context, r keysReplacement) (keysObservation, error) {
 	if !windowstarget.ValidateWindowsPath(r.Path) {
 		return keysObservation{}, fmt.Errorf("unsafe authorized keys path")
@@ -174,8 +177,18 @@ if($exists){
  $security.SetSecurityDescriptorSddlForm($r.new_security)
 }
 $bytes=[Convert]::FromBase64String($r.contents_b64)
-$tmp=Join-Path ([IO.Path]::GetDirectoryName($path)) ('.blender-box-'+[guid]::NewGuid().ToString('N')+'.tmp')
-$stream=[IO.FileStream]::new($tmp,[IO.FileMode]::CreateNew,[Security.AccessControl.FileSystemRights]::FullControl,[IO.FileShare]::None,4096,[IO.FileOptions]::WriteThrough,$security)
-try{$stream.Write($bytes,0,$bytes.Length);$stream.Flush($true)}finally{$stream.Dispose()}
-if($exists){[IO.File]::Replace($tmp,$path,$null)}else{[IO.File]::Move($tmp,$path)}
+$name='.blender-box-'+[guid]::NewGuid().ToString('N')
+$tmp=Join-Path ([IO.Path]::GetDirectoryName($path)) ($name+'.tmp')
+$bak=Join-Path ([IO.Path]::GetDirectoryName($path)) ($name+'.bak')
+try{
+ $stream=[IO.FileStream]::new($tmp,[IO.FileMode]::CreateNew,[Security.AccessControl.FileSystemRights]::FullControl,[IO.FileShare]::None,4096,[IO.FileOptions]::WriteThrough,$security)
+ try{$stream.Write($bytes,0,$bytes.Length);$stream.Flush($true)}finally{$stream.Dispose()}
+ if($exists){
+  try{[IO.File]::Replace($tmp,$path,$bak)}catch{
+   if(-not (Test-Path -LiteralPath $path) -and (Test-Path -LiteralPath $bak)){[IO.File]::Move($bak,$path)}
+   throw
+  }
+  Remove-Item -LiteralPath $bak -Force
+ }else{[IO.File]::Move($tmp,$path)}
+}finally{if(Test-Path -LiteralPath $tmp){Remove-Item -LiteralPath $tmp -Force}}
 (Observe-Keys $path ([int64]::MaxValue))|ConvertTo-Json -Compress`

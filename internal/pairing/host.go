@@ -347,6 +347,12 @@ func (h Host) Enroll(ctx context.Context, trusted TrustedIntent, apply bool) (En
 		if err := h.at("grant"); err != nil {
 			return err
 		}
+		// A revoke can finish between the unlocked read above and this lock; re-check under it.
+		if _, _, tombstoned, err := h.readTombstone(grant.PairID); err != nil {
+			return err
+		} else if tombstoned {
+			return fmt.Errorf("pairing %s was revoked; prepare a new pairing", grant.PairID)
+		}
 		keys, err := h.Platform.ReadKeys(ctx, grant.KeysFile)
 		if err != nil {
 			return err
@@ -524,8 +530,12 @@ func (h Host) Revoke(ctx context.Context, pairID, clientKeyHash, source string, 
 		if err != nil {
 			return err
 		}
-		if exact, _, _ := scanKeys(after.Bytes, grant.Line, grant.Receipt.PublicKey, grant.PairID); exact != 0 {
+		exact, foreignKey, foreignMarker := scanKeys(after.Bytes, grant.Line, grant.Receipt.PublicKey, grant.PairID)
+		if exact != 0 {
 			return fmt.Errorf("pairing line still present after removal")
+		}
+		if foreignKey || foreignMarker {
+			return fmt.Errorf("%s still holds the key or marker of pair %s on a different line; remove it manually, then repeat revoke", keys.Path, pairID)
 		}
 		result.KeysSHA256After = after.SHA
 		return nil

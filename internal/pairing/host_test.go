@@ -430,3 +430,64 @@ func mustJSON(t *testing.T, value any) []byte {
 	}
 	return data
 }
+
+func TestEnrollRechecksRevocationUnderTheLock(t *testing.T) {
+	h, platform, _, trusted := hostFixture(t)
+	before := string(platform.files[adminKeysPath])
+	crash := errors.New("crash")
+	h.checkpoint = func(name string) error {
+		if name == "grant" {
+			return crash
+		}
+		return nil
+	}
+	if _, err := h.Enroll(context.Background(), trusted, true); !errors.Is(err, crash) {
+		t.Fatalf("expected crash, got %v", err)
+	}
+	concurrent := Host{Root: hostRoot(t), Platform: platform, Now: h.Now}
+	grant, err := os.ReadFile(filepath.Join(h.Root, grantPath("pair-1")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(filepath.Join(concurrent.Root, grantPath("pair-1"))), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(concurrent.Root, grantPath("pair-1")), grant, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := concurrent.Revoke(context.Background(), "pair-1", "", "host-local", true); err != nil {
+		t.Fatal(err)
+	}
+	tombstone, err := os.ReadFile(filepath.Join(concurrent.Root, tombPath("pair-1")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.checkpoint = func(name string) error {
+		if name == "grant" {
+			if err := os.MkdirAll(filepath.Dir(filepath.Join(h.Root, tombPath("pair-1"))), 0o700); err != nil {
+				return err
+			}
+			return os.WriteFile(filepath.Join(h.Root, tombPath("pair-1")), tombstone, 0o600)
+		}
+		return nil
+	}
+	if _, err := h.Enroll(context.Background(), trusted, true); err == nil || !strings.Contains(err.Error(), "was revoked") {
+		t.Fatalf("enroll racing a revoke = %v", err)
+	}
+	if got := string(platform.files[adminKeysPath]); got != before {
+		t.Fatalf("revoked key re-added: %q", got)
+	}
+}
+
+func TestRevokeRefusesWhileTheKeyRemainsOnAnotherLine(t *testing.T) {
+	h, platform, _, trusted := hostFixture(t)
+	if _, err := h.Enroll(context.Background(), trusted, true); err != nil {
+		t.Fatal(err)
+	}
+	line := lineFor(t, trusted)
+	platform.files[adminKeysPath] = []byte(strings.Replace(string(platform.files[adminKeysPath]), line+"\r\n", line+" \r\n", 1))
+	result, err := h.Revoke(context.Background(), "pair-1", "", "host-local", true)
+	if err == nil || result.State == "revoked" || !strings.Contains(err.Error(), "different line") {
+		t.Fatalf("revoke with an edited copy = %+v, %v", result, err)
+	}
+}
