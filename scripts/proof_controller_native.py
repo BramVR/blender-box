@@ -1759,12 +1759,6 @@ class LinuxOps:
             return model.document(connection.recv(model.MAX_WIRE + 1), model.MAX_WIRE)
 
 
-def operational_pending(raw):
-    selected = Selector.parse(raw)
-    model.require(selected.kind == "operational", "native-selector-invalid")
-    return selected.intent
-
-
 def parse_intent(raw):
     value = model.document(raw)
     model.require(set(value) == {"schema_version", "execution_id", "attempt", "request_digest", "mode"}

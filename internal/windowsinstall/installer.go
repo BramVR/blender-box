@@ -28,7 +28,6 @@ type runtimePathCheck struct {
 type machine interface {
 	inspect(context.Context, Request) (Inspection, error)
 	securePath(context.Context, string, string, bool) error
-	secureSealedPath(context.Context, string, string) error
 	sealPath(context.Context, string, string) error
 	securePaths(context.Context, []string, string) error
 	secureRuntimePaths(context.Context, []runtimePathCheck, string) error
