@@ -68,10 +68,8 @@ func TestRunnerReturnsClassifiedFailuresAndKeepsRemoteErrors(t *testing.T) {
 	}
 	directory := t.TempDir()
 	fake := "#!/bin/sh\ncat >/dev/null\nprintf '%s\\n' \"$FAKE_SSH_STDERR\" >&2\nexit \"$FAKE_SSH_EXIT\"\n"
-	for _, name := range []string{"ssh", "scp"} {
-		if err := os.WriteFile(filepath.Join(directory, name), []byte(fake), 0700); err != nil {
-			t.Fatal(err)
-		}
+	if err := os.WriteFile(filepath.Join(directory, "ssh"), []byte(fake), 0700); err != nil {
+		t.Fatal(err)
 	}
 	t.Setenv("PATH", directory+string(os.PathListSeparator)+os.Getenv("PATH"))
 	connection, err := target.AliasConnection("studio.tail1234.ts.net")
@@ -83,13 +81,10 @@ func TestRunnerReturnsClassifiedFailuresAndKeepsRemoteErrors(t *testing.T) {
 
 	t.Setenv("FAKE_SSH_EXIT", "255")
 	t.Setenv("FAKE_SSH_STDERR", "ssh: connect to host studio.tail1234.ts.net port 22: Connection refused")
-	_, runErr := runner.Run(ctx, connection, []string{"exit"}, nil)
-	uploadErr := runner.Upload(ctx, connection, "/tmp/source", `C:\Box\payload.bin`)
-	for name, err := range map[string]error{"run": runErr, "upload": uploadErr} {
-		var failure *Failure
-		if !errors.As(err, &failure) || failure.Class != TailscaleUnreachable {
-			t.Fatalf("%s error = %v", name, err)
-		}
+	_, err = runner.Run(ctx, connection, []string{"exit"}, nil)
+	var unreachable *Failure
+	if !errors.As(err, &unreachable) || unreachable.Class != TailscaleUnreachable {
+		t.Fatalf("run error = %v", err)
 	}
 
 	t.Setenv("FAKE_SSH_EXIT", "3")

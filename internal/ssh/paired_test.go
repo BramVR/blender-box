@@ -57,7 +57,7 @@ func TestPairedConfigParsedByActualOpenSSH(t *testing.T) {
 		t.Fatal("ambient proxy remained")
 	}
 }
-func TestPairedSSHAndSCPUseSameHermeticPolicyAndRefuseChangedKey(t *testing.T) {
+func TestPairedSSHUsesHermeticPolicyAndRefusesChangedKey(t *testing.T) {
 	runner, connection := pairedFixture(t)
 	ctx := context.Background()
 	directory := t.TempDir()
@@ -68,10 +68,8 @@ if [ "$1" != '-F' ]; then exit 41; fi
 cat "$2" >> "$SSH_TEST_RECORD"
 cat >/dev/null
 `
-	for _, name := range []string{"ssh", "scp"} {
-		if err := os.WriteFile(filepath.Join(directory, name), []byte(fake), 0700); err != nil {
-			t.Fatal(err)
-		}
+	if err := os.WriteFile(filepath.Join(directory, "ssh"), []byte(fake), 0700); err != nil {
+		t.Fatal(err)
 	}
 	t.Setenv("SSH_TEST_RECORD", record)
 	t.Setenv("PATH", directory+string(os.PathListSeparator)+os.Getenv("PATH"))
@@ -79,16 +77,13 @@ cat >/dev/null
 	if _, err := runner.Run(ctx, connection, []string{"host-command"}, []byte("request")); err != nil {
 		t.Fatal(err)
 	}
-	if err := runner.Upload(ctx, connection, "/tmp/source", `C:\Box\payload.bin`); err != nil {
-		t.Fatal(err)
-	}
 	data, err := os.ReadFile(record)
 	if err != nil {
 		t.Fatal(err)
 	}
 	for _, expected := range []string{"HostName \"host.invalid\"", "Port 2222", "IdentityAgent none", "StrictHostKeyChecking yes", "PreferredAuthentications publickey", "ControlPath none", "ProxyCommand none"} {
-		if strings.Count(string(data), expected) != 2 {
-			t.Errorf("SSH/SCP policy did not both contain %q", expected)
+		if !strings.Contains(string(data), expected) {
+			t.Errorf("SSH policy did not contain %q", expected)
 		}
 	}
 	before := string(data)
@@ -108,9 +103,6 @@ cat >/dev/null
 	}
 	if _, err := runner.Run(ctx, connection, []string{"must-not-run"}, nil); err == nil {
 		t.Fatal("changed key accepted")
-	}
-	if err := runner.Upload(ctx, connection, "/tmp/source", `C:\Box\payload.bin`); err == nil {
-		t.Fatal("SCP accepted changed key")
 	}
 	if err := os.Remove(path); err != nil {
 		t.Fatal(err)

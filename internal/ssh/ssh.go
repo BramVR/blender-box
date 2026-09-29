@@ -14,7 +14,6 @@ import (
 
 	"github.com/BramVR/blender-box/internal/sshkey"
 	"github.com/BramVR/blender-box/internal/target"
-	"github.com/BramVR/blender-box/internal/windowstarget"
 )
 
 const (
@@ -24,10 +23,6 @@ const (
 
 type CommandRunner interface {
 	Run(context.Context, target.Connection, []string, []byte) ([]byte, error)
-}
-type Transport interface {
-	CommandRunner
-	Upload(context.Context, target.Connection, string, string) error
 }
 type Runner struct{ ConfigRoot string }
 
@@ -75,46 +70,6 @@ func (runner Runner) Run(ctx context.Context, connection target.Connection, remo
 	return append([]byte(nil), stdout.Bytes()...), nil
 }
 
-func (runner Runner) Upload(ctx context.Context, connection target.Connection, source, destination string) error {
-	if _, paired := connection.Direct(); paired {
-		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, 15*time.Minute)
-		defer cancel()
-	}
-	options, host, cleanup, err := runner.prepare(ctx, connection)
-	if err != nil {
-		return err
-	}
-	defer cleanup()
-	arguments, err := uploadArguments(host, source, destination)
-	if err != nil {
-		return err
-	}
-	arguments = append(options, arguments...)
-	command := exec.CommandContext(ctx, "scp", arguments...)
-	command.WaitDelay = time.Second
-	stdout := newBoundedBuffer(maxStdoutBytes)
-	stderr := newBoundedBuffer(maxStderrBytes)
-	command.Stdout = stdout
-	command.Stderr = stderr
-	if err := command.Run(); err != nil {
-		if stdout.exceeded || stderr.exceeded {
-			return fmt.Errorf("SCP output exceeded its limit")
-		}
-		if failure := classifyExit(err, stderr.String(), connection); failure != nil {
-			return failure
-		}
-		if message := stderr.String(); message != "" {
-			return fmt.Errorf("SCP failed: %s", message)
-		}
-		return fmt.Errorf("SCP failed: %w", err)
-	}
-	if stdout.exceeded || stderr.exceeded {
-		return fmt.Errorf("SCP output exceeded its limit")
-	}
-	return nil
-}
-
 func classifyExit(err error, stderr string, connection target.Connection) *Failure {
 	var exit *exec.ExitError
 	if !errors.As(err, &exit) {
@@ -125,13 +80,6 @@ func classifyExit(err error, stderr string, connection target.Connection) *Failu
 		host = direct.Host
 	}
 	return classify(exit.ExitCode(), stderr, host)
-}
-
-func uploadArguments(host, source, destination string) ([]string, error) {
-	if !windowstarget.ValidateLegacySCPWindowsPath(destination) {
-		return nil, fmt.Errorf("SCP destination uses unsafe remote-shell syntax")
-	}
-	return []string{"-q", "--", source, host + ":" + strings.ReplaceAll(destination, `\`, "/")}, nil
 }
 
 type boundedBuffer struct {

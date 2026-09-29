@@ -71,16 +71,13 @@ func TestJournalAmbiguityNeverBecomesQueued(t *testing.T) {
 	}
 }
 
-func TestReceiptValidationPreservesBoundedActionIndex(t *testing.T) {
+func TestReceiptIndexBoundsAndJournalContiguity(t *testing.T) {
 	receipt := Receipt{Index: MaxActions - 1, Kind: Key, Outcome: Queued, SessionID: "exact", Window: &Window{Width: 100, Height: 80}, EventCount: 2}
 	if err := receipt.Validate("exact"); err != nil {
 		t.Fatal(err)
 	}
-	if receipt.Index != MaxActions-1 {
-		t.Fatal("validation changed action index")
-	}
-	if (Journal{SchemaVersion: 1, Receipts: []Receipt{receipt}}).Validate("exact") == nil {
-		t.Fatal("journal accepted a noncontiguous prefix")
+	if err := (Journal{SchemaVersion: 1, Receipts: []Receipt{receipt}}).Validate("exact"); err == nil || !strings.Contains(err.Error(), "not contiguous") {
+		t.Fatalf("noncontiguous journal error = %v", err)
 	}
 	for _, index := range []int{-1, MaxActions} {
 		receipt.Index = index

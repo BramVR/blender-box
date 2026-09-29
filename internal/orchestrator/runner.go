@@ -982,10 +982,6 @@ func validateEvidenceManifest(manifest EvidenceManifest, expectedSession ...Sess
 	return nil
 }
 
-func validateEvidenceFile(file EvidenceFile) error {
-	return validateEvidenceFileForSchema(file, 1, nil)
-}
-
 func validateEvidenceFileForSchema(file EvidenceFile, schemaVersion int, expectedSession []SessionID) error {
 	if err := safepath.ValidateWindowsRelative("path", file.Path); err != nil {
 		return err

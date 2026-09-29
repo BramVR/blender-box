@@ -1,7 +1,6 @@
 package windows
 
 import (
-	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
@@ -20,7 +19,7 @@ type SetupResult struct {
 	HostSHA256    string `json:"host_sha256"`
 }
 
-func Setup(_ context.Context, _ SetupSSH, selected target.Target, source string, apply bool) (SetupResult, error) {
+func Setup(selected target.Target, source string, apply bool) (SetupResult, error) {
 	if selected.Platform() != "windows" {
 		return SetupResult{}, fmt.Errorf("Windows command requires windows platform")
 	}
