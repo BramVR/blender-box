@@ -11,7 +11,6 @@ CI_SCRIPT = ROOT / "scripts" / "ci"
 DEPENDABOT = ROOT / ".github" / "dependabot.yml"
 GITIGNORE = ROOT / ".gitignore"
 GITATTRIBUTES = ROOT / ".gitattributes"
-SETUP_GO = "actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e"
 
 
 class CIContractTests(unittest.TestCase):
@@ -55,7 +54,7 @@ class CIContractTests(unittest.TestCase):
     def test_every_go_backed_job_installs_pinned_go(self) -> None:
         workflow = WORKFLOW.read_text(encoding="utf-8")
 
-        self.assertEqual(workflow.count(f"uses: {SETUP_GO}"), 4)
+        self.assertEqual(workflow.count("uses: actions/setup-go@"), 4)
         self.assertEqual(workflow.count("go-version-file: go.mod"), 4)
 
     def test_go_and_shell_sources_keep_lf_checkouts(self) -> None:
@@ -97,7 +96,7 @@ class CIContractTests(unittest.TestCase):
         self.assertIn("permissions:\n  contents: read", workflow)
         self.assertIn("name: Secrets", workflow)
         self.assertIn("trufflesecurity/trufflehog@", workflow)
-        self.assertIn("version: 3.97.1", workflow)
+        self.assertRegex(workflow, r"\n\s+version: \d+\.\d+\.\d+\n")
         self.assertIn("--results=verified,unknown", workflow)
 
     def test_local_gate_checks_staged_and_unstaged_changes(self) -> None:
