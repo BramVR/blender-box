@@ -124,7 +124,7 @@ Saved profiles and Run recovery records use the operating system's user configur
 
 ## Prepare local pairing
 
-The local pairing client accepts independently trusted host offers and enrollment receipts. Native offer creation, enrollment, revocation and SSH preparation are not implemented yet. This slice does not provide a complete onboarding flow or prove host readiness.
+The local pairing client accepts independently trusted host offers and enrollment receipts. The host side (`setup ssh`, `pair offer|enroll|revoke|status --state-root`) is described in [Prepare SSH and pair a client on Windows](docs/windows-ssh-preparation.md). Native Windows behavior and hosted pair-and-run proof remain outstanding.
 
 On a POSIX client with `ssh-keygen`, an authorized test or integration can use these entrypoints with its trusted input files and independently verified digests:
 
@@ -295,6 +295,7 @@ The gate runs on Linux, macOS, and Windows without contacting a Blender host. Se
 - [Run boundary](docs/architecture/0001-slice-0-run-boundary.md) defines orchestration, recovery, evidence, and cleanup.
 - [Target contract](docs/architecture/target-contract.md) defines named profiles, platform versions, and original-target recovery.
 - [Windows installation](docs/windows-installation.md) covers runtime bundles, preview, installation, retries, and owned removal.
+- [Windows SSH preparation and pairing](docs/windows-ssh-preparation.md) covers `setup ssh` and the host-side `pair` verbs.
 - [Installation ownership](docs/architecture/0007-windows-installation-ownership.md) defines runtime receipts and maintenance fencing.
 - [Windows identity boundary](docs/architecture/0002-slice-0-windows-identity.md) explains why the current slice uses one Windows SID.
 - [`blendersessiond` capability gate](docs/architecture/0003-session-broker-capability-gate.md) defines the daemon contract required before launch.

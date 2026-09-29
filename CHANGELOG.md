@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Add host-local pairing commands `pair offer|enroll|revoke|status --state-root` and the `host pair-revoke` machine command: create-only offer, grant and tombstone records, one `restrict` line admitted into the keys file sshd resolves for the account, exact removal that preserves every other byte, byte-identical receipts on retry, and revocation fenced by host maintenance.
+- Add `setup ssh` preview, apply and remove for Windows OpenSSH: start sshd and set it Automatic when needed, create one owned inbound firewall rule only when no enabled rule admits the port, refuse when public-key authentication is off, and restore only what it changed.
+- Add the Windows pairing platform: elevated `sshd -T` resolution of the account's authorized keys file, descriptor checks sshd accepts, and a one-process keys-file replace that keeps the protected Administrators descriptor and verifies bytes and ACL after the write.
 - Add local pairing preparation and trusted-receipt reconciliation, schema-3 targets with pinned SSH identity, shared SSH/SCP credential policy and unchanged legacy fingerprints; native enrollment, revocation, SSH preparation and Windows client credential support remain unfinished.
 - Reserve pairing recovery state before credentials so oversized requests, concurrent preparation and interrupted publication do not leave undiscoverable private keys or change the original request on retry.
 - Stop Linux qualification cases through the same owner identity as operational attempts; `descendant-stop` and `startup-withheld` no longer crash reading an operational-only receipt field during exact stop.

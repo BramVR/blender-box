@@ -2,7 +2,8 @@
 summary: Local pairing pins SSH identity and preserves approval and publication recovery separately from host readiness.
 read_when:
   - Changing paired target schema, client credentials, pairing trust, or local reconciliation.
-  - Implementing native pairing or extending its hosted proof.
+  - Changing host offers, grants, tombstones, the keys-file transaction, or `setup ssh`.
+  - Extending the hosted pairing proof.
 ---
 
 # Client pairing
@@ -11,7 +12,7 @@ read_when:
 
 A paired target binds the direct endpoint, login, Ed25519 host public key and dedicated client-key fingerprint. Schema version 3 carries that connection alongside one existing Windows or Linux body. It uses the existing target store and original Run fingerprint. Alias schemas 1 and 2 retain their exact canonical bytes and fingerprints.
 
-The current implementation covers the local client. It requires a separately trusted host offer and enrollment receipt. Native offer creation, enrollment, revocation and setup-SSH return unsupported. No command turns local preparation into a successful host enrollment or readiness check.
+The client requires a separately trusted host offer and enrollment receipt. The host issues both from its own state root through elevated host-local commands, admits exactly one marked `restrict` line into the keys file its sshd resolves for the account, and removes exactly that line on revocation. No command turns local preparation into a readiness check; `doctor` does that.
 
 ## Local workflow
 
@@ -37,16 +38,50 @@ The shared transport accepts one `target.Connection`. Alias connections retain o
 
 The credential boundary does not claim isolation from hostile code running as the same operating-system user. It does not edit an operator's SSH configuration, known-hosts files, authorized keys or agent.
 
-## Remaining host implementation
+## Host implementation
 
-Native enrollment will use the approved single current owned store snapshot and one exact pending before/after transaction. Immutable grant receipts and terminal tombstones preserve retry and revocation facts. No generation history or second target registry is planned.
+The host half lives in `pairing.Host` and runs on the host machine as the operator: `pair offer`, `pair enroll`, `pair revoke` and `pair status` take `--state-root` instead of a client name. A paired key revokes itself through the stdin-JSON machine command `host pair-revoke`, which shares `Host.Revoke` and refuses unless the request carries that grant's own client-key fingerprint.
 
-The Windows owner must prove its account-scoped authorization source, physical identities, ACLs, serialized publication, interruption recovery and preservation of unrelated access. Revocation must refuse active or unresolved Runs and distinguish exact grant removal from fresh authentication rejection. Existing authenticated SSH connections are a separate fact.
+### Records and derived state
 
-SSH preparation requires an explicit owned setup operation with its own preview and authority. The current installer and proof controller do not authorize it by implication. Hosted pair-and-run must use the actual qualified controller and retain private original Run authority. Local tests, accepted receipt fixtures and this CLI slice do not satisfy native or hosted acceptance.
+Three create-only records under `STATE_ROOT/pairings/` hold every durable fact: `offers/<offer_sha>.json` (the exact offer the client hashed), `grants/<pair_id>.json` (the request, resolved keys file, exact line and receipt) and `tombstones/<pair_id>.json` (the revocation request). Nothing is ever rewritten. The access state is derived from the two records plus the bytes sshd reads:
+
+- No grant: `none`.
+- Grant and no tombstone: `granting` while the line is absent, `granted` once present.
+- Grant and tombstone: `revoking` while the line is present, `revoked` once absent.
+- The exact line more than once: `conflict`. No command writes; the operator resolves it.
+
+The marked line is the write-ahead record. Enroll publishes the grant, then appends the line. Revoke publishes the tombstone, then removes it. A crash between the two leaves a state from which the same command converges, and an enroll retry after a crashed revoke cannot re-add the key because the tombstone exists. This replaced the earlier proposal of one persisted pending before/after transaction: the line identity already says which transaction happened, and the before/after compare stays inside each keys-file edit.
+
+Receipt bytes are `json.Marshal` of the receipt held in the grant, so a repeated `pair enroll --apply` returns identical bytes and the client's retained copy still matches. The grant records the receipt digest and any drift is a read error.
+
+### Keys-file transaction
+
+`Host` owns the line arithmetic (`internal/pairing/keys.go`): the line is `restrict <ssh-ed25519 key> blender-box-pair:<pair_id>`, appended with the file's own line ending and removed with exactly its own terminator, so every unrelated line keeps its bytes and order. The one accepted residue is a line ending added after a previously unterminated last line. A copy of the same key on another line, or this pair's marker with another key, refuses without writing.
+
+The platform owns the edit. `ReadKeys` returns bytes, hash and security descriptor after refusing reparse points and descriptors sshd would reject. `ReplaceKeys` is one native transaction: verify hash and descriptor unchanged, create a temporary file in the same directory with the target descriptor before writing bytes, flush, `ReplaceFile` for an existing file or a move for a new one, then re-read bytes and descriptor and require both. A mismatch is an error, never a repair. A concurrent unrelated edit returns `ErrKeysChanged`; the retry re-reads and recomputes from the current bytes.
+
+### Accepted tradeoffs
+
+- The keys file is whichever `AuthorizedKeysFile` the host's own sshd resolves for the account through `sshd -T -C user=<account>,host=localhost,addr=127.0.0.1`. No sshd_config edit and no restart. For an Administrators account this is the shared `administrators_authorized_keys`, which admits the key for every Administrators account. The preview says so, the paired target pins the login user, and readiness proves the SSH SID equals the interactive SID. A `Match Address` or `Match Host` block that routes the real client elsewhere fails closed: the paired login is rejected and `doctor` reports it.
+- `restrict` disables forwarding, pty and agent, so the Blender MCP port is never forwardable through the paired key. It still allows the exec and SFTP channels Runs and revocation use.
+- Host-local approval is elevation: the operator runs the host verbs in an elevated PowerShell on the host or over an existing admin SSH channel. Commands refuse without elevation.
+- Enroll and revoke mutate under `host.WithMaintenance`, so revoke refuses while a Run is active or unresolved. Offer and status change no access and take no lock.
+- An abrupt exit can leave one `.blender-box-*.tmp` beside the keys file. It grants nothing and nothing deletes files by pattern.
+- Existing authenticated SSH connections are a separate fact. Revocation removes the grant and proves new authentication is rejected; it does not terminate sessions.
+
+### SSH preparation
+
+`setup ssh` is its own typed request and receipt (`STATE_ROOT/ssh-preparation/<installation>.json`), outside the installation inventory and the installer's `Request`. Its plan is bounded: start sshd if stopped, set Automatic if not, and create one owned inbound rule `BlenderBox-SSH-<installation>` only when no enabled inbound rule already admits the port. It refuses when `pubkeyauthentication no`. Removal restores the prior start type only when the current type is still the one it set, deletes the rule only on exact match, and never stops sshd. A stock host produces an empty plan, no receipt and no change.
+
+### Platform seam
+
+A future platform implements `pairing.Platform` (identity facts plus the keys-file transaction) and an `SSHPreparer` for its own `setup ssh --platform`; readiness already lives in each platform's host adapter. The common flow, records and receipts do not change. The fake Linux platform test runs offer, client preparation, enroll, client completion and revoke end to end and yields a paired Linux target. Hosted pair-and-run against the real Windows host remains the acceptance gate for native behavior.
 
 ## Verification
 
 Focused tests cover strict target parsing, alias schema compatibility, changed connection fields before Run recovery, local trust and retry behavior, secret-key checks, and both platform transport callers. Public CLI proof uses disposable keys and fake SSH/SCP processes. OpenSSH configuration parsing can be checked with `ssh -G` without contacting a host.
 
-The full repository gate remains `./scripts/ci all`. Windows cross-compilation establishes compilation only. Native Windows/Linux credential behavior, host enrollment, Blender, revocation and hosted pairing remain separate proof requirements.
+Host tests use a fake platform with an in-memory keys file: trust mismatch, canceled and interrupted enrollment at every checkpoint, duplicate apply with identical receipts, foreign key and marker refusal, a concurrent unrelated edit, revocation under Run authority, and an interrupted revocation. Windows CI runs the native keys-file transaction on a temporary file with the protected Administrators descriptor. `setup ssh` runs against a fake service and firewall.
+
+The full repository gate remains `./scripts/ci all`. Windows cross-compilation establishes compilation only. Native `sshd -T` resolution, Windows client credentials, Blender, and hosted pairing remain separate proof requirements.
