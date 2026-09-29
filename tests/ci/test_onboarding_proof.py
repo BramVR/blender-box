@@ -1199,7 +1199,7 @@ class WorkflowTests(unittest.TestCase):
             self.assertNotIn(forbidden, workflow)
         uploads = [step.split("\n      - name:", 1)[0]
                    for step in workflow.split("uses: actions/upload-artifact@")[1:]]
-        self.assertEqual(len(uploads), 3)
+        self.assertEqual(len(uploads), 4)
         for upload in uploads:
             with self.subTest(upload=upload.split("name: ", 1)[1].split("\n", 1)[0]):
                 self.assertIn("if-no-files-found: error", upload)
