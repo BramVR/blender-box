@@ -76,6 +76,9 @@ func enrolledCLI(t *testing.T) pairCLI {
 	if code != 0 || json.Unmarshal([]byte(out), &intent) != nil {
 		t.Fatalf("prepare: %d %s", code, stderr)
 	}
+	if want := "Enrollment request SHA-256 " + pairing.IntentDigest(intent) + "\n"; stderr != want {
+		t.Fatalf("prepare stderr = %q, want %q", stderr, want)
+	}
 	fingerprint, _ := sshkey.Fingerprint(intent.PublicKey)
 	paired, err := target.NewPaired(installed, target.DirectSSH{Host: offer.Connection.Host, Port: offer.Connection.Port, User: offer.Connection.User, HostPublicKey: hostKey, ClientPublicKeyHash: fingerprint})
 	if err != nil {

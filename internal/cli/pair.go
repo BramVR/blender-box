@@ -95,7 +95,11 @@ func pairCommand(ctx context.Context, args []string, stdout, stderr io.Writer, d
 		if err != nil {
 			return fail(stderr, "prepare pair", err)
 		}
-		return writeJSON(stdout, stderr, intent)
+		if code := writeJSON(stdout, stderr, intent); code != 0 {
+			return code
+		}
+		fmt.Fprintf(stderr, "Enrollment request SHA-256 %s\n", pairing.IntentDigest(intent))
+		return 0
 	}
 	receipt, err := pairing.TrustReceipt(data, *trust)
 	if err != nil {
