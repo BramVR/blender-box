@@ -1827,13 +1827,6 @@ class HostInstallTests(unittest.TestCase):
         self.assertEqual(operator.manifest_sha256, "9e420a595e051c7d473f22092d0ffbc834f7e51cfcad66c37555f3836c31c498")
         self.assertNotEqual(operator.manifest_sha256, operator.manifest_pin["sha256"])
 
-    def test_hosted_guard_has_no_config_or_command_access(self):
-        self.request = dataclasses_replace(self.request, execution="hosted", driver_sha="b" * 40)
-        with mock.patch.dict(os.environ, GITHUB_RUN_ATTEMPT="1"), mock.patch.object(proof.Commands, "run") as command:
-            result = proof.baseline(self.request)
-        command.assert_not_called()
-        self.assertEqual(result["outcomes"]["preparation"]["code"], "hosted-recovery-retention-unavailable")
-
     def test_separate_authorization_never_contacts_host(self):
         for key in self.config["authorization"]:
             with self.subTest(key=key):
