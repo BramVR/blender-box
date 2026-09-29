@@ -33,7 +33,7 @@ func TestMaintenanceNeverWaitsForLaunchUnderOperation(t *testing.T) {
 }
 func TestMaintenanceReadOnlyRefusesUnresolvedAuthority(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "absent")
-	if err := InspectMaintenance(root); err != nil {
+	if err := InspectSetupMaintenance(root, nil); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(root); !os.IsNotExist(err) {
@@ -49,7 +49,7 @@ func TestMaintenanceReadOnlyRefusesUnresolvedAuthority(t *testing.T) {
 			if err := os.WriteFile(path, []byte(`{}`), 0600); err != nil {
 				t.Fatal(err)
 			}
-			if err := InspectMaintenance(root); err == nil {
+			if err := InspectSetupMaintenance(root, nil); err == nil {
 				t.Fatal("unresolved authority accepted")
 			}
 			if _, err := os.Stat(filepath.Join(root, ".operation.lock")); !os.IsNotExist(err) {
@@ -70,7 +70,7 @@ func TestMaintenanceAcceptsOnlyFullySettledReceipt(t *testing.T) {
 	if err := os.WriteFile(path, data, 0600); err != nil {
 		t.Fatal(err)
 	}
-	if err := InspectMaintenance(root); err != nil {
+	if err := InspectSetupMaintenance(root, nil); err != nil {
 		t.Fatal(err)
 	}
 	receipt.Cleanup.LockReleased = false
@@ -78,7 +78,7 @@ func TestMaintenanceAcceptsOnlyFullySettledReceipt(t *testing.T) {
 	if err := os.WriteFile(path, data, 0600); err != nil {
 		t.Fatal(err)
 	}
-	if err := InspectMaintenance(root); err == nil {
+	if err := InspectSetupMaintenance(root, nil); err == nil {
 		t.Fatal("unsettled receipt accepted without Host Lock")
 	}
 }
@@ -110,7 +110,7 @@ func TestPendingSetupFencesRunAdmissionAndUnrelatedMaintenance(t *testing.T) {
 	if err := service.Acquire(context.Background(), root, AcquireRequest{SchemaVersion: 1, Claim: testHostClaim(time.Now(), "T")}); err == nil {
 		t.Fatal("malformed setup fence admitted Run")
 	}
-	if err := InspectMaintenance(root); err == nil {
+	if err := InspectSetupMaintenance(root, nil); err == nil {
 		t.Fatal("malformed setup fence appeared ready")
 	}
 }

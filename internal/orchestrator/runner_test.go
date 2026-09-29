@@ -621,12 +621,12 @@ func TestRunRejectsInvalidViewportBytes(t *testing.T) {
 }
 
 func TestEvidenceManifestRejectsEmptyFiles(t *testing.T) {
-	err := validateEvidenceFile(EvidenceFile{
+	err := validateEvidenceManifest(EvidenceManifest{SchemaVersion: 1, Files: []EvidenceFile{{
 		Path:   "result.json",
 		Type:   "scenario-result",
 		Size:   0,
 		SHA256: strings.Repeat("0", 64),
-	})
+	}}})
 	if err == nil || !strings.Contains(err.Error(), "size") {
 		t.Fatalf("error = %v", err)
 	}
@@ -693,12 +693,12 @@ func TestRequiredEvidenceUsesTheExactRequestedCaptureSet(t *testing.T) {
 func TestEvidencePathsUseWindowsSafePortableGrammar(t *testing.T) {
 	for _, path := range []string{"C:/temp/result.json", "CON.png", "nested/trailing. "} {
 		t.Run(path, func(t *testing.T) {
-			err := validateEvidenceFile(EvidenceFile{
+			err := validateEvidenceManifest(EvidenceManifest{SchemaVersion: 1, Files: []EvidenceFile{{
 				Path:   path,
 				Type:   "scenario-result",
-				Size:   0,
+				Size:   1,
 				SHA256: strings.Repeat("0", 64),
-			})
+			}}})
 			if err == nil || !strings.Contains(err.Error(), "unsafe") {
 				t.Fatalf("error = %v", err)
 			}
