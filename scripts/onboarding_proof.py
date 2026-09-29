@@ -1352,9 +1352,13 @@ def host_grants(commands, operator, pair_id=None, *, recovery=False):
     views = runtime_json(commands, operator, ["pair", "status", *(["--pair", pair_id] if pair_id else [])],
                          recovery=recovery)
     require(isinstance(views, list) and all(isinstance(view, dict) and matches(PAIR_ID, view.get("pair_id"))
-                                            and view.get("installation_id") == operator.installation["id"]
+                                            and matches(r"bbxi_[a-f0-9]{32}", view.get("installation_id"))
                                             for view in views), "pair-status-invalid")
-    return {view["pair_id"]: view for view in views}
+    # Removal keeps the shared state root, so earlier installations' grants stay listed; they must be revoked.
+    ours = {view["pair_id"]: view for view in views if view["installation_id"] == operator.installation["id"]}
+    require(all(view.get("state") == "revoked" for view in views if view["installation_id"] != operator.installation["id"]),
+            "pair-earlier-grant-active")
+    return ours
 
 
 def keys_pin(operator, keys_file):

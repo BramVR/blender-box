@@ -127,6 +127,8 @@ Pairing exchange files are written beside `target_out` as `TARGET_OUT.pair-offer
 
 If pairing fails after the host grant may exist, the proof revokes through host-local `pair revoke --pair ID --apply` over the admin alias and never replays enrollment. Removal proceeds only after the pairing is revoked and the keys file matches its pin again. Otherwise the installation stays in place and `remove-preview` fails with `pairing-unrevoked`.
 
+Removal keeps the shared state root, so host `pair status` also lists grants from earlier installations, such as the required local pass. The proof ignores them when they are `revoked` and fails with `pair-earlier-grant-active` otherwise.
+
 ### Run one local pass before freezing a candidate
 
 Pairing edits the file that also holds the admin key, so a keys-file defect can cut the recovery channel. Before a candidate is frozen for the hosted gate, run one authorized local pass against a throwaway Windows fixture whose console you can reach. Build the host artifacts and runtime manifest from that candidate as described above. Use a fresh `installation.id`, `task_name`, `target_out`, and absent before-state. The pass needs these operator fields beyond an ordinary host-install document:

@@ -1412,10 +1412,16 @@ class FakeInstallCommands(FakeCommands):
             wanted = flag("--pair") if "--pair" in cli else None
             if wanted is not None and wanted not in self.grants:
                 return 1, None
-            return 0, [{"schema_version": 1, "pair_id": pair_id, "state": self.grant_state(pair_id),
-                        "installation_id": INSTALL_ID, "login": "test-user", "keys_file": KEYS_PATH,
-                        "fingerprint": "SHA256:client", "granted": "2026-09-29T12:00:00Z"}
-                       for pair_id in sorted(self.grants) if wanted in (None, pair_id)]
+            views = [{"schema_version": 1, "pair_id": pair_id, "state": self.grant_state(pair_id),
+                      "installation_id": INSTALL_ID, "login": "test-user", "keys_file": KEYS_PATH,
+                      "fingerprint": "SHA256:client", "granted": "2026-09-29T12:00:00Z"}
+                     for pair_id in sorted(self.grants) if wanted in (None, pair_id)]
+            if wanted is None and self.fault in ("earlier-revoked-grant", "earlier-active-grant"):
+                views.insert(0, {"schema_version": 1, "pair_id": "earlier-pair",
+                                 "state": "revoked" if self.fault == "earlier-revoked-grant" else "granted",
+                                 "installation_id": "bbxi_" + "2" * 32, "login": "test-user", "keys_file": KEYS_PATH,
+                                 "fingerprint": "SHA256:earlier", "granted": "2026-09-28T12:00:00Z"})
+            return 0, views
         raise AssertionError(cli)
 
     def client_pairing(self, args, kwargs):
@@ -2316,6 +2322,18 @@ class PairingTests(unittest.TestCase):
                     self.assertEqual(result["outcomes"]["remove-preview"], {"status": "fail", "code": "pairing-unrevoked"})
                     self.assertEqual(self.commands.removal_calls, 0)
                     self.assertNotEqual(self.commands.keys(), ADMIN_KEYS)
+
+    def test_revoked_grant_of_an_earlier_installation_is_not_ours(self):
+        result = self.execute("earlier-revoked-grant")
+        self.assertEqual(result["status"], "pass", result)
+        self.assert_host_restored(result)
+
+    def test_active_grant_of_an_earlier_installation_fails_closed(self):
+        result = self.execute("earlier-active-grant")
+        self.assertEqual(result["status"], "fail")
+        self.assertEqual(result["outcomes"]["pair-trust-mismatch"], {"status": "fail", "code": "pair-earlier-grant-active"})
+        self.assertEqual(result["outcomes"]["pair-enroll"]["status"], "not-run")
+        self.assert_host_restored(result)
 
     def test_forged_offer_preview_never_creates_a_grant(self):
         result = self.execute("forged-granted")
