@@ -36,7 +36,7 @@ type Dependencies struct {
 	Setup         windowsinstall.Executor
 	SSHPreparer   windowsinstall.SSHPreparer
 	Pairing       func(platform string) (pairing.Platform, error)
-	SSH           windows.SetupSSH
+	SSH           windows.SSH
 	Runner        RunService
 	RunnerFor     func(target.Target) RunService
 	Now           func() time.Time
@@ -230,7 +230,7 @@ func windowsSetupCommand(ctx context.Context, args []string, stdout io.Writer, s
 	if err != nil {
 		return fail(stderr, "load target", err)
 	}
-	result, err := windows.Setup(ctx, dependencies.SSH, selected, *hostBinary, *apply)
+	result, err := windows.Setup(selected, *hostBinary, *apply)
 	if err != nil {
 		return fail(stderr, "Windows setup", err)
 	}

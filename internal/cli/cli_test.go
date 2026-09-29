@@ -30,7 +30,6 @@ type fakeSSH struct {
 	host      string
 	args      []string
 	stdin     []byte
-	uploads   [][2]string
 	runResult func([]string, []byte) ([]byte, error)
 }
 
@@ -440,7 +439,7 @@ func TestEvidenceFailureCannotEmitCompleteJSONState(t *testing.T) {
 	}
 }
 
-func TestWindowsSetupPlansWithoutSSHAndRequiresApplyForWrite(t *testing.T) {
+func TestWindowsSetupPlansAndRefusesLegacyApply(t *testing.T) {
 	root := t.TempDir()
 	targetPath := writeTarget(t, root)
 	hostBinary := filepath.Join(root, "blender-box.exe")
@@ -448,7 +447,6 @@ func TestWindowsSetupPlansWithoutSSHAndRequiresApplyForWrite(t *testing.T) {
 	if err := os.WriteFile(hostBinary, contents, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	fake := &fakeSSH{}
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
 	exitCode := Run(context.Background(), []string{
@@ -456,9 +454,9 @@ func TestWindowsSetupPlansWithoutSSHAndRequiresApplyForWrite(t *testing.T) {
 		"--target", targetPath,
 		"--host-binary", hostBinary,
 		"--json",
-	}, strings.NewReader(""), &stdout, &stderr, Dependencies{SSH: fake})
-	if exitCode != 0 || stderr.Len() != 0 || fake.host != "" {
-		t.Fatalf("plan exit = %d, stderr = %q, SSH host = %q", exitCode, stderr.String(), fake.host)
+	}, strings.NewReader(""), &stdout, &stderr, Dependencies{})
+	if exitCode != 0 || stderr.Len() != 0 {
+		t.Fatalf("plan exit = %d, stderr = %q", exitCode, stderr.String())
 	}
 	var planned windows.SetupResult
 	if err := json.Unmarshal(stdout.Bytes(), &planned); err != nil {
@@ -468,13 +466,6 @@ func TestWindowsSetupPlansWithoutSSHAndRequiresApplyForWrite(t *testing.T) {
 		t.Fatalf("plan = %+v", planned)
 	}
 
-	fake.stdout, _ = json.Marshal(windows.SetupResult{
-		SchemaVersion: 1,
-		Status:        "applied",
-		Applied:       true,
-		HostSize:      planned.HostSize,
-		HostSHA256:    planned.HostSHA256,
-	})
 	stdout.Reset()
 	stderr.Reset()
 	exitCode = Run(context.Background(), []string{
@@ -483,9 +474,9 @@ func TestWindowsSetupPlansWithoutSSHAndRequiresApplyForWrite(t *testing.T) {
 		"--host-binary", hostBinary,
 		"--apply",
 		"--json",
-	}, strings.NewReader(""), &stdout, &stderr, Dependencies{SSH: fake})
-	if exitCode != 1 || !strings.Contains(stderr.String(), "legacy-setup-unowned") || fake.host != "" || len(fake.uploads) != 0 {
-		t.Fatalf("apply exit = %d, stderr = %q, SSH host = %q, uploads = %q", exitCode, stderr.String(), fake.host, fake.uploads)
+	}, strings.NewReader(""), &stdout, &stderr, Dependencies{})
+	if exitCode != 1 || !strings.Contains(stderr.String(), "legacy-setup-unowned") {
+		t.Fatalf("apply exit = %d, stderr = %q", exitCode, stderr.String())
 	}
 }
 
@@ -542,12 +533,6 @@ func (fake *fakeSSH) Run(
 		return fake.runResult(args, stdin)
 	}
 	return fake.stdout, nil
-}
-
-func (fake *fakeSSH) Upload(_ context.Context, connection target.Connection, source, destination string) error {
-	fake.host = connection.Alias()
-	fake.uploads = append(fake.uploads, [2]string{source, destination})
-	return nil
 }
 
 func TestWindowsCheckPrintsVersionedJSONWithoutRemoteWrites(t *testing.T) {
