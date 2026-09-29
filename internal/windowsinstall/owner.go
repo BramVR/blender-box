@@ -664,6 +664,12 @@ func (o *owner) keepAdmitted(ctx context.Context, record executionRequest) (Resu
 		outcome = workerOutcome{Result: preview, TaskMutation: "unknown", Error: "worker result unavailable"}
 		outcome.Result.State = "unknown"
 		outcome.Result.Completion = "unknown"
+		if exit != nil && exit.Kind == "tree-empty" {
+			if result, ok := unfinishedWithoutTaskMutation(record); ok {
+				outcome.Result = result
+				outcome.TaskMutation = "settled"
+			}
+		}
 	}
 	if runErr != nil {
 		if outcome.Error == "" {
@@ -690,6 +696,31 @@ func (o *owner) keepAdmitted(ctx context.Context, record executionRequest) (Resu
 	}
 	return o.result(settled)
 }
+
+// unfinishedWithoutTaskMutation settles a worker lost after exact tree exit. The worker saves a
+// pending create-task or delete-task receipt before every Task Scheduler call, so any other
+// receipt proves no call was submitted.
+func unfinishedWithoutTaskMutation(record executionRequest) (Result, bool) {
+	path := filepath.Join(record.Request.StateRoot, "installations", string(record.Request.InstallationID), "receipt.json")
+	if checkPath(path, false) != nil {
+		return Result{}, false
+	}
+	receipt, err := readReceipt(path)
+	if err != nil || receipt.InstallationID != record.Request.InstallationID || receipt.Intent.Root != record.Request.StateRoot || receipt.Intent.OwnerSID != record.OwnerSID || receipt.RootIdentity != record.RootIdentity {
+		return Result{}, false
+	}
+	if receipt.Pending != nil && (receipt.Pending.Action == "create-task" || receipt.Pending.Action == "delete-task") {
+		return Result{}, false
+	}
+	// A finished receipt leaves the final result unknown, including install target publication.
+	if receipt.State == map[string]string{"install": "installed", "remove": "removed"}[record.Request.Operation] {
+		return Result{}, false
+	}
+	result := record.Preview
+	result.State, result.Completion, result.Files = "partial", "known", receipt.Files
+	return result, true
+}
+
 func (o *owner) releaseFence(ctx context.Context, observed observedExecution) error {
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()

@@ -94,7 +94,9 @@ The result includes execution state, process state, deadline, process-tree clean
 
 Cancellation requested does not mean cleanup completed. Query status again and retain the JSON receipts. After the worker finishes, completion remains unknown until the exact keeper exits and an external caller deletes its inactive temporary task. Exact stop or repeated apply performs this cleanup after a disconnected caller. A settled execution can still hold its fence if the caller died before releasing authority; exact stop reconciles that release. Stop affects that execution only; a later explicit apply may resume the logical operation after the previous execution settles.
 
-Cancellation after admission but before the worker starts can leave process-tree cleanup known while task mutation remains unknown and the fence stays held. A physical cleanup receipt alone does not authorize release of that fence.
+Cancellation after admission but before the worker records an installation receipt can leave process-tree cleanup known while task mutation remains unknown and the fence stays held. A physical cleanup receipt alone does not authorize release of that fence.
+
+The worker records a pending task action in the installation receipt before each Scheduled Task change. If the deadline or a cancellation ends the worker before it reports, the keeper reads that receipt after it proves process-tree exit. An unfinished receipt with no pending task action settles the execution as `partial` with task mutation `settled`, and repeated apply resumes it. A pending task action, a missing receipt, or a finished receipt keeps task mutation `unknown`.
 
 Status and exact stop validate the account and state root without rediscovering Blender or Python. They still require the authenticated account to match the logged-in desktop user, enabled UAC, and the existing root ownership checks.
 
