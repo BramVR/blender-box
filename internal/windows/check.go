@@ -361,8 +361,6 @@ $requiredFailed = @($checks | Where-Object { $_.required -and -not $_.passed }).
 
 type SSH = sshtransport.CommandRunner
 
-type SetupSSH = sshtransport.Transport
-
 type CheckResult struct {
 	SchemaVersion int             `json:"schema_version"`
 	Status        string          `json:"status"`

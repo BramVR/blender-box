@@ -73,7 +73,7 @@ Schema versions 1 and 2 pin the alias string. SSH resolves and authenticates tha
 
 Paired schema version 3 contains `platform`, `ssh`, and exactly one platform body. The `ssh` body binds the direct host, port, login user, canonical Ed25519 host public key, and client public-key fingerprint. It contains no alias. All connection fields participate in the existing target fingerprint, so changing any field refuses original Run recovery before transport. The platform bodies keep their existing host readiness and process-ownership meanings.
 
-One validated `target.Connection` reaches both SSH commands and SCP. A paired connection uses the exact stored key and host public key without ambient agent, password, certificate, multiplexed connection, forwarding, or SSH configuration fallback. Missing or replaced private key material refuses before the subprocess starts. Alias connections retain their existing behavior.
+One validated `target.Connection` reaches SSH commands. A paired connection uses the exact stored key and host public key without ambient agent, password, certificate, multiplexed connection, forwarding, or SSH configuration fallback. Missing or replaced private key material refuses before the subprocess starts. Alias connections retain their existing behavior.
 
 The common client stores dedicated pairing keys in the private configuration root. POSIX key operations require current-user ownership and private permissions. Windows paired credential operations refuse until the native owner and ACL checks are implemented. This restriction concerns the client holding the key; a supported POSIX client may select a Windows target.
 

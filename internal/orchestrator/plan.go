@@ -53,6 +53,15 @@ type HostInspection struct {
 	SchemaVersion int              `json:"schema_version"`
 	Status        string           `json:"status"`
 	Captures      []CaptureSupport `json:"captures"`
+	Problems      []HostProblem    `json:"problems,omitempty"`
+}
+
+// HostProblem explains one failed readiness fact as a class the user can act on.
+type HostProblem struct {
+	Class   string `json:"class"`
+	Check   string `json:"check"`
+	Message string `json:"message"`
+	Next    string `json:"next"`
 }
 
 type HostRequirements struct {

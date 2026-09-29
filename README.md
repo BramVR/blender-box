@@ -98,7 +98,7 @@ Keep operator configuration outside the consuming repository. The [installer](do
 
 Keep credentials, hostnames, IP addresses, and private network details out of this file. `ssh_alias` selects an entry from your SSH config.
 
-Both `session_broker_executable` and `host_executable` must be inside `work_root` and below a dedicated executable directory. Blender may be installed elsewhere. The work root must be an ASCII drive path without spaces for the Run transport's legacy SCP support.
+Both `session_broker_executable` and `host_executable` must be inside `work_root` and below a dedicated executable directory. Blender may be installed elsewhere. The work root must be an ASCII drive path without spaces.
 
 Version 2 also accepts a strict `linux` body for Ubuntu 24.04 GNOME on Xorg. Follow the [Linux host guide](docs/linux.md) for its UID, desktop, static unit, and reviewed runtime requirements. Existing flat schema version 1 Windows files remain valid input with unchanged normalized bytes and fingerprints. Unsupported platforms and malformed documents fail before a connection or setup change.
 
@@ -122,23 +122,24 @@ Every target-taking command accepts either `--target-name NAME` or `--target PAT
 
 Saved profiles and Run recovery records use the operating system's user configuration directory under `blender-box`. Set `BLENDER_BOX_CONFIG_DIR` to an absolute, operator-owned directory to isolate another configuration. Preserve that directory for later recovery, even when using a custom Evidence Bundle directory.
 
-## Prepare local pairing
+## Pair a host
 
 The local pairing client accepts independently trusted host offers and enrollment receipts. The host side (`setup ssh`, `pair offer|enroll|revoke|status --state-root`) is described in [Prepare SSH and pair a client on Windows](docs/windows-ssh-preparation.md). Native Windows behavior and hosted pair-and-run proof remain outstanding.
+Follow the [pairing guide](docs/pairing.md) to go from an installed Windows host to a saved target and a first Run. It covers host SSH preparation, the host-local offer and enrollment steps, connection troubleshooting, and revocation. Tailscale is optional reachability; existing SSH alias targets need no pairing.
 
-On a POSIX client with `ssh-keygen`, an authorized test or integration can use these entrypoints with its trusted input files and independently verified digests:
+On a POSIX client with `ssh-keygen`, the client steps use trusted input files and independently verified digests:
 
 ```sh
-blender-box pair prepare studio --offer /path/to/offer.json --trust-offer "$OFFER_DIGEST" --json
+blender-box pair prepare studio --offer /path/to/offer.json --trust-offer "$OFFER_DIGEST" > intent.json
 blender-box pair status studio --json
 blender-box pair complete studio --receipt /path/to/receipt.json --trust-receipt "$RECEIPT_DIGEST" --json
 ```
 
 Do not compute a digest from an untrusted file and treat that as host approval. Preparation reserves recovery state before retaining a private key and outputs only the durable public intent. Oversized requests refuse before credential creation. Repeating preparation after a failure or concurrent attempt preserves the original request and key. Completion verifies the original intent and saves a schema-3 target without replacing another profile. Readiness stays unchecked until `doctor` succeeds.
 
-Paired transport pins the host's Ed25519 key and the dedicated client key for both SSH and SCP. It refuses missing or changed credentials. Windows clients refuse paired credentials until native owner and ACL checks are available. Existing alias profiles remain supported.
+Paired transport pins the host's Ed25519 key and the dedicated client key for SSH. It refuses missing or changed credentials. Windows clients refuse paired credentials until native owner and ACL checks are available. Existing alias profiles remain supported.
 
-Keep pairing state private and retain it after an interrupted request. Local cancellation does not revoke a grant. See the [client pairing contract](docs/architecture/0008-client-pairing.md) for trust, recovery and unfinished host work.
+Keep pairing state private and retain it after an interrupted request. Local cancellation does not revoke a grant. `pair revoke NAME` removes remote access and reports success only after the host confirms removal and a fresh paired connection is rejected. `pair forget NAME` and `targets forget NAME` change only local state. See the [client pairing contract](docs/architecture/0008-client-pairing.md) for trust and recovery.
 
 ## Set up the Windows host
 

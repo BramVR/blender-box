@@ -162,6 +162,22 @@ func Read(ctx context.Context, root, fingerprint string) ([]byte, error) {
 	return privateKey, nil
 }
 
+// Remove deletes the credential published for fingerprint and its directory.
+// An absent credential is not an error, so interrupted cleanup can repeat.
+func Remove(root, fingerprint string) error {
+	relative, err := credentialPath(fingerprint)
+	if err != nil {
+		return err
+	}
+	if err := privatefile.Remove(root, relative, maxKeyBytes); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	if err := privatefile.RemoveDirectory(root, filepath.Dir(relative)); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	return nil
+}
+
 func derivePublic(ctx context.Context, path string) (string, error) {
 	output, err := runKeygen(ctx, "-y", "-P", "", "-f", path)
 	if err != nil {
