@@ -16,8 +16,6 @@ import (
 	"github.com/BramVR/blender-box/internal/windowsinstall"
 )
 
-type targetPublication = windowsinstall.Publication
-
 func setupCommand(ctx context.Context, args []string, stdout, stderr io.Writer, dependencies Dependencies) int {
 	if len(args) > 0 && args[0] == "ssh" {
 		return setupSSHCommand(ctx, args[1:], stdout, stderr, dependencies)

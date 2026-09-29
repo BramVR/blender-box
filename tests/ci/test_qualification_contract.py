@@ -51,8 +51,6 @@ class QualificationContractTests(unittest.TestCase):
                             ("linux-qualification", operational), ("windows-qualification", operational)):
             with self.subTest(kind=kind), self.assertRaises(model.ControllerError):
                 native.Selector.create(kind, value)
-        with self.assertRaises(model.ControllerError):
-            native.operational_pending(model.proof.canonical(selected.wire()))
 
     def test_exact_shapes_duplicate_keys_versions_boolean_numbers_and_size(self):
         start = {key: value for key, value in linux().items() if key != "accepted_boot_id"} | {"operation": "start"}

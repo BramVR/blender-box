@@ -22,20 +22,11 @@ import (
 )
 
 type scriptedSSH struct {
-	outputs      [][]byte
-	arguments    [][]string
-	inputs       [][]byte
-	uploads      []scriptedUpload
-	runHook      func()
-	runResult    func(context.Context, int, []string, []byte) ([]byte, error)
-	uploadResult func(context.Context, int, string, string, string) error
-}
-
-type scriptedUpload struct {
-	host        string
-	source      string
-	destination string
-	contents    []byte
+	outputs   [][]byte
+	arguments [][]string
+	inputs    [][]byte
+	runHook   func()
+	runResult func(context.Context, int, []string, []byte) ([]byte, error)
 }
 
 func TestInspectReadsCaptureSupportFromInstalledHost(t *testing.T) {
@@ -147,19 +138,6 @@ func (fake *scriptedSSH) Run(ctx context.Context, _ target.Connection, arguments
 	return output, nil
 }
 
-func (fake *scriptedSSH) Upload(ctx context.Context, connection target.Connection, source, destination string) error {
-	host := connection.Alias()
-	contents, err := os.ReadFile(source)
-	if err != nil {
-		return err
-	}
-	fake.uploads = append(fake.uploads, scriptedUpload{host: host, source: source, destination: destination, contents: contents})
-	if fake.uploadResult != nil {
-		return fake.uploadResult(ctx, len(fake.uploads)-1, host, source, destination)
-	}
-	return nil
-}
-
 func TestAdapterCarriesTypedAuthorityAcrossEveryHostOperation(t *testing.T) {
 	claim := orchestrator.LockClaim{
 		SchemaVersion: 1,
@@ -252,16 +230,6 @@ func TestAdapterCarriesTypedAuthorityAcrossEveryHostOperation(t *testing.T) {
 	}
 }
 
-func TestAdapterRejectsInvalidTargetBeforeSSH(t *testing.T) {
-	fake := &scriptedSSH{}
-	if err := NewAdapter(fake).Acquire(context.Background(), target.Target{}, orchestrator.LockClaim{}); err == nil {
-		t.Fatal("zero target accepted")
-	}
-	if len(fake.arguments) != 0 {
-		t.Fatal("invalid target reached SSH")
-	}
-}
-
 func adapterTarget() target.Target {
 	selected, err := target.NewWindows("windows-test", windowstarget.Config{
 		SSHUser:                 "test-user",
@@ -347,7 +315,7 @@ func TestEveryAdapterBoundaryRejectsZeroTargetBeforeEffects(t *testing.T) {
 			t.Fatal("zero target accepted")
 		}
 	}
-	if len(fake.arguments) != 0 || len(fake.uploads) != 0 {
+	if len(fake.arguments) != 0 {
 		t.Fatal("invalid target reached SSH")
 	}
 }

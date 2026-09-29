@@ -122,7 +122,7 @@ func TestTargetsCLIProcessHelper(t *testing.T) {
 	host := diskHost{root: root, receiptPath: os.Getenv("BBX_TEST_RECEIPT"), auditPath: os.Getenv("BBX_TEST_AUDIT")}
 	ssh := &fakeSSH{stdout: passingChecks()}
 
-	code := Run(context.Background(), args, strings.NewReader(""), os.Stdout, os.Stderr, Dependencies{Runner: orchestrator.New(host, root), SSH: ssh})
+	code := Run(context.Background(), args, strings.NewReader(""), os.Stdout, os.Stderr, Dependencies{RunnerFor: fixedRunner(orchestrator.New(host, root)), SSH: ssh})
 	if ssh.host != "" {
 		if err := host.record("ssh"); err != nil {
 			t.Fatal(err)

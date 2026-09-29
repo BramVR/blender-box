@@ -248,10 +248,6 @@ func (nativeMachine) securePath(ctx context.Context, path, sid string, missing b
 	_, err := powerShell(ctx, `Assert-Path $r.path $r.sid $r.missing; if(Test-Path -LiteralPath $r.path){Assert-Access $r.path $r.sid $true}`, map[string]any{"path": path, "sid": sid, "missing": missing})
 	return err
 }
-func (nativeMachine) secureSealedPath(ctx context.Context, path, sid string) error {
-	_, err := powerShell(ctx, `Assert-Path $r.path $r.sid $false; Assert-SealedRuntime $r.path $r.sid`, map[string]string{"path": path, "sid": sid})
-	return err
-}
 func (nativeMachine) sealPath(ctx context.Context, path, sid string) error {
 	_, err := powerShell(ctx, `Assert-Path $r.path $r.sid $false; Assert-Access $r.path $r.sid $true
 $sections=[Security.AccessControl.AccessControlSections]::Access -bor [Security.AccessControl.AccessControlSections]::Owner -bor [Security.AccessControl.AccessControlSections]::Group
