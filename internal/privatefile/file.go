@@ -179,6 +179,21 @@ func Publish(root, relative string, contents []byte, replace bool) error {
 	return syncDirectory(parent)
 }
 
+// RemoveDirectory deletes one empty private directory below root.
+func RemoveDirectory(root, relative string) error {
+	if relative == "" {
+		return fmt.Errorf("invalid private storage path")
+	}
+	path, err := Directory(root, relative, false)
+	if err != nil {
+		return err
+	}
+	if err := os.Remove(path); err != nil {
+		return err
+	}
+	return syncDirectory(filepath.Dir(path))
+}
+
 func Remove(root, relative string, limit int64) error {
 	if _, err := Read(root, relative, limit); err != nil {
 		return err

@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -41,25 +42,33 @@ func TestExternalExecutableExceedsRuntimeArtifactLimit(t *testing.T) {
 }
 
 func TestPrerequisiteRejectsUnsupportedSources(t *testing.T) {
-	for _, kind := range []string{"oversize", "directory", "non-pe"} {
-		t.Run(kind, func(t *testing.T) {
+	for _, test := range []struct{ kind, want string }{
+		{"oversize", "at most 2 GiB"},
+		{"directory", "regular file"},
+		{"non-pe", "not PE"},
+	} {
+		t.Run(test.kind, func(t *testing.T) {
 			path := filepath.Join(tempRoot(t), "prerequisite")
-			if kind == "directory" {
+			switch test.kind {
+			case "directory":
 				if err := os.Mkdir(path, 0700); err != nil {
 					t.Fatal(err)
 				}
-			} else {
+			case "oversize":
+				// A valid PE header proves the size guard, not the PE parser, refuses it.
+				if err := os.WriteFile(path, peFixture(), 0600); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Truncate(path, maxPrerequisite+1); err != nil {
+					t.Fatal(err)
+				}
+			default:
 				if err := os.WriteFile(path, []byte("invalid"), 0600); err != nil {
 					t.Fatal(err)
 				}
-				if kind == "oversize" {
-					if err := os.Truncate(path, maxPrerequisite+1); err != nil {
-						t.Fatal(err)
-					}
-				}
 			}
-			if _, _, err := hashPrerequisite(path, true); err == nil {
-				t.Fatal("unsupported prerequisite accepted")
+			if _, _, err := hashPrerequisite(path, true); err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("error = %v, want containing %q", err, test.want)
 			}
 		})
 	}
