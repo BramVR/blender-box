@@ -3,6 +3,7 @@ package ssh
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -60,6 +61,9 @@ func (runner Runner) Run(ctx context.Context, connection target.Connection, remo
 		if stdout.exceeded || stderr.exceeded {
 			return nil, fmt.Errorf("SSH output exceeded its limit")
 		}
+		if failure := classifyExit(err, stderr.String(), connection); failure != nil {
+			return nil, failure
+		}
 		if message := stderr.String(); message != "" {
 			return nil, fmt.Errorf("SSH failed: %s", message)
 		}
@@ -97,6 +101,9 @@ func (runner Runner) Upload(ctx context.Context, connection target.Connection, s
 		if stdout.exceeded || stderr.exceeded {
 			return fmt.Errorf("SCP output exceeded its limit")
 		}
+		if failure := classifyExit(err, stderr.String(), connection); failure != nil {
+			return failure
+		}
 		if message := stderr.String(); message != "" {
 			return fmt.Errorf("SCP failed: %s", message)
 		}
@@ -106,6 +113,18 @@ func (runner Runner) Upload(ctx context.Context, connection target.Connection, s
 		return fmt.Errorf("SCP output exceeded its limit")
 	}
 	return nil
+}
+
+func classifyExit(err error, stderr string, connection target.Connection) *Failure {
+	var exit *exec.ExitError
+	if !errors.As(err, &exit) {
+		return nil
+	}
+	host := connection.Alias()
+	if direct, paired := connection.Direct(); paired {
+		host = direct.Host
+	}
+	return classify(exit.ExitCode(), stderr, host)
 }
 
 func uploadArguments(host, source, destination string) ([]string, error) {

@@ -15,7 +15,7 @@ import (
 
 func pairCommand(ctx context.Context, args []string, stdout, stderr io.Writer, dependencies Dependencies) int {
 	if len(args) == 0 || args[0] == "--help" || args[0] == "-h" {
-		fmt.Fprintln(stdout, "Pairing client uses independently verified host-local offer and receipt digests.\n  pair prepare NAME --offer PATH --trust-offer SHA256 (prints the enrollment request JSON)\n  pair complete NAME --receipt PATH --trust-receipt SHA256 [--json]\n  pair status NAME [--json]\nHost verbs take --state-root instead of NAME: pair offer|enroll|revoke|status --state-root PATH (see pair offer --help). Readiness requires a separate doctor command. Retain the request and credential while host enrollment is unconfirmed.")
+		fmt.Fprintln(stdout, "Pairing client uses independently verified host-local offer and receipt digests.\n  pair prepare NAME --offer PATH --trust-offer SHA256 (prints the enrollment request JSON)\n  pair complete NAME --receipt PATH --trust-receipt SHA256 [--json]\n  pair status NAME [--json]\n  pair revoke NAME [--timeout 2m] [--json] (removes host access, proves a fresh connection is rejected, then forgets local state)\n  pair forget NAME [--keep-remote-access] [--json] (local only; never contacts the host)\nHost verbs take --state-root instead of NAME: pair offer|enroll|revoke|status --state-root PATH (see pair offer --help). Readiness requires a separate doctor command. Retain the request and credential while host enrollment is unconfirmed.")
 		if len(args) == 0 {
 			return 2
 		}
@@ -26,8 +26,11 @@ func pairCommand(ctx context.Context, args []string, stdout, stderr io.Writer, d
 	if operation == "offer" || operation == "enroll" || (operation == "revoke" || operation == "status") && len(args) > 1 && strings.HasPrefix(args[1], "-") {
 		return pairHostCommand(ctx, operation, args[1:], stdout, stderr, dependencies)
 	}
+	if operation == "revoke" || operation == "forget" {
+		return pairRevocationCommand(ctx, operation, args[1:], stdout, stderr, dependencies)
+	}
 	if operation != "prepare" && operation != "complete" && operation != "status" {
-		return fail(stderr, "pair", fmt.Errorf("expected prepare, complete or status"))
+		return fail(stderr, "pair", fmt.Errorf("expected prepare, complete, status, revoke or forget"))
 	}
 	if len(args) < 2 {
 		fmt.Fprintln(stderr, "pair command requires NAME")
@@ -92,7 +95,11 @@ func pairCommand(ctx context.Context, args []string, stdout, stderr io.Writer, d
 		if err != nil {
 			return fail(stderr, "prepare pair", err)
 		}
-		return writeJSON(stdout, stderr, intent)
+		if code := writeJSON(stdout, stderr, intent); code != 0 {
+			return code
+		}
+		fmt.Fprintf(stderr, "Enrollment request SHA-256 %s\n", pairing.IntentDigest(intent))
+		return 0
 	}
 	receipt, err := pairing.TrustReceipt(data, *trust)
 	if err != nil {

@@ -449,7 +449,14 @@ func (runner *Runner) Run(ctx context.Context, intent RunIntent) (result RunResu
 		return RunResult{}, fmt.Errorf("inspect host: invalid host inspection")
 	}
 	if inspection.Status == "fail" {
-		return RunResult{}, fmt.Errorf("inspect host: host checks failed")
+		classes := make([]string, 0, len(inspection.Problems))
+		for _, problem := range inspection.Problems {
+			classes = append(classes, problem.Class+" ("+problem.Check+")")
+		}
+		if len(classes) == 0 {
+			return RunResult{}, fmt.Errorf("inspect host: host checks failed")
+		}
+		return RunResult{}, fmt.Errorf("inspect host: host checks failed: %s; run doctor for next steps", strings.Join(classes, ", "))
 	}
 	if !inspectionSupports(inspection, plan.Captures) || !uiInspectionSupports(inspection, plan.UIActions != nil) {
 		return RunResult{}, fmt.Errorf("inspect host: requested capability is unsupported")

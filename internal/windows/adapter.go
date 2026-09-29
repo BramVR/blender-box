@@ -3,6 +3,7 @@ package windows
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"strings"
@@ -11,7 +12,9 @@ import (
 	"github.com/BramVR/blender-box/internal/capture"
 	"github.com/BramVR/blender-box/internal/host"
 	"github.com/BramVR/blender-box/internal/orchestrator"
+	"github.com/BramVR/blender-box/internal/pairing"
 	"github.com/BramVR/blender-box/internal/payload"
+	sshtransport "github.com/BramVR/blender-box/internal/ssh"
 	"github.com/BramVR/blender-box/internal/target"
 )
 
@@ -26,11 +29,15 @@ func NewAdapter(ssh SSH) *Adapter {
 
 func (adapter *Adapter) Inspect(ctx context.Context, selected target.Target, requirements orchestrator.HostRequirements) (orchestrator.HostInspection, error) {
 	result, err := Check(ctx, adapter.ssh, selected)
+	var failure *sshtransport.Failure
+	if errors.As(err, &failure) {
+		return orchestrator.HostInspection{SchemaVersion: 1, Status: "fail", Problems: []orchestrator.HostProblem{{Class: string(failure.Class), Check: "ssh.connection", Message: failure.Detail, Next: failure.Next()}}}, nil
+	}
 	if err != nil {
 		return orchestrator.HostInspection{}, err
 	}
 	if result.Status != "pass" {
-		return orchestrator.HostInspection{SchemaVersion: 1, Status: "fail"}, nil
+		return orchestrator.HostInspection{SchemaVersion: 1, Status: "fail", Problems: checkProblems(result.Checks, selected.Windows().WorkRoot)}, nil
 	}
 	legacy := make([]orchestrator.CaptureSupport, 0, len(requirements.Captures))
 	for _, kind := range requirements.Captures {
@@ -58,6 +65,57 @@ func (adapter *Adapter) Inspect(ctx context.Context, selected target.Target, req
 		return orchestrator.HostInspection{}, err
 	}
 	return orchestrator.HostInspection{SchemaVersion: 1, Status: "pass", Captures: capabilities.Captures, UIActions: capabilities.UIActions}, nil
+}
+
+var problemClassByCheck = map[string]string{
+	"host.console-user":  "interactive-desktop-unavailable",
+	"host.ssh-user":      "account-mismatch",
+	"blender.executable": "runtime-incompatible",
+	"daemon.executable":  "runtime-incompatible",
+	"host.executable":    "runtime-incompatible",
+}
+
+var nextStepByProblemClass = map[string]string{
+	"interactive-desktop-unavailable": "sign in to the host desktop as the target's interactive user and leave that session signed in",
+	"account-mismatch":                "connect as the same Windows account that owns the interactive desktop, then pair or import that target again",
+	"runtime-incompatible":            "on the host, run `blender-box setup inspect --platform windows --state-root STATE_ROOT` and reinstall the runtime it reports",
+	"setup-incomplete":                "on the host, run `blender-box setup inspect --platform windows --state-root STATE_ROOT` and apply the reviewed plan",
+}
+
+func checkProblems(checks []CheckEvidence, stateRoot string) []orchestrator.HostProblem {
+	var problems []orchestrator.HostProblem
+	for _, check := range checks {
+		if !check.Required || check.Passed {
+			continue
+		}
+		class, known := problemClassByCheck[check.ID]
+		if !known {
+			class = "setup-incomplete"
+		}
+		problems = append(problems, orchestrator.HostProblem{Class: class, Check: check.ID, Message: check.Message, Next: strings.ReplaceAll(nextStepByProblemClass[class], "STATE_ROOT", stateRoot)})
+	}
+	return problems
+}
+
+// RevokePairing asks the host to remove exactly this pairing's key, authenticated by that key.
+func (adapter *Adapter) RevokePairing(ctx context.Context, selected target.Target, request pairing.RevokeRequest) (pairing.RevokeResult, error) {
+	var result json.RawMessage
+	if err := adapter.invokeJSON(ctx, selected, "pair-revoke", request, &result); err != nil {
+		return pairing.RevokeResult{}, err
+	}
+	return pairing.ParseRevokeResult(result, request.PairID)
+}
+
+// Probe opens a fresh paired SSH connection and runs a no-op command.
+func (adapter *Adapter) Probe(ctx context.Context, selected target.Target) error {
+	if err := selected.Validate(); err != nil {
+		return err
+	}
+	if adapter.ssh == nil {
+		return fmt.Errorf("SSH transport is unavailable")
+	}
+	_, err := adapter.ssh.Run(ctx, selected.Connection(), []string{"exit", "0"}, nil)
+	return err
 }
 
 func validateCapabilities(result host.CapabilitiesResponse) error {
