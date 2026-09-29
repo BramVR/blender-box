@@ -2016,7 +2016,7 @@ class HostInstallTests(unittest.TestCase):
                            and '"remove"' in proof.base64.b64decode(proof.re.search(r"FromBase64String\('([^']+)'\)",
                                self.commands.call_options[i]["stdin"].decode("utf-8")).group(1)).decode())
         self.assertLess(last_status, first_remove)
-        selected = [call for call in calls if call[0].endswith("/blender-box") and call[1] in ("windows", "run", "status", "stop")]
+        selected = [call for call in calls if Path(call[0]).stem == "blender-box" and call[1] in ("windows", "run", "status", "stop")]
         self.assertTrue(selected and all(call[call.index("--target-name") + 1] == proof.PAIR_TARGET for call in selected))
         paired = json.loads((self.request.output / "private/paired-target.json").read_bytes())
         self.assertEqual(paired["windows"]["host_executable"],
@@ -2268,7 +2268,8 @@ class PairingTests(unittest.TestCase):
         self.assertEqual(self.commands.probes, [pair_id])
         self.assertEqual(self.commands.pair_actions.count(("pair", "enroll", True)), 2)
         self.assertEqual(self.commands.client_pairs, {})
-        self.assertEqual(stat.S_IMODE((self.request.output / "private/revoked-key").stat().st_mode), 0o600)
+        if os.name != "nt":
+            self.assertEqual(stat.S_IMODE((self.request.output / "private/revoked-key").stat().st_mode), 0o600)
         run = next(call for call in self.commands.calls if call[1:2] == ["run"])
         self.assertEqual(run[run.index("--target-name") + 1], proof.PAIR_TARGET)
         public = (self.request.output / "public/outcome.json").read_text()
