@@ -18,6 +18,10 @@ type nativeMember struct {
 }
 
 type nativeJobCounts struct{ total, active uint32 }
+
+// nativeMemberList is Windows' raw reading. assigned can exceed len(pids) while a
+// member whose process already signaled is still counted; readCompleteMembers owns
+// whether a reading is trusted.
 type nativeMemberList struct {
 	assigned uint32
 	pids     []uint32
@@ -102,25 +106,51 @@ func (members *nativeMembers) observeCounts() nativeJobCounts {
 	return counts
 }
 
-func (members *nativeMembers) snapshot() []uint32 {
-	list, err := members.api.list()
-	if err != nil {
-		members.fail(err)
-		return nil
-	}
-	if list.assigned > nativeMemberLimit || int(list.assigned) != len(list.pids) {
-		members.fail(fmt.Errorf("native job member list is incomplete"))
-		return nil
-	}
-	seen := make(map[uint32]bool, len(list.pids))
-	for _, pid := range list.pids {
-		if pid == 0 || seen[pid] {
-			members.fail(fmt.Errorf("native job member list has invalid identities"))
-			return nil
+// readCompleteMembers returns the Job's member PIDs from a reading whose assigned count
+// equals its listed members. Windows can briefly keep counting a member whose process
+// already signaled while omitting it from the list, and an immediate re-read reports it
+// gone. Lagging readings are discarded, never repaired. Reads are bounded by the member
+// limit; an overflowing or never-complete list stays an error.
+func readCompleteMembers(api nativeMemberBoundary) ([]uint32, error) {
+	for range nativeMemberLimit + 1 {
+		list, err := api.list()
+		if err != nil {
+			return nil, err
 		}
-		seen[pid] = true
+		if list.assigned > nativeMemberLimit || int(list.assigned) < len(list.pids) {
+			return nil, fmt.Errorf("native job member list is incomplete")
+		}
+		if int(list.assigned) > len(list.pids) {
+			continue
+		}
+		seen := make(map[uint32]bool, len(list.pids))
+		for _, pid := range list.pids {
+			if pid == 0 || seen[pid] {
+				return nil, fmt.Errorf("native job member list has invalid identities")
+			}
+			seen[pid] = true
+		}
+		return list.pids, nil
 	}
-	return list.pids
+	return nil, fmt.Errorf("native job member list stayed incomplete")
+}
+
+func (members *nativeMembers) snapshot() []uint32 {
+	pids, err := readCompleteMembers(members.api)
+	members.fail(err)
+	return pids
+}
+
+// coveredEmpty reports whether the Job is empty and every process it ever held is
+// retained. Membership is read before accounting because accounting still counts a
+// signaled member until the list settles.
+func (members *nativeMembers) coveredEmpty() bool {
+	remaining := members.snapshot()
+	if members.fault != nil {
+		return false
+	}
+	counts := members.observeCounts()
+	return members.fault == nil && counts.active == 0 && len(remaining) == 0 && counts.total == uint32(len(members.held))
 }
 
 func (members *nativeMembers) event(message uint32, pid uintptr) bool {
@@ -150,12 +180,10 @@ func (members *nativeMembers) event(message uint32, pid uintptr) bool {
 }
 
 func (members *nativeMembers) verifyExited() error {
-	counts := members.observeCounts()
-	remaining := members.snapshot()
-	if members.fault != nil {
-		return members.fault
-	}
-	if counts.active != 0 || len(remaining) != 0 || counts.total != uint32(len(members.held)) {
+	if !members.coveredEmpty() {
+		if members.fault != nil {
+			return members.fault
+		}
 		return fmt.Errorf("native job has not naturally exited with complete lifetime coverage")
 	}
 	for _, member := range members.held {
@@ -197,12 +225,7 @@ func (members *nativeMembers) settle(deadline time.Time) error {
 	if !withinDeadline() {
 		return members.fault
 	}
-	counts := members.observeCounts()
-	if !withinDeadline() {
-		return members.fault
-	}
-	remaining := members.snapshot()
-	if counts.active != 0 || len(remaining) != 0 || counts.total != uint32(len(members.held)) {
+	if !members.coveredEmpty() {
 		members.fail(fmt.Errorf("native job lifetime coverage is incomplete"))
 	}
 	withinDeadline()
