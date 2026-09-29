@@ -11,6 +11,8 @@ type memberFixtureProcess struct {
 	created  uint64
 	visible  bool
 	signaled bool
+	// lingering counts list reads that still count this signaled process without listing it.
+	lingering int
 }
 
 type memberFixture struct {
@@ -68,7 +70,7 @@ func (fixture *memberFixture) counts() (nativeJobCounts, error) {
 	}
 	var active uint32
 	for _, process := range fixture.processes {
-		if process.visible {
+		if process.visible || process.lingering > 0 {
 			active++
 		}
 	}
@@ -80,9 +82,12 @@ func (fixture *memberFixture) list() (nativeMemberList, error) {
 	for pid, process := range fixture.processes {
 		if process.visible {
 			result.pids = append(result.pids, pid)
+		} else if process.lingering > 0 {
+			process.lingering--
+			result.assigned++
 		}
 	}
-	result.assigned = uint32(len(result.pids))
+	result.assigned += uint32(len(result.pids))
 	if fixture.partial {
 		result.assigned++
 	}
@@ -122,7 +127,7 @@ func (fixture *memberFixture) wait(handle uintptr, deadline time.Time) error {
 }
 
 func TestNativeMembersVerifyNaturalExitBeforeTermination(t *testing.T) {
-	for _, state := range []string{"exited", "active", "listed", "untracked", "unsignaled", "collector-fault", "counts-error", "list-error", "wait-error"} {
+	for _, state := range []string{"exited", "active", "listed", "untracked", "unsignaled", "collector-fault", "counts-error", "list-error", "wait-error", "persistent-lag"} {
 		t.Run(state, func(t *testing.T) {
 			fixture := newMemberFixture()
 			fixture.add(1)
@@ -152,6 +157,8 @@ func TestNativeMembersVerifyNaturalExitBeforeTermination(t *testing.T) {
 				fixture.listErr = fmt.Errorf("membership unavailable")
 			case "wait-error":
 				fixture.waitErr = fmt.Errorf("member state unavailable")
+			case "persistent-lag":
+				fixture.partial = true
 			}
 			err := members.verifyExited()
 			if (err == nil) != (state == "exited") || fixture.terminations != 0 {
@@ -161,6 +168,47 @@ func TestNativeMembersVerifyNaturalExitBeforeTermination(t *testing.T) {
 				if !deadline.IsZero() {
 					t.Fatal("natural exit verification waited for a live member")
 				}
+			}
+		})
+	}
+}
+
+// Windows can keep counting a signaled member while omitting it from the PID list;
+// the next read is complete (#47).
+func TestNativeMembersSettleSignaledMemberListLag(t *testing.T) {
+	for _, when := range []string{"natural-exit", "capture", "after-terminate"} {
+		t.Run(when, func(t *testing.T) {
+			fixture := newMemberFixture()
+			fixture.add(1)
+			fixture.add(2)
+			members := newNativeMembers(fixture)
+			defer members.close()
+			members.retain(1, fixture.processes[1].created)
+			members.event(6, 2)
+			for _, process := range fixture.processes {
+				process.visible = false
+				process.signaled = true
+			}
+			var err error
+			switch when {
+			case "natural-exit":
+				fixture.processes[2].lingering = 1
+				err = members.verifyExited()
+			case "capture":
+				fixture.processes[2].visible = true
+				fixture.processes[1].lingering = 1
+				err = members.settle(time.Now().Add(time.Second))
+			case "after-terminate":
+				fixture.processes[2].visible = true
+				fixture.onTerminate = func() { fixture.processes[2].lingering = 1 }
+				err = members.settle(time.Now().Add(time.Second))
+			}
+			wantTerminations := 1
+			if when == "natural-exit" {
+				wantTerminations = 0
+			}
+			if err != nil || fixture.terminations != wantTerminations {
+				t.Fatalf("lagging member list: error=%v terminations=%d", err, fixture.terminations)
 			}
 		})
 	}
