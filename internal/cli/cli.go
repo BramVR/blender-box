@@ -13,6 +13,7 @@ import (
 
 	linuxhost "github.com/BramVR/blender-box/internal/linux"
 	"github.com/BramVR/blender-box/internal/orchestrator"
+	"github.com/BramVR/blender-box/internal/pairing"
 	"github.com/BramVR/blender-box/internal/payload"
 	"github.com/BramVR/blender-box/internal/target"
 	"github.com/BramVR/blender-box/internal/windows"
@@ -33,6 +34,8 @@ type HostService interface {
 
 type Dependencies struct {
 	Setup         windowsinstall.Executor
+	SSHPreparer   windowsinstall.SSHPreparer
+	Pairing       func(platform string) (pairing.Platform, error)
 	SSH           windows.SetupSSH
 	Runner        RunService
 	RunnerFor     func(target.Target) RunService
@@ -64,6 +67,9 @@ func Run(ctx context.Context, args []string, stdin io.Reader, stdout io.Writer, 
 	case "stop":
 		return stopCommand(ctx, args[1:], stdout, stderr, dependencies)
 	case "host":
+		if len(args) > 1 && args[1] == "pair-revoke" {
+			return hostPairRevoke(ctx, args[2:], stdin, stdout, stderr, dependencies)
+		}
 		if dependencies.Host == nil {
 			return fail(stderr, "host command", fmt.Errorf("host service is unavailable"))
 		}
@@ -87,7 +93,11 @@ func Run(ctx context.Context, args []string, stdin io.Reader, stdout io.Writer, 
 func printUsage(output io.Writer) {
 	fmt.Fprintln(output, "usage:")
 	fmt.Fprintln(output, "  blender-box pair prepare|complete|status NAME [--help]")
+	fmt.Fprintln(output, "  blender-box pair offer --state-root PATH --installation ID --address HOST [--expires 30m] --out PATH [--json]")
+	fmt.Fprintln(output, "  blender-box pair enroll --state-root PATH --intent PATH --trust-intent SHA256 [--apply --out PATH] [--json]")
+	fmt.Fprintln(output, "  blender-box pair revoke --state-root PATH --pair PAIR_ID [--apply] [--json]\n  blender-box pair status --state-root PATH [--pair PAIR_ID] [--json]")
 	fmt.Fprintln(output, "  blender-box setup inspect|install|remove --platform windows --state-root PATH [--apply] [--json]")
+	fmt.Fprintln(output, "  blender-box setup ssh --platform windows --state-root PATH --installation ID [--remote-address CIDR,...] [--firewall-profile Domain,Private,Public] [--remove] [--apply --expected-plan SHA256] [--json]")
 	fmt.Fprintln(output, "  blender-box setup manifest --host-binary PATH --broker-launcher PATH --daemon-wheel PATH --source-commit SHA --daemon-source-commit SHA --patch-sha256 SHA --recipe-sha256 SHA --out PATH")
 	fmt.Fprintln(output, "  blender-box targets import NAME --file PATH [--replace] [--json]\n  blender-box targets list [--json]\n  blender-box targets show NAME [--json]\n  blender-box targets forget NAME [--json]")
 	fmt.Fprintln(output, "  blender-box linux check (--target PATH | --target-name NAME) [--json]\n  blender-box linux setup (--target PATH | --target-name NAME) --host-binary PATH [--apply] [--json]")
