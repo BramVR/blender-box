@@ -2239,6 +2239,20 @@ class HostInstallTests(unittest.TestCase):
 class PairingTests(unittest.TestCase):
     """The pair-and-run stages of host-install, through fake host, SSH and client boundaries."""
 
+    def test_pairing_address_accepts_supported_endpoints_and_refuses_unsafe_values(self):
+        for address in ("test-host.example", "192.0.2.1", "2001:db8::1234", "::1"):
+            with self.subTest(address=address):
+                commands = mock.Mock()
+                commands.run.return_value = ("hostname " + address + "\n").encode()
+                self.assertEqual(proof.ssh_address(commands, "test-alias"), address)
+        for output in (b"", b"hostname a\nhostname b\n", b"hostname 2001:db8::zz\n",
+                       b"hostname ::1%test\n", b"hostname -unsafe\n", b"hostname host;command\n"):
+            with self.subTest(output=output):
+                commands = mock.Mock()
+                commands.run.return_value = output
+                with self.assertRaisesRegex(proof.ProofError, "pair-address-invalid"):
+                    proof.ssh_address(commands, "test-alias")
+
     def execute(self, fault=None):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)

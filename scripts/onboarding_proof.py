@@ -7,6 +7,7 @@ import contextlib
 import dataclasses
 import datetime
 import hashlib
+import ipaddress
 import json
 import os
 from pathlib import Path, PureWindowsPath
@@ -1400,7 +1401,13 @@ def host_unpair(commands, operator, pair_id, *, required):
 def ssh_address(commands, alias):
     lines = commands.run(["ssh", "-G", alias], timeout=30).decode("utf-8", errors="replace").splitlines()
     values = [line.split(" ", 1)[1] for line in lines if line.startswith("hostname ")]
-    require(len(values) == 1 and matches(r"[a-zA-Z0-9][a-zA-Z0-9.-]{0,252}", values[0]), "pair-address-invalid")
+    require(len(values) == 1, "pair-address-invalid")
+    if not matches(r"[a-zA-Z0-9][a-zA-Z0-9.-]{0,252}", values[0]):
+        try:
+            ipaddress.ip_address(values[0])
+        except ValueError:
+            raise ProofError("pair-address-invalid") from None
+        require("%" not in values[0], "pair-address-invalid")
     return values[0]
 
 

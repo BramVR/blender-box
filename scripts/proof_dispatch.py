@@ -28,7 +28,8 @@ def prepare(root, env):
     now = datetime.now(timezone.utc)
     # A job that only recovers and collects rebuilds the starting job's exact request, so collect binds its digest.
     expires = env.get("REQUEST_EXPIRES_AT") or (now + timedelta(hours=2)).strftime("%Y-%m-%dT%H:%M:%SZ")
-    model.require(now < model.utc(expires) <= now + timedelta(hours=2), "hosted-authorization-invalid")
+    # Retained requests may expire while an observer waits for approval; the controller fences new launches.
+    model.require(model.utc(expires) <= now + timedelta(hours=2), "hosted-authorization-invalid")
     request = model.ProofExecutionRequest.parse({"schema_version": 1, "repository": "BramVR/blender-box",
         "candidate_sha": env["CANDIDATE_SHA"], "driver_sha": env["DRIVER_SHA"], "variant": "host-install",
         "execution_id": env["PROOF_EXECUTION_ID"], "expires_at": expires})
