@@ -33,6 +33,10 @@ type fakeSSH struct {
 	runResult func([]string, []byte) ([]byte, error)
 }
 
+func fixedRunner(runner RunService) func(target.Target) RunService {
+	return func(target.Target) RunService { return runner }
+}
+
 type fakeRunService struct {
 	runIntent      orchestrator.RunIntent
 	statusRun      orchestrator.RunID
@@ -158,7 +162,7 @@ func TestStatusAndStopCommandsEmitExactVersionedResults(t *testing.T) {
 				"--run", string(runID),
 				"--timeout", "45s",
 				"--json",
-			}, strings.NewReader(""), &stdout, &stderr, Dependencies{Runner: service})
+			}, strings.NewReader(""), &stdout, &stderr, Dependencies{RunnerFor: fixedRunner(service)})
 			if exitCode != 0 || stderr.Len() != 0 {
 				t.Fatalf("exit = %d, stderr = %q", exitCode, stderr.String())
 			}
@@ -211,8 +215,8 @@ func TestRunCommandEmitsVersionedJSONAndPassesBoundedIntent(t *testing.T) {
 		"--timeout", "30m",
 		"--json",
 	}, strings.NewReader(""), &stdout, &stderr, Dependencies{
-		Runner: service,
-		Now:    func() time.Time { return now },
+		RunnerFor: fixedRunner(service),
+		Now:       func() time.Time { return now },
 		NewIdentities: func() (orchestrator.RunID, orchestrator.RequestID, string, error) {
 			return "bbx_01CLIRUNIDENTITY000000000000", "req_01CLIREQUESTIDENTITY000000", "ctl_cli-test", nil
 		},
@@ -256,7 +260,7 @@ func TestPlanValidatesCaptureRequestsWithoutHostContact(t *testing.T) {
 
 	exitCode := Run(context.Background(), []string{
 		"plan", "--target", targetPath, "--payload", payloadPath, "--json",
-	}, strings.NewReader(""), &stdout, &stderr, Dependencies{Runner: orchestrator.New(host, t.TempDir())})
+	}, strings.NewReader(""), &stdout, &stderr, Dependencies{RunnerFor: fixedRunner(orchestrator.New(host, t.TempDir()))})
 
 	if exitCode != 0 || stderr.Len() != 0 || host.calls != 0 {
 		t.Fatalf("exit = %d, stderr = %q, host calls = %d", exitCode, stderr.String(), host.calls)
@@ -294,7 +298,7 @@ func TestDoctorReportsUnsupportedRequestedCapture(t *testing.T) {
 
 	exitCode := Run(context.Background(), []string{
 		"doctor", "--target", targetPath, "--payload", payloadPath, "--json",
-	}, strings.NewReader(""), &stdout, &stderr, Dependencies{Runner: orchestrator.New(host, t.TempDir())})
+	}, strings.NewReader(""), &stdout, &stderr, Dependencies{RunnerFor: fixedRunner(orchestrator.New(host, t.TempDir()))})
 
 	if exitCode != 1 || host.calls != 1 {
 		t.Fatalf("exit = %d, host calls = %d, stderr = %q", exitCode, host.calls, stderr.String())
@@ -344,7 +348,7 @@ func TestRunEvidencePreflightFailureDoesNotAttemptStatusRecovery(t *testing.T) {
 	exitCode := Run(context.Background(), []string{
 		"run", "--target", targetPath, "--payload", payloadPath, "--evidence-dir", evidenceDir, "--json",
 	}, strings.NewReader(""), &stdout, &stderr, Dependencies{
-		Runner: service,
+		RunnerFor: fixedRunner(service),
 		NewIdentities: func() (orchestrator.RunID, orchestrator.RequestID, string, error) {
 			return "bbx_01PREFLIGHTRUNIDENTITY0000000", "req_01PREFLIGHTREQUESTIDENTITY00", "ctl_cli-test", nil
 		},
@@ -384,7 +388,7 @@ func TestFailedJSONRunEmitsRecoveredReceiptAndCleanup(t *testing.T) {
 	exitCode := Run(context.Background(), []string{
 		"run", "--target", targetPath, "--payload", payloadPath, "--json",
 	}, strings.NewReader(""), &stdout, &stderr, Dependencies{
-		Runner: service,
+		RunnerFor: fixedRunner(service),
 		NewIdentities: func() (orchestrator.RunID, orchestrator.RequestID, string, error) {
 			return runID, "req_01FAILEDJSONREQUESTIDENTITY0", "ctl_cli-test", nil
 		},
@@ -428,7 +432,7 @@ func TestEvidenceFailureCannotEmitCompleteJSONState(t *testing.T) {
 	exitCode := Run(context.Background(), []string{
 		"run", "--target", targetPath, "--payload", payloadPath, "--json",
 	}, strings.NewReader(""), &stdout, &stderr, Dependencies{
-		Runner: service,
+		RunnerFor: fixedRunner(service),
 		NewIdentities: func() (orchestrator.RunID, orchestrator.RequestID, string, error) {
 			return runID, "req_01EVIDENCEFAILIDENTITY00000", "ctl_cli-test", nil
 		},
@@ -795,7 +799,7 @@ func TestNamedUIPlanAndDoctorInspectCanonicalWindowsTarget(t *testing.T) {
 				}
 				return json.Marshal(capabilities)
 			}
-			dependencies := Dependencies{Runner: orchestrator.New(windows.NewAdapter(ssh), root)}
+			dependencies := Dependencies{RunnerFor: fixedRunner(orchestrator.New(windows.NewAdapter(ssh), root))}
 			for _, command := range []string{"plan", "doctor"} {
 				var stdout, stderr bytes.Buffer
 				code := Run(context.Background(), append(append([]string{command}, selector...), "--payload", payloadPath, "--json"), strings.NewReader(""), &stdout, &stderr, dependencies)
@@ -882,7 +886,7 @@ func TestRunJSONStopsAtWindowsStartAuthorityDrift(t *testing.T) {
 					}
 				}
 				var stdout, stderr bytes.Buffer
-				code := Run(context.Background(), []string{"run", "--target", targetPath, "--payload", cliPayload(t), "--evidence-dir", filepath.Join(t.TempDir(), "evidence"), "--json"}, strings.NewReader(""), &stdout, &stderr, Dependencies{Runner: orchestrator.New(windows.NewAdapter(ssh), root)})
+				code := Run(context.Background(), []string{"run", "--target", targetPath, "--payload", cliPayload(t), "--evidence-dir", filepath.Join(t.TempDir(), "evidence"), "--json"}, strings.NewReader(""), &stdout, &stderr, Dependencies{RunnerFor: fixedRunner(orchestrator.New(windows.NewAdapter(ssh), root))})
 				want := []string{"check", "acquire", "stage", "start"}
 				if replay {
 					want = append(want, "start")
@@ -978,7 +982,7 @@ func TestMalformedWindowsStartCannotHideConflictingPin(t *testing.T) {
 					}
 					runner = orchestrator.New(windows.NewAdapter(ssh), root)
 					var stdout, stderr bytes.Buffer
-					code := Run(context.Background(), []string{"run", "--target", targetPath, "--payload", cliPayload(t), "--evidence-dir", filepath.Join(t.TempDir(), "evidence"), "--json"}, strings.NewReader(""), &stdout, &stderr, Dependencies{Runner: runner})
+					code := Run(context.Background(), []string{"run", "--target", targetPath, "--payload", cliPayload(t), "--evidence-dir", filepath.Join(t.TempDir(), "evidence"), "--json"}, strings.NewReader(""), &stdout, &stderr, Dependencies{RunnerFor: fixedRunner(runner)})
 					want := []string{"check", "acquire", "stage", "start"}
 					if replay {
 						want = append(want, "start")
