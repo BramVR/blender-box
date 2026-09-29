@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Let delayed pairing-proof observers recover and collect the original expired request, and accept IPv6 SSH endpoints when resolving the pairing address.
+- Prove pairing inside the `host-install` proof: preview SSH preparation, verify the offer digest, refuse a tampered offer, a forged offer and a wrong pinned host key, enroll twice with identical receipts, run the baseline Scenario through the paired target, revoke through the client, and require the revoked key to be refused while admin access and the pinned keys file survive; recovery from any pairing stage revokes host-locally and never replays enrollment.
+- Add the `pair-and-run` job to the Windows onboarding proof workflow, which recovers and collects the baseline job's execution and passes only when every pairing outcome and the settlement pass; the installer grant scope is now `host-install-pair-run-remove`.
 - Add host-local pairing commands `pair offer|enroll|revoke|status --state-root` and the `host pair-revoke` machine command: create-only offer, grant and tombstone records, one `restrict` line admitted into the keys file sshd resolves for the account, exact removal that preserves every other byte, byte-identical receipts on retry, and revocation fenced by host maintenance.
 - Add `setup ssh` preview, apply and remove for Windows OpenSSH: start sshd and set it Automatic when needed, create one owned inbound firewall rule only when no enabled rule admits the port, refuse when public-key authentication is off, and restore only what it changed.
 - Add the Windows pairing platform: elevated `sshd -T` resolution of the account's authorized keys file, descriptor checks sshd accepts, and a one-process keys-file replace that keeps the protected Administrators descriptor and verifies bytes and ACL after the write.

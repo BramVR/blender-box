@@ -11,8 +11,13 @@ import proof_controller as model
 proof = model.proof
 MAX_CHECKPOINT = 128 << 10
 MAX_REVISIONS = 128
-STAGES = {"bound", "install-released", "install-observed", "installed", "target-bound", "run-released",
-          "run-owned", "run-clean", "remove-released", "remove-observed", "removed"}
+STAGES = {"bound", "install-released", "install-observed", "installed", "target-bound", "pair-released", "paired",
+          "run-released", "run-owned", "run-clean", "unpair-released", "unpaired", "remove-released", "remove-observed",
+          "removed"}
+PAIRING = ("pair_id", "offer_sha256", "intent_sha256")
+PAIRED = PAIRING + ("receipt_sha256", "paired_sha256")
+WINDOWS_FIELDS = ("ssh_user", "interactive_user", "work_root", "task_name", "blender_executable",
+                  "session_broker_executable", "host_executable")
 
 
 def exact(value, fields):
@@ -121,16 +126,57 @@ def validate_observation(value, selected, operator, *, terminal=None):
         model.require(value.get("state") == terminal, "installation-unsettled")
 
 
-def target_fingerprint(raw):
-    target = proof.windows_target(model.document(raw, version=2))
-    fields = ("ssh_user", "interactive_user", "work_root", "task_name", "blender_executable",
-              "session_broker_executable", "host_executable")
-    normalized = {"schema_version": 2, "platform": "windows", "ssh_alias": target["ssh_alias"],
-                  "windows": {key: target[key] for key in fields}}
+def go_fingerprint(normalized):
+    # Go's Target.Fingerprint hashes json.Marshal output in struct declaration order with HTML escaping.
     encoded = json.dumps(normalized, separators=(",", ":"), ensure_ascii=False)
     for character in ("&", "<", ">", "\u2028", "\u2029"):
         encoded = encoded.replace(character, "\\u" + format(ord(character), "04x"))
     return proof.digest(b"blender-box-target-v1\x00" + encoded.encode())
+
+
+def target_fingerprint(raw):
+    target = proof.windows_target(model.document(raw, version=2))
+    return go_fingerprint({"schema_version": 2, "platform": "windows", "ssh_alias": target["ssh_alias"],
+                           "windows": {key: target[key] for key in WINDOWS_FIELDS}})
+
+
+def paired_fingerprint(raw):
+    target = model.document(raw, version=3)
+    exact(target, ("schema_version", "platform", "ssh", "windows"))
+    exact(target["ssh"], ("host", "port", "user", "host_public_key", "client_public_key_hash"))
+    exact(target["windows"], WINDOWS_FIELDS)
+    model.require(target["platform"] == "windows", "original-target-changed")
+    return go_fingerprint({"schema_version": 3, "platform": "windows",
+                           "ssh": {key: target["ssh"][key] for key in
+                                   ("host", "port", "user", "host_public_key", "client_public_key_hash")},
+                           "windows": {key: target["windows"][key] for key in WINDOWS_FIELDS}})
+
+
+def validate_pairing(value, fields):
+    exact(value, fields)
+    model.require(proof.matches(proof.PAIR_ID, value["pair_id"])
+                  and all(proof.matches(proof.HASH, value[key]) for key in fields if key != "pair_id"),
+                  "installation-pairing-invalid")
+
+
+def paired_authority(stage, data):
+    """Whether this stage holds, or may hold, a host pairing grant that removal must not outlive."""
+    return stage in ("pair-released", "paired", "unpair-released") or (
+        stage.startswith("run-") and isinstance(data, dict) and "pairing" in data)
+
+
+def settled_prior(stage, data):
+    """Unwraps release and removal records down to the stage whose authority they carry."""
+    while stage.startswith(("remove", "unpair")):
+        stage, data = data["prior"]["stage"], data["prior"]["data"]
+    return stage, data
+
+
+def installed_record(stage, data):
+    stage, data = settled_prior(stage, data)
+    if stage == "installed":
+        return data
+    return data["install"] if stage == "target-bound" else data["target"]["install"]
 
 
 def validate_run(run):
@@ -170,21 +216,46 @@ def parse_stage(stage, data, anchor, operator):
         exact(data, ("install", "target_sha256"))
         parse_stage("installed", data["install"], anchor, operator)
         model.require(proof.matches(proof.HASH, data["target_sha256"]), "installation-target-invalid")
+    elif stage in ("pair-released", "paired"):
+        exact(data, ("target", "pairing"))
+        parse_stage("target-bound", data["target"], anchor, operator)
+        validate_pairing(data["pairing"], PAIRED if stage == "paired" else PAIRING)
     elif stage in ("run-released", "run-owned", "run-clean"):
-        exact(data, {"target"} | ({"run"} if stage != "run-released" else set())
+        # Pre-pairing chains carry no pairing; both shapes stay readable for retained executions.
+        paired = isinstance(data, dict) and "pairing" in data
+        exact(data, {"target"} | ({"pairing"} if paired else set()) | ({"run"} if stage != "run-released" else set())
               | ({"cleanup", "install_repeat"} if stage == "run-clean" else set()))
         parse_stage("target-bound", data["target"], anchor, operator)
+        if paired:
+            validate_pairing(data["pairing"], PAIRED)
         if stage != "run-released":
             validate_run(data["run"])
         if stage == "run-clean":
             proof.verify_cleanup({"cleanup": data["cleanup"]})
             model.require(data["install_repeat"] in ("pending", "released", "verified"), "installation-repeat-invalid")
+    elif stage in ("unpair-released", "unpaired"):
+        exact(data, ("prior", "revocation") if stage == "unpaired" else ("prior",))
+        prior = data["prior"]
+        exact(prior, ("stage", "data"))
+        model.require(prior["stage"] in ("pair-released", "paired", "run-clean"), "installation-run-unsettled")
+        parse_stage(prior["stage"], prior["data"], anchor, operator)
+        model.require(paired_authority(prior["stage"], prior["data"]), "installation-pairing-invalid")
+        model.require(prior["stage"] != "run-clean" or prior["data"]["install_repeat"] != "released",
+                      "installation-repeat-unsettled")
+        if stage == "unpaired":
+            revocation = data["revocation"]
+            exact(revocation, ("pair_id", "method"))
+            model.require(revocation["pair_id"] == prior["data"]["pairing"]["pair_id"]
+                          and revocation["method"] in ("client", "host-local", "never-granted")
+                          and (revocation["method"] != "never-granted" or prior["stage"] == "pair-released"),
+                          "installation-pairing-invalid")
     else:
         exact(data, {"prior", "intent"} | ({"observed"} if stage != "remove-released" else set())
               | ({"preserved", "remove_repeat"} if stage == "removed" else set()))
         prior = data["prior"]
         exact(prior, ("stage", "data"))
-        model.require(prior["stage"] in ("installed", "target-bound", "run-clean"), "installation-run-unsettled")
+        model.require(not paired_authority(prior["stage"], prior["data"]), "pairing-unrevoked")
+        model.require(prior["stage"] in ("installed", "target-bound", "run-clean", "unpaired"), "installation-run-unsettled")
         parse_stage(prior["stage"], prior["data"], anchor, operator)
         model.require(prior["stage"] != "run-clean" or prior["data"]["install_repeat"] != "released",
                       "installation-repeat-unsettled")
@@ -194,8 +265,7 @@ def parse_stage(stage, data, anchor, operator):
         if stage == "removed":
             model.require(data["remove_repeat"] in ("pending", "released", "verified"), "installation-repeat-invalid")
             observation = data["preserved"]
-            original = prior["data"] if prior["stage"] == "installed" else (
-                prior["data"]["install"] if prior["stage"] == "target-bound" else prior["data"]["target"]["install"])
+            original = installed_record(prior["stage"], prior["data"])
             if original["observed"]["target_publication"]["status"] == "published":
                 model.require(observation.get("target_absent") is False, "installation-target-missing")
             exact(observation, operator.before)
@@ -217,16 +287,27 @@ def accept_transition(before, after, anchor, operator, invocation):
     old, new, left, right = before["stage"], after["stage"], before["data"], after["data"]
     allowed = {"bound": {"install-released"}, "install-released": {"install-observed"},
                "install-observed": {"install-observed", "installed"}, "installed": {"target-bound", "remove-released"},
-               "target-bound": {"run-released", "remove-released"}, "run-released": {"run-owned"},
-               "run-owned": {"run-owned", "run-clean"}, "run-clean": {"run-clean", "remove-released"},
-               "remove-released": {"remove-observed"}, "remove-observed": {"remove-observed", "removed"}, "removed": {"removed"}}
+               "target-bound": {"pair-released", "run-released", "remove-released"},
+               "pair-released": {"paired", "unpair-released"}, "paired": {"run-released", "unpair-released"},
+               "run-released": {"run-owned"}, "run-owned": {"run-owned", "run-clean"},
+               "run-clean": {"run-clean", "unpair-released", "remove-released"}, "unpair-released": {"unpaired"},
+               "unpaired": {"remove-released"}, "remove-released": {"remove-observed"},
+               "remove-observed": {"remove-observed", "removed"}, "removed": {"removed"}}
+    model.require(new != "remove-released" or not paired_authority(old, left), "pairing-unrevoked")
     model.require(new in allowed[old], "installation-transition-invalid")
-    if new == "remove-released":
+    if new in ("remove-released", "unpair-released"):
         model.require(right["prior"] == {"stage": old, "data": left}, "installation-authority-changed")
+    elif new == "unpaired":
+        model.require(right["prior"] == left["prior"], "installation-authority-changed")
     elif new == "target-bound":
         model.require(right["install"] == left, "installation-authority-changed")
-    elif new == "run-released":
+    elif new == "pair-released":
         model.require(right["target"] == left, "installation-authority-changed")
+    elif new == "paired":
+        model.require(right["target"] == left["target"]
+                      and {key: right["pairing"][key] for key in PAIRING} == left["pairing"], "installation-authority-changed")
+    elif new == "run-released":
+        model.require(right == ({"target": left} if old == "target-bound" else left), "installation-authority-changed")
     elif old != "bound":
         for key, value in left.items():
             if key in ("install_repeat", "remove_repeat"):
@@ -255,7 +336,7 @@ def retained_operator(job, files, *, control=None):
     runtime = files.read(root / "inputs/runtime-manifest.json", 128 << 10)
     model.require(proof.digest(operator_raw) == manifest["files"]["operator.json"]
                   and proof.digest(runtime) == manifest["files"]["runtime-manifest.json"], "original-inputs-unavailable")
-    return proof.InstallOperator.from_document(model.document(operator_raw), job.request.candidate_sha, runtime)
+    return proof.InstallOperator.from_document(model.document(operator_raw), job.request.candidate_sha, runtime, retained=True)
 
 
 def read_chain(control, job, anchor, files):
@@ -306,10 +387,8 @@ def read_run(job, files):
 
 
 def protected_references(record, job, files, *, operator=None):
-    stage, data = record["stage"], record["data"]
-    if stage.startswith("remove"):
-        stage, data = data["prior"]["stage"], data["prior"]["data"]
-    if stage == "target-bound" or stage.startswith("run-"):
+    stage, data = settled_prior(record["stage"], record["data"])
+    if stage in ("target-bound", "pair-released", "paired") or stage.startswith("run-"):
         target = data if stage == "target-bound" else data["target"]
         raw = files.read(job.output / "private/target.json", 64 << 10)
         model.require(proof.digest(raw) == target["target_sha256"]
@@ -322,9 +401,15 @@ def protected_references(record, job, files, *, operator=None):
         model.require(actual == expected, "original-target-changed")
         model.require(proof.digest(files.read(job.output / "private/blender-box", 128 << 20))
                       == job.expected_client_sha256, "client-artifact-mismatch")
+        fingerprint = target_fingerprint(raw)
+        pairing = data.get("pairing") if stage != "target-bound" else None
+        if pairing and "paired_sha256" in pairing:
+            paired = files.read(job.output / "private/paired-target.json", 64 << 10)
+            model.require(proof.digest(paired) == pairing["paired_sha256"], "original-target-changed")
+            fingerprint = paired_fingerprint(paired)
     if stage in ("run-owned", "run-clean"):
         model.require(read_run(job, files) == data["run"]
-                      and data["run"]["journal"]["target_fingerprint"] == target_fingerprint(raw)
+                      and data["run"]["journal"]["target_fingerprint"] == fingerprint
                       and data["run"]["journal"]["claim"]["task_name"] == actual["task_name"], "original-run-changed")
 
 
@@ -458,9 +543,34 @@ class Installation:
         self.advance("target-bound", {"install": self.data, "target_sha256": proof.digest(raw)})
         return actual
 
+    def pair(self, report, client, payload):
+        model.require(self.stage == "target-bound", "installation-transition-invalid")
+        target = self.data
+        pairing = proof.pair_client(self.commands, self.operator, client, report, payload,
+                                    lambda released: self.advance("pair-released", {"target": target, "pairing": released}))
+        self.advance("paired", {"target": target, "pairing": pairing})
+        return ["--target-name", proof.PAIR_TARGET]
+
+    def unpair(self, report, client):
+        """Revokes a completed pairing through the client; recover() converges every other pairing stage."""
+        if self.stage not in ("paired", "run-clean") or not paired_authority(self.stage, self.data):
+            return
+        prior = {"stage": self.stage, "data": self.data}
+        self.advance("unpair-released", {"prior": prior})
+        revocation = proof.unpair_client(self.commands, self.operator, client, prior["data"]["pairing"], report)
+        self.advance("unpaired", {"prior": prior, "revocation": revocation})
+
+    def converge_pairing(self):
+        if self.stage != "unpair-released":
+            self.advance("unpair-released", {"prior": {"stage": self.stage, "data": self.data}})
+        prior = self.data["prior"]
+        pair_id = prior["data"]["pairing"]["pair_id"]
+        method = proof.host_unpair(self.commands, self.operator, pair_id, required=prior["stage"] != "pair-released")
+        self.advance("unpaired", {"prior": prior, "revocation": {"pair_id": pair_id, "method": method}})
+
     def release_run(self):
-        model.require(self.stage == "target-bound", "installation-run-unsettled")
-        self.advance("run-released", {"target": self.data})
+        model.require(self.stage in ("target-bound", "paired"), "installation-run-unsettled")
+        self.advance("run-released", {"target": self.data} if self.stage == "target-bound" else self.data)
 
     def own_run(self):
         model.require(not self.checkpoints.broken, "installation-ack-unavailable")
@@ -470,18 +580,20 @@ class Installation:
         if self.stage == "run-clean":
             model.require(run == self.data["run"], "original-run-changed")
         elif self.stage == "run-released" or run != self.data["run"]:
-            self.advance("run-owned", {"target": self.data["target"], "run": run})
+            authority = {key: value for key, value in self.data.items() if key in ("target", "pairing")}
+            self.advance("run-owned", {**authority, "run": run})
         protected_references(self.checkpoints.latest, self.job, self.files)
         return run
 
     def cleanup_run(self, original_result=None):
         original = self.own_run()
+        selector = (["--target-name", proof.PAIR_TARGET] if "pairing" in self.data
+                    else ["--target", self.job.output / "private/target.json"])
         records = []
         for operation in ("status", "stop", "status"):
             self.own_run()
-            record = self.commands.json([self.job.output / "private/blender-box", operation, "--target",
-                self.job.output / "private/target.json", "--run", original["run_id"], "--timeout", "60s", "--json"],
-                timeout=100, recovery=True)
+            record = self.commands.json([self.job.output / "private/blender-box", operation, *selector,
+                "--run", original["run_id"], "--timeout", "60s", "--json"], timeout=100, recovery=True)
             pinned = self.own_run()
             expected = {**original["journal"]["claim"], "session_id": pinned["session"].get("record", {}).get("session_id")}
             model.require(proof.Fence.parse(record, require_session=False) == proof.Fence.parse(expected, require_session=False),
@@ -494,7 +606,8 @@ class Installation:
         return cleanup
 
     def remove(self):
-        model.require(self.stage in ("installed", "target-bound", "run-clean"), "installation-run-unsettled")
+        model.require(not paired_authority(self.stage, self.data), "pairing-unrevoked")
+        model.require(self.stage in ("installed", "target-bound", "run-clean", "unpaired"), "installation-run-unsettled")
         ids = self.checkpoints.anchor["operations"]
         preview = proof.installer_call(self.commands, self.operator, "remove", operation_id=ids["remove"], recovery=True)
         model.require(preview["state"] == "installed", "installer-remove-preview-mismatch")
@@ -561,7 +674,9 @@ class Installation:
             self.cleanup_run()
         if self.stage == "run-clean" and self.data["install_repeat"] == "released":
             self.repeat("install", send=False)
-        if self.stage in ("installed", "target-bound", "run-clean"):
+        if paired_authority(self.stage, self.data):
+            self.converge_pairing()
+        if self.stage in ("installed", "target-bound", "run-clean", "unpaired"):
             self.remove()
         elif self.stage in ("remove-released", "remove-observed"):
             self.finish_removal()

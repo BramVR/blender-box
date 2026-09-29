@@ -125,8 +125,8 @@ def baseline_report(value, request, expected_client):
             and value["proof"] == "windows-onboarding-" + request.variant and value["execution"] == "hosted"
             and value["candidate_sha"] == request.candidate_sha and value["driver_sha"] == request.driver_sha
             and value["status"] in ("pass", "fail")
-            and value["not_exercised"] == list(proof.WindowsProofHost.not_exercised) + (
-                list(proof.INSTALL_NOT_EXERCISED) if installing else []), "collect-report-invalid")
+            and value["not_exercised"] == list(proof.INSTALL_NOT_EXERCISED if installing
+                                               else proof.WindowsProofHost.not_exercised), "collect-report-invalid")
     if installing:
         installation = value["installation"]
         require(isinstance(installation, dict) and set(installation) == {"installation_id", "state"}
@@ -135,8 +135,8 @@ def baseline_report(value, request, expected_client):
         # Settlement carries private installer tokens; the public outcome omits it as write_outcome does.
         value = {key: item for key, item in value.items() if key != "installation_settlement"}
     outcomes = value["outcomes"]
-    require(isinstance(outcomes, dict) and set(outcomes) == set(proof.REQUIRED + (proof.INSTALL_REQUIRED if installing else ())),
-            "collect-report-invalid")
+    required = proof.REQUIRED + (proof.INSTALL_REQUIRED + proof.PAIR_REQUIRED if installing else ())
+    require(isinstance(outcomes, dict) and set(outcomes) == set(required), "collect-report-invalid")
     for outcome in outcomes.values():
         require(isinstance(outcome, dict) and set(outcome) == {"status", "code"}
                 and outcome["status"] in ("pass", "fail", "not-run")
