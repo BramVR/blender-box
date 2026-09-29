@@ -146,9 +146,11 @@ func displayFingerprint(publicKey string) string {
 }
 
 // accessState derives the pairing's state from the two create-only records and the observed line.
-func accessState(tombstoned bool, exact int) string {
+// accessState derives a grant's state; a stray copy of the key or marker on another line is a
+// conflict, because the key may still authenticate whatever the exact line says.
+func accessState(tombstoned bool, exact int, foreign bool) string {
 	switch {
-	case exact > 1:
+	case exact > 1 || foreign:
 		return "conflict"
 	case !tombstoned && exact == 0:
 		return "granting"
@@ -375,7 +377,7 @@ func (h Host) Enroll(ctx context.Context, trusted TrustedIntent, apply bool) (En
 			return err
 		}
 		if exact, _, _ := scanKeys(after.Bytes, grant.Line, grant.Receipt.PublicKey, grant.PairID); exact != 1 {
-			return fmt.Errorf("pairing line not verified after write: %s", accessState(false, exact))
+			return fmt.Errorf("pairing line not verified after write: %s", accessState(false, exact, false))
 		}
 		result.KeysSHA256After = after.SHA
 		return nil
@@ -476,8 +478,8 @@ func (h Host) Revoke(ctx context.Context, pairID, clientKeyHash, source string, 
 		if err != nil {
 			return RevokeResult{}, err
 		}
-		exact, _, _ := scanKeys(keys.Bytes, grant.Line, grant.Receipt.PublicKey, grant.PairID)
-		result.State = accessState(tombstoned, exact)
+		exact, foreignKey, foreignMarker := scanKeys(keys.Bytes, grant.Line, grant.Receipt.PublicKey, grant.PairID)
+		result.State = accessState(tombstoned, exact, foreignKey || foreignMarker)
 		result.KeysSHA256Before = keys.SHA
 		return result, nil
 	}
@@ -591,8 +593,8 @@ func (h Host) Status(ctx context.Context, pairID string) ([]GrantView, error) {
 		if err != nil {
 			return nil, err
 		}
-		exact, _, _ := scanKeys(keys.Bytes, grant.Line, grant.Receipt.PublicKey, grant.PairID)
-		view := GrantView{1, id, accessState(tombstoned, exact), grant.InstallationID, grant.Login, grant.KeysFile, displayFingerprint(grant.Receipt.PublicKey), grant.Granted, nil}
+		exact, foreignKey, foreignMarker := scanKeys(keys.Bytes, grant.Line, grant.Receipt.PublicKey, grant.PairID)
+		view := GrantView{1, id, accessState(tombstoned, exact, foreignKey || foreignMarker), grant.InstallationID, grant.Login, grant.KeysFile, displayFingerprint(grant.Receipt.PublicKey), grant.Granted, nil}
 		if tombstoned {
 			requested := tomb.Requested
 			view.Revoked = &requested

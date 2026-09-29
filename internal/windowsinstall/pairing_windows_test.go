@@ -141,4 +141,22 @@ func TestNativeKeysReplaceKeepsTheProtectedAdministratorsDACL(t *testing.T) {
 			t.Fatalf("temp file left behind: %s", entry.Name())
 		}
 	}
+
+	interrupted := tempRoot(t)
+	backup := filepath.Join(interrupted, ".blender-box-0123456789abcdef0123456789abcdef.bak")
+	if err := os.WriteFile(backup, []byte(initial), 0600); err != nil {
+		t.Fatal(err)
+	}
+	orphaned := filepath.Join(interrupted, "administrators_authorized_keys")
+	platform = pairingPlatform{keys: nativeKeys{}, adminKeysFile: orphaned}
+	missing, err = platform.ReadKeys(ctx, orphaned)
+	if err != nil || missing.Exists {
+		t.Fatalf("orphaned missing: %+v err=%v", missing, err)
+	}
+	if err := platform.ReplaceKeys(ctx, missing, []byte("k\n")); err == nil || !strings.Contains(err.Error(), ".bak") {
+		t.Fatalf("created a keys file beside an interrupted backup: %v", err)
+	}
+	if _, err := os.Stat(orphaned); !os.IsNotExist(err) {
+		t.Fatalf("keys file created beside an interrupted backup: %v", err)
+	}
 }

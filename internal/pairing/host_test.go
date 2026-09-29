@@ -491,3 +491,20 @@ func TestRevokeRefusesWhileTheKeyRemainsOnAnotherLine(t *testing.T) {
 		t.Fatalf("revoke with an edited copy = %+v, %v", result, err)
 	}
 }
+
+func TestStatusReportsConflictWhileAStrayCopyOfTheKeyRemains(t *testing.T) {
+	h, platform, _, trusted := hostFixture(t)
+	if _, err := h.Enroll(context.Background(), trusted, true); err != nil {
+		t.Fatal(err)
+	}
+	line := lineFor(t, trusted)
+	platform.files[adminKeysPath] = []byte(strings.Replace(string(platform.files[adminKeysPath]), line+"\r\n", line+" \r\n", 1))
+	views, err := h.Status(context.Background(), "pair-1")
+	if err != nil || len(views) != 1 || views[0].State != "conflict" {
+		t.Fatalf("status with a stray copy = %+v, %v", views, err)
+	}
+	preview, err := h.Revoke(context.Background(), "pair-1", "", "host-local", false)
+	if err != nil || preview.State != "conflict" {
+		t.Fatalf("revoke preview with a stray copy = %+v, %v", preview, err)
+	}
+}

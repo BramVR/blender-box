@@ -174,6 +174,8 @@ if($exists){
  if($before.sha -cne $r.expected_sha){throw 'KEYS_CHANGED: keys file bytes changed'}
  $security.SetSecurityDescriptorSddlForm($before.sddl)
 }else{
+ $left=@(Get-ChildItem -Force -LiteralPath ([IO.Path]::GetDirectoryName($path)) -Filter '.blender-box-*.bak' -ErrorAction Stop)
+ if($left.Count -gt 0){throw ('an interrupted keys-file replace left '+$left[0].FullName+'; restore it as '+$path+' before pairing')}
  $security.SetSecurityDescriptorSddlForm($r.new_security)
 }
 $bytes=[Convert]::FromBase64String($r.contents_b64)
@@ -186,7 +188,7 @@ try{
  if($exists){
   try{[IO.File]::Replace($tmp,$path,$bak)}catch{
    if(-not (Test-Path -LiteralPath $path) -and (Test-Path -LiteralPath $bak)){[IO.File]::Move($bak,$path)}
-   throw
+   throw ('keys-file replace failed; original kept at '+$path+' or '+$bak+': '+$_.Exception.Message)
   }
   Remove-Item -LiteralPath $bak -Force
  }else{[IO.File]::Move($tmp,$path)}
