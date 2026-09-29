@@ -267,6 +267,40 @@ class LinuxQualificationLifecycleTests(unittest.TestCase):
         native.linux_observe(self.intent, self.files, self.ops)
         self.assertTrue(self.files.exists(self.intent.root / "initiator-disconnected.json"))
 
+    def test_case_exiting_during_observation_is_not_reported_unavailable(self):
+        root = self.intent.root
+        receipt = native.NativeFixtureReceipt(self.intent.digest, self.owner)
+        self.files.publish(root / "native.json", model.proof.canonical(asdict(receipt)))
+        self.files.publish(root / "authorization.json", model.proof.canonical(
+            native.linux_release(self.intent, receipt) | {"native_receipt": asdict(receipt)}))
+        action_root = self.jobs / "qualification" / self.intent.value["qualification_id"]
+        action_root.mkdir(parents=True, mode=0o700)
+        action_root.parent.chmod(0o700)
+        action = model.proof.canonical({"schema_version": 1, "intent_sha256": self.intent.digest,
+                                        "case": "uid-confinement", "observations": {}})
+        self.files.publish(action_root / "action.json", action)
+        self.files.publish(root / "result.json", model.proof.canonical({"schema_version": 1,
+            "intent_sha256": self.intent.digest, "native_sha256": model.proof.digest(model.proof.canonical(asdict(receipt))),
+            "result": {"status": "pass", "case": "uid-confinement", "observations_sha256": model.proof.digest(action)}}))
+        exited = [False]
+        self.ops.whole_empty.side_effect = lambda: exited[0]
+        self.ops.unit.side_effect = lambda: (native.UnitState("inactive", 0, "", "") if exited[0] else
+                                             native.UnitState("active", self.owner.parent_pid, self.owner.invocation_id, native.UNIT_CGROUP))
+        def leader_gone(pid, *, tree_empties):
+            if pid == self.owner.parent_pid:
+                return native.Process(pid, 1, self.owner.supervisor_start, native.UNIT_CGROUP)
+            exited[0] = tree_empties
+            raise FileNotFoundError()
+        self.ops.process.side_effect = lambda pid: leader_gone(pid, tree_empties=False)
+        exiting = native.linux_observe(self.intent, self.files, self.ops)
+        self.assertEqual((exiting["phase"], exiting["result"], exiting["local_termination"]),
+                         ("released", "pending", "unknown"))
+        self.assertFalse(self.files.exists(root / "settled.json"))
+        self.ops.process.side_effect = lambda pid: leader_gone(pid, tree_empties=True)
+        settled = native.linux_observe(self.intent, self.files, self.ops)
+        self.assertEqual((settled["phase"], settled["result"], settled["local_termination"]),
+                         ("settled", "pass", "proven"))
+
     @unittest.skipUnless(hasattr(select, "poll"), "Linux channel polling")
     def test_initiator_channel_wait_requires_reader_loss(self):
         reader, writer = os.pipe()
