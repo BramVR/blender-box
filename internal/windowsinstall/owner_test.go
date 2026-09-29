@@ -505,9 +505,12 @@ func TestExecutionLostWorkerResultSettlesOnlyWithoutPendingTaskMutation(t *testi
 		{"install", "before-create:task", "unknown", "held"},
 		{"remove", "after-delete:runtime/", "settled", "released"},
 		{"remove", "before-delete:task", "unknown", "held"},
+		{"install", "inspect", "unknown", "held"},
+		{"install", "finished", "unknown", "held"},
+		{"remove", "finished", "unknown", "held"},
 	} {
 		t.Run(tc.operation+" "+tc.interrupt, func(t *testing.T) {
-			owner, _, request := ownerFixture(t)
+			owner, machine, request := ownerFixture(t)
 			if tc.operation == "remove" {
 				if _, err := owner.Execute(context.Background(), request); err != nil {
 					t.Fatal(err)
@@ -524,7 +527,10 @@ func TestExecutionLostWorkerResultSettlesOnlyWithoutPendingTaskMutation(t *testi
 					}
 					return nil
 				}
-				defer func() { owner.installer.checkpoint = nil }()
+				if tc.interrupt == "inspect" {
+					machine.inspectionErr = context.DeadlineExceeded
+				}
+				defer func() { owner.installer.checkpoint, machine.inspectionErr = nil, nil }()
 				_, exit, _ := run(ctx, record, publish)
 				return workerOutcome{}, exit, context.DeadlineExceeded
 			}
