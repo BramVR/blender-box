@@ -506,6 +506,7 @@ func TestExecutionLostWorkerResultSettlesOnlyWithoutPendingTaskMutation(t *testi
 		{"remove", "after-delete:runtime/", "settled", "released"},
 		{"remove", "before-delete:task", "unknown", "held"},
 		{"install", "inspect", "unknown", "held"},
+		{"remove", "inspect", "settled", "released"},
 		{"install", "finished", "unknown", "held"},
 		{"remove", "finished", "unknown", "held"},
 	} {
