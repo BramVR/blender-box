@@ -59,8 +59,8 @@ func TestSetupPreservesPartialResultAndInstallationOnTargetCollision(t *testing.
 	var out, stderr bytes.Buffer
 	code := Run(context.Background(), []string{"setup", "install", "--platform", "windows", "--state-root", `C:\Box`, "--apply", "--target-out", destination, "--json"}, strings.NewReader(""), &out, &stderr, Dependencies{Setup: executor})
 	var result struct {
-		State             string            `json:"state"`
-		TargetPublication targetPublication `json:"target_publication"`
+		State             string                     `json:"state"`
+		TargetPublication windowsinstall.Publication `json:"target_publication"`
 	}
 	if err := json.Unmarshal(out.Bytes(), &result); err != nil {
 		t.Fatal(err)

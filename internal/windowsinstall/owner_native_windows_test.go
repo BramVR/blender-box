@@ -247,14 +247,14 @@ func TestNativeKeeperLossKillsOwnedTreeWithoutPublishingTerminalProof(t *testing
 		t.Fatal(err)
 	}
 	defer outer.close()
-	defer outer.terminateAndWait()
+	defer outer.settle(time.Now().Add(nativeCleanupTimeout))
 	null, err := os.OpenFile(os.DevNull, os.O_RDWR, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer null.Close()
 	executable, _ := os.Executable()
-	keeper, err := outer.start(executable, ownerNativeArgs("keeper-loss", directory), environment, [3]*os.File{null, null, null})
+	keeper, err := outer.startFlags(executable, ownerNativeArgs("keeper-loss", directory), environment, [3]*os.File{null, null, null}, 0)
 	if keeper.Info.Process == 0 {
 		t.Fatal(err)
 	}

@@ -50,11 +50,6 @@ func WithSetupMaintenance(ctx context.Context, root string, own *SetupClaim, act
 	return action()
 }
 
-// InspectMaintenance reads authority without creating lock files or directories.
-func InspectMaintenance(root string) error {
-	return InspectSetupMaintenance(root, nil)
-}
-
 func InspectSetupMaintenance(root string, own *SetupClaim) error {
 	if _, err := os.Lstat(root); os.IsNotExist(err) {
 		return nil

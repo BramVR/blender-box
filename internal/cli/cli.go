@@ -36,12 +36,19 @@ type Dependencies struct {
 	Setup         windowsinstall.Executor
 	SSHPreparer   windowsinstall.SSHPreparer
 	Pairing       func(platform string) (pairing.Platform, error)
-	SSH           windows.SetupSSH
-	Runner        RunService
+	SSH           windows.SSH
 	RunnerFor     func(target.Target) RunService
 	Now           func() time.Time
 	NewIdentities func() (orchestrator.RunID, orchestrator.RequestID, string, error)
 	Host          HostService
+	PairRemote    pairing.Remote
+}
+
+func (dependencies Dependencies) runService(selected target.Target) RunService {
+	if dependencies.RunnerFor == nil {
+		return nil
+	}
+	return dependencies.RunnerFor(selected)
 }
 
 func Run(ctx context.Context, args []string, stdin io.Reader, stdout io.Writer, stderr io.Writer, dependencies Dependencies) int {
@@ -96,6 +103,7 @@ func printUsage(output io.Writer) {
 	fmt.Fprintln(output, "  blender-box pair offer --state-root PATH --installation ID --address HOST [--expires 30m] --out PATH [--json]")
 	fmt.Fprintln(output, "  blender-box pair enroll --state-root PATH --intent PATH --trust-intent SHA256 [--apply --out PATH] [--json]")
 	fmt.Fprintln(output, "  blender-box pair revoke --state-root PATH --pair PAIR_ID [--apply] [--json]\n  blender-box pair status --state-root PATH [--pair PAIR_ID] [--json]")
+	fmt.Fprintln(output, "  blender-box pair revoke NAME [--timeout 2m] [--json]\n  blender-box pair forget NAME [--keep-remote-access] [--json]")
 	fmt.Fprintln(output, "  blender-box setup inspect|install|remove --platform windows --state-root PATH [--apply] [--json]")
 	fmt.Fprintln(output, "  blender-box setup ssh --platform windows --state-root PATH --installation ID [--remote-address CIDR,...] [--firewall-profile Domain,Private,Public] [--remove] [--apply --expected-plan SHA256] [--json]")
 	fmt.Fprintln(output, "  blender-box setup manifest --host-binary PATH --broker-launcher PATH --daemon-wheel PATH --source-commit SHA --daemon-source-commit SHA --patch-sha256 SHA --recipe-sha256 SHA --out PATH")
@@ -135,10 +143,7 @@ func doctorCommand(ctx context.Context, args []string, stdout io.Writer, stderr 
 	if err != nil {
 		return fail(stderr, "load payload", err)
 	}
-	runner := dependencies.Runner
-	if runner == nil && dependencies.RunnerFor != nil {
-		runner = dependencies.RunnerFor(selected)
-	}
+	runner := dependencies.runService(selected)
 	if runner == nil {
 		return fail(stderr, "doctor", fmt.Errorf("Run service is unavailable"))
 	}
@@ -154,6 +159,9 @@ func doctorCommand(ctx context.Context, args []string, stdout io.Writer, stderr 
 		}
 	} else {
 		fmt.Fprintf(stdout, "Doctor: %s\n", result.Status)
+		for _, problem := range result.Host.Problems {
+			fmt.Fprintf(stdout, "%s (%s): %s Next: %s\n", problem.Class, problem.Check, problem.Message, problem.Next)
+		}
 	}
 	if result.Status != "pass" {
 		return 1
@@ -185,10 +193,7 @@ func planCommand(args []string, stdout io.Writer, stderr io.Writer, dependencies
 	if err != nil {
 		return fail(stderr, "load payload", err)
 	}
-	runner := dependencies.Runner
-	if runner == nil && dependencies.RunnerFor != nil {
-		runner = dependencies.RunnerFor(selected)
-	}
+	runner := dependencies.runService(selected)
 	if runner == nil {
 		return fail(stderr, "plan", fmt.Errorf("Run service is unavailable"))
 	}
@@ -225,7 +230,7 @@ func windowsSetupCommand(ctx context.Context, args []string, stdout io.Writer, s
 	if err != nil {
 		return fail(stderr, "load target", err)
 	}
-	result, err := windows.Setup(ctx, dependencies.SSH, selected, *hostBinary, *apply)
+	result, err := windows.Setup(selected, *hostBinary, *apply)
 	if err != nil {
 		return fail(stderr, "Windows setup", err)
 	}
@@ -316,10 +321,7 @@ func runCommand(ctx context.Context, args []string, stdout io.Writer, stderr io.
 	if err != nil {
 		return failRunResult(stdout, stderr, *asJSON, orchestrator.RunResult{SchemaVersion: 1, RunID: runID, State: orchestrator.StateFailed, Error: err.Error()}, err)
 	}
-	runner := dependencies.Runner
-	if runner == nil && dependencies.RunnerFor != nil {
-		runner = dependencies.RunnerFor(selected)
-	}
+	runner := dependencies.runService(selected)
 	if runner == nil {
 		err := fmt.Errorf("Run service is unavailable")
 		return failRunResult(stdout, stderr, *asJSON, orchestrator.RunResult{SchemaVersion: 1, RunID: runID, State: orchestrator.StateFailed, Error: err.Error()}, err)
@@ -395,10 +397,7 @@ func statusCommand(ctx context.Context, args []string, stdout io.Writer, stderr 
 	if err != nil {
 		return failRun(stderr, orchestrator.RunID(*runID), err)
 	}
-	runner := dependencies.Runner
-	if runner == nil && dependencies.RunnerFor != nil {
-		runner = dependencies.RunnerFor(selected)
-	}
+	runner := dependencies.runService(selected)
 	if runner == nil {
 		return failRun(stderr, orchestrator.RunID(*runID), fmt.Errorf("Run service is unavailable"))
 	}
@@ -439,10 +438,7 @@ func stopCommand(ctx context.Context, args []string, stdout io.Writer, stderr io
 	if err != nil {
 		return failRun(stderr, orchestrator.RunID(*runID), err)
 	}
-	runner := dependencies.Runner
-	if runner == nil && dependencies.RunnerFor != nil {
-		runner = dependencies.RunnerFor(selected)
-	}
+	runner := dependencies.runService(selected)
 	if runner == nil {
 		return failRun(stderr, orchestrator.RunID(*runID), fmt.Errorf("Run service is unavailable"))
 	}

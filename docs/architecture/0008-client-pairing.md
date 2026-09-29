@@ -34,7 +34,7 @@ Keys live under `credentials/<fingerprint>/id_ed25519` in the private user confi
 
 Retain the preparation and seed as private recovery material. Each globally published key has a durable intent naming it. An abrupt process exit can leave atomic-publication temporary copies beneath the original preparation or that intent's fingerprint directory. Those copies remain attributable to the pairing; their count is not bounded, and preparation does not sweep or delete credentials.
 
-The shared transport accepts one `target.Connection`. Alias connections retain operator configuration. Paired SSH and SCP use the same generated private configuration and verified key copy. Host-key trust, user and port are explicit. Agent, password, certificate, alternate config, proxy, multiplexing and forwarding fallback are disabled. A missing or changed key refuses before SSH or SCP starts. The temporary key copy and configuration belong to that invocation and are removed afterward.
+The shared transport accepts one `target.Connection`. Alias connections retain operator configuration. Paired SSH uses a generated private configuration and verified key copy. Host-key trust, user and port are explicit. Agent, password, certificate, alternate config, proxy, multiplexing and forwarding fallback are disabled. A missing or changed key refuses before SSH starts. The temporary key copy and configuration belong to that invocation and are removed afterward.
 
 The credential boundary does not claim isolation from hostile code running as the same operating-system user. It does not edit an operator's SSH configuration, known-hosts files, authorized keys or agent.
 
@@ -80,7 +80,7 @@ A future platform implements `pairing.Platform` (identity facts plus the keys-fi
 
 ## Verification
 
-Focused tests cover strict target parsing, alias schema compatibility, changed connection fields before Run recovery, local trust and retry behavior, secret-key checks, and both platform transport callers. Public CLI proof uses disposable keys and fake SSH/SCP processes. OpenSSH configuration parsing can be checked with `ssh -G` without contacting a host.
+Focused tests cover strict target parsing, alias schema compatibility, changed connection fields before Run recovery, local trust and retry behavior, secret-key checks, and both platform transport callers. Public CLI proof uses disposable keys and fake SSH processes. OpenSSH configuration parsing can be checked with `ssh -G` without contacting a host.
 
 Host tests use a fake platform with an in-memory keys file: trust mismatch, canceled and interrupted enrollment at every checkpoint, duplicate apply with identical receipts, foreign key and marker refusal, a concurrent unrelated edit, revocation under Run authority, and an interrupted revocation. Windows CI runs the native keys-file transaction on a temporary file with the protected Administrators descriptor. `setup ssh` runs against a fake service and firewall.
 

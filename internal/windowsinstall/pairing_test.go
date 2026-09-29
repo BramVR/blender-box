@@ -154,8 +154,9 @@ func authorityFixture(t *testing.T) (pairingPlatform, *fakeMachine, *fakeSSHD, s
 }
 
 func TestAuthorityRefusesWithoutElevationBeforeTouchingTheHost(t *testing.T) {
-	platform, _, sshd, root, id := authorityFixture(t)
+	platform, machine, sshd, root, id := authorityFixture(t)
 	sshd.result = sshdFacts{}
+	machine.inspectionErr = errors.New("installation inspected before the elevation gate")
 	_, err := platform.Authority(context.Background(), root, id)
 	if err == nil || !strings.Contains(err.Error(), "run from an elevated PowerShell on the host, or over your admin SSH channel") {
 		t.Fatalf("err=%v", err)

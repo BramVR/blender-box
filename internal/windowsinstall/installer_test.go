@@ -45,12 +45,6 @@ func (m *fakeMachine) inspect(_ context.Context, r Request) (Inspection, error) 
 func (m *fakeMachine) securePath(_ context.Context, path, _ string, missing bool) error {
 	return checkPath(path, missing)
 }
-func (m *fakeMachine) secureSealedPath(_ context.Context, path, _ string) error {
-	if err := checkPath(path, false); err != nil {
-		return err
-	}
-	return fakeSealed(path)
-}
 func (m *fakeMachine) sealPath(_ context.Context, path, _ string) error {
 	m.sealCalls = append(m.sealCalls, path)
 	return fakeSeal(path)
