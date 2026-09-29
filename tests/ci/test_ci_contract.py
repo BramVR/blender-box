@@ -46,6 +46,12 @@ class CIContractTests(unittest.TestCase):
         self.assertEqual(workflow.count("./scripts/ci all"), 2)
         self.assertEqual(workflow.count("fetch-depth: 0"), 4)
 
+    def test_windows_job_requires_the_native_keys_test_to_pass(self) -> None:
+        workflow = WORKFLOW.read_text(encoding="utf-8")
+
+        self.assertIn("-run '^TestNativeKeysReplaceKeepsTheProtectedAdministratorsDACL$' ./internal/windowsinstall/", workflow)
+        self.assertIn("grep -q -- '--- PASS: TestNativeKeysReplaceKeepsTheProtectedAdministratorsDACL'", workflow)
+
     def test_every_go_backed_job_installs_pinned_go(self) -> None:
         workflow = WORKFLOW.read_text(encoding="utf-8")
 
