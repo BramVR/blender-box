@@ -22,13 +22,16 @@ def prepare(root, env):
     model.require(0 < len(original) <= 64 << 10, "installer-config-invalid")
     operator = model.document(original)
     grant = operator.get("authorization", {})
-    model.require(grant.get("candidate_sha") == env["CANDIDATE_SHA"] and grant.get("scope") == "host-install-run-remove"
+    model.require(grant.get("candidate_sha") == env["CANDIDATE_SHA"] and grant.get("scope") == "host-install-pair-run-remove"
                   and grant.get("launch") is True and operator.get("fixture", {}).get("kind") == "dedicated"
                   and operator.get("fixture", {}).get("state") == "absent", "installer-not-authorized")
+    now = datetime.now(timezone.utc)
+    # A job that only recovers and collects rebuilds the starting job's exact request, so collect binds its digest.
+    expires = env.get("REQUEST_EXPIRES_AT") or (now + timedelta(hours=2)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    model.require(now < model.utc(expires) <= now + timedelta(hours=2), "hosted-authorization-invalid")
     request = model.ProofExecutionRequest.parse({"schema_version": 1, "repository": "BramVR/blender-box",
         "candidate_sha": env["CANDIDATE_SHA"], "driver_sha": env["DRIVER_SHA"], "variant": "host-install",
-        "execution_id": env["PROOF_EXECUTION_ID"],
-        "expires_at": (datetime.now(timezone.utc) + timedelta(hours=2)).strftime("%Y-%m-%dT%H:%M:%SZ")})
+        "execution_id": env["PROOF_EXECUTION_ID"], "expires_at": expires})
     connection = model.document(env["INSTALL_CONTROLLER_CONFIG"].encode())
     model.require(set(connection) == {"schema_version", "hostname", "user", "port"}
                   and type(connection["port"]) is int, "controller-connection-invalid")
@@ -51,7 +54,7 @@ def prepare(root, env):
                "installer_operator_sha256": proof.digest(original)}
     model.parse_command(proof.canonical(command))
     model.publish(root / "request.json", proof.canonical(command))
-    return request.execution_id
+    return request
 
 
 def receipt(raw, execution_id):
@@ -155,7 +158,7 @@ def main(argv=None):
     os.umask(0o077)
     try:
         if args.operation == "prepare":
-            prepare(args.directory.absolute(), os.environ)
+            print("expires_at=" + prepare(args.directory.absolute(), os.environ).expires_at)
             return 0
         if args.operation == "collect":
             return 0 if collect(args.directory.absolute()) else 1

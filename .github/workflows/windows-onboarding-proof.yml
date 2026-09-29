@@ -59,7 +59,7 @@ jobs:
           resolved=$(gh api "repos/$GITHUB_REPOSITORY/commits/$CANDIDATE_SHA" --jq .sha)
           [[ "$resolved" == "$CANDIDATE_SHA" ]]
           printf 'sha=%s\n' "$CANDIDATE_SHA" >> "$GITHUB_OUTPUT"
-          printf 'Approve candidate [%s](https://github.com/%s/commit/%s) for prepared fixture windows-onboarding-prepared-v1. Permitted operations are one owned install, baseline Run, and removal on the dedicated controller fixture and the declared named-target Run, each with exact recovery. Reruns are refused; dispatch a fresh approval.\n' "$CANDIDATE_SHA" "$GITHUB_REPOSITORY" "$CANDIDATE_SHA" >> "$GITHUB_STEP_SUMMARY"
+          printf 'Approve candidate [%s](https://github.com/%s/commit/%s) for prepared fixture windows-onboarding-prepared-v1. Permitted operations are one owned install, one client pairing with host-local offer, enrollment and revocation, a baseline Run through the paired target, and removal on the dedicated controller fixture, plus the declared named-target Run, each with exact recovery. Reruns are refused; dispatch a fresh approval.\n' "$CANDIDATE_SHA" "$GITHUB_REPOSITORY" "$CANDIDATE_SHA" >> "$GITHUB_STEP_SUMMARY"
 
   authorize:
     needs: candidate
@@ -90,11 +90,13 @@ jobs:
     name: baseline
     needs: [candidate, authorize]
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    timeout-minutes: 105
     environment: windows-onboarding-installer
     permissions:
       contents: read
       id-token: write
+    outputs:
+      expires_at: ${{ steps.bind.outputs.expires_at }}
     env:
       CANDIDATE_SHA: ${{ needs.candidate.outputs.sha }}
       DRIVER_SHA: ${{ github.workflow_sha }}
@@ -135,6 +137,7 @@ jobs:
         with:
           python-version: "3.12"
       - name: Bind protected fixture grant and dedicated controller trust
+        id: bind
         env:
           INSTALL_OPERATOR_CONFIG: ${{ secrets.ONBOARDING_INSTALL_OPERATOR_CONFIG }}
           INSTALL_CONTROLLER_CONFIG: ${{ secrets.ONBOARDING_INSTALL_CONTROLLER_CONFIG }}
@@ -142,7 +145,7 @@ jobs:
           INSTALL_CONTROLLER_KNOWN_HOSTS: ${{ secrets.ONBOARDING_INSTALL_CONTROLLER_KNOWN_HOSTS }}
         run: |
           set -euo pipefail
-          python3 driver/scripts/proof_dispatch.py prepare --directory "$RUNNER_TEMP/onboarding-proof"
+          python3 driver/scripts/proof_dispatch.py prepare --directory "$RUNNER_TEMP/onboarding-proof" >> "$GITHUB_OUTPUT"
       - name: Connect to the qualified persistent controller
         uses: tailscale/github-action@53acf823325fe9ca47f4cdaa951f90b4b0de5bb9 # v4.1.1
         with:
@@ -152,7 +155,7 @@ jobs:
           use-cache: false
           hostname: blender-box-proof-dispatch-${{ github.run_id }}
       - name: Dispatch the retained onboarding proof
-        timeout-minutes: 65
+        timeout-minutes: 80
         run: |
           set -euo pipefail
           python3 driver/scripts/proof_dispatch.py start --directory "$RUNNER_TEMP/onboarding-proof"
@@ -382,6 +385,104 @@ jobs:
           python3 - <<'PYTHON'
           import os, pathlib
           root = pathlib.Path(os.environ["RUNNER_TEMP"]) / "onboarding-host-install-proof"
+          for name in ("key", "known_hosts", "ssh-config", "operator.json"):
+              (root / name).unlink(missing_ok=True)
+          PYTHON
+
+  pair-and-run:
+    name: pair-and-run
+    needs: [candidate, authorize, baseline]
+    if: always() && needs.candidate.result == 'success' && needs.authorize.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    environment: windows-onboarding-installer
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      CANDIDATE_SHA: ${{ needs.candidate.outputs.sha }}
+      DRIVER_SHA: ${{ github.workflow_sha }}
+      PROOF_EXECUTION_ID: gha_${{ github.run_id }}_onboarding
+      REQUEST_EXPIRES_AT: ${{ needs.baseline.outputs.expires_at }}
+    steps:
+      - name: Reject reruns before installer authorization
+        env:
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+          REQUEST_REF: ${{ github.ref }}
+        run: |
+          set -euo pipefail
+          # proof-authority-start
+          [[ "$EVENT_NAME" == workflow_dispatch && "$REQUEST_ACTOR" == BramVR && "$RUN_ATTEMPT" == 1 ]] || exit 1
+          [[ "$GITHUB_REPOSITORY" == BramVR/blender-box ]] || exit 1
+          [[ "$CANDIDATE_SHA" =~ ^[0-9a-f]{40}$ && "$DRIVER_SHA" =~ ^[0-9a-f]{40}$ ]] || exit 1
+          [[ "$WORKFLOW_REF" == "$GITHUB_REPOSITORY/.github/workflows/windows-onboarding-proof.yml@$REQUEST_REF" ]] || exit 1
+          if [[ "$REQUEST_REF" != refs/heads/main ]]; then
+            [[ "$PREMERGE_REF" == refs/heads/* && "$REQUEST_REF" == "$PREMERGE_REF" ]] || exit 1
+            [[ "$DRIVER_SHA" == "$PREMERGE_DRIVER_SHA" && "$CANDIDATE_SHA" == "$PREMERGE_CANDIDATE_SHA" ]] || exit 1
+          fi
+          # proof-authority-end
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.workflow_sha }}
+          path: driver
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.candidate.outputs.sha }}
+          path: candidate
+          persist-credentials: false
+      - name: Verify both immutable checkouts
+        run: |
+          set -euo pipefail
+          [[ "$(git -C driver rev-parse HEAD)" == "$DRIVER_SHA" ]]
+          [[ "$(git -C candidate rev-parse HEAD)" == "$CANDIDATE_SHA" ]]
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      - name: Bind protected installer grant and dedicated controller trust
+        env:
+          INSTALL_OPERATOR_CONFIG: ${{ secrets.ONBOARDING_INSTALL_OPERATOR_CONFIG }}
+          INSTALL_CONTROLLER_CONFIG: ${{ secrets.ONBOARDING_INSTALL_CONTROLLER_CONFIG }}
+          INSTALL_CONTROLLER_KEY: ${{ secrets.ONBOARDING_INSTALL_CONTROLLER_KEY }}
+          INSTALL_CONTROLLER_KNOWN_HOSTS: ${{ secrets.ONBOARDING_INSTALL_CONTROLLER_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          python3 driver/scripts/proof_dispatch.py prepare --directory "$RUNNER_TEMP/onboarding-pair-and-run-proof"
+      - name: Connect to the qualified persistent controller
+        uses: tailscale/github-action@53acf823325fe9ca47f4cdaa951f90b4b0de5bb9 # v4.1.1
+        with:
+          oauth-client-id: ${{ secrets.ONBOARDING_INSTALL_TS_CLIENT_ID }}
+          audience: ${{ vars.ONBOARDING_INSTALL_TS_AUDIENCE }}
+          tags: tag:blender-box-install-dispatch
+          use-cache: false
+          hostname: blender-box-pair-dispatch-${{ github.run_id }}
+      - name: Recover the onboarding execution and require installer settlement
+        timeout-minutes: 20
+        run: |
+          set -euo pipefail
+          python3 driver/scripts/proof_dispatch.py recover --directory "$RUNNER_TEMP/onboarding-pair-and-run-proof"
+      - name: Collect and require every pairing outcome from the controller
+        if: always()
+        timeout-minutes: 10
+        run: |
+          set -euo pipefail
+          python3 driver/scripts/proof_dispatch.py collect --directory "$RUNNER_TEMP/onboarding-pair-and-run-proof"
+      - name: Upload the validated public pairing outcome
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: windows-onboarding-pair-and-run-${{ needs.candidate.outputs.sha }}
+          if-no-files-found: error
+          retention-days: 14
+          path: |
+            ${{ runner.temp }}/onboarding-pair-and-run-proof/public/receipt.json
+            ${{ runner.temp }}/onboarding-pair-and-run-proof/public/outcome.json
+      - name: Remove only this job's dispatch credentials
+        if: always()
+        run: |
+          python3 - <<'PYTHON'
+          import os, pathlib
+          root = pathlib.Path(os.environ["RUNNER_TEMP"]) / "onboarding-pair-and-run-proof"
           for name in ("key", "known_hosts", "ssh-config", "operator.json"):
               (root / name).unlink(missing_ok=True)
           PYTHON

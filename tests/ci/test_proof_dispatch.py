@@ -28,7 +28,7 @@ class DispatchTests(unittest.TestCase):
                     "INSTALL_CONTROLLER_CONFIG": json.dumps({"schema_version": 1, "hostname": "controller.invalid",
                                                             "user": "proof-control", "port": 22}),
                     "INSTALL_OPERATOR_CONFIG": json.dumps({"schema_version": 1,
-                        "authorization": {"candidate_sha": baseline.SHA, "scope": "host-install-run-remove", "launch": True},
+                        "authorization": {"candidate_sha": baseline.SHA, "scope": "host-install-pair-run-remove", "launch": True},
                         "fixture": {"kind": "dedicated", "state": "absent"}})}
 
     def receipt(self, **changes):
@@ -124,6 +124,16 @@ class DispatchTests(unittest.TestCase):
             with self.subTest(bad=bad), self.assertRaises(model.ControllerError):
                 dispatch.dispatch(self.root, "start", commands=Commands())
             self.assertFalse((self.root / "public/receipt.json").exists())
+
+    def test_observer_job_rebuilds_the_starting_request_from_its_expiry(self):
+        started = dispatch.prepare(self.root, self.env)
+        observer = self.root.parent / "observer"
+        self.assertEqual(dispatch.prepare(observer, self.env | {"REQUEST_EXPIRES_AT": started.expires_at}).digest, started.digest)
+        self.assertEqual((observer / "request.json").read_bytes(), (self.root / "request.json").read_bytes())
+        for expires in ("2000-01-01T00:00:00Z", "2999-01-01T00:00:00Z", "tomorrow"):
+            with self.subTest(expires=expires), self.assertRaises(model.ControllerError):
+                dispatch.prepare(self.root.parent / ("refused-" + expires[:4]), self.env | {"REQUEST_EXPIRES_AT": expires})
+            self.assertFalse((self.root.parent / ("refused-" + expires[:4])).exists())
 
     def test_unauthorized_rerun_or_wrong_grant_precedes_credential_files(self):
         for changes in ({"GITHUB_RUN_ATTEMPT": "2"}, {"CANDIDATE_SHA": "c" * 40}):

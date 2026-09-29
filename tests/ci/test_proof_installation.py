@@ -165,9 +165,12 @@ class InstallationTests(unittest.TestCase):
                     if "--apply" in remote:
                         latest = owner.latest()
                         wanted = {"install": ("install-released", "run-clean"), "remove": ("remove-released", "removed"),
-                                  "stop": ("install-observed", "remove-observed")}[operation]
+                                  "stop": ("install-observed", "remove-observed"), "enroll": ("pair-released",),
+                                  "revoke": ("unpair-released",)}[operation]
                         owner.assertIn(latest["stage"], wanted)
-                        owner.assertEqual(latest["invocation"], asdict(owner.base.service.invocation))
+                        # Host-local revocation is idempotent, so a recovery may finish an inherited unpair release.
+                        if operation != "revoke":
+                            owner.assertEqual(latest["invocation"], asdict(owner.base.service.invocation))
                         owner.mutations.append((operation, latest["stage"], latest["sequence"]))
                         if latest["stage"] == owner.fault_stage and owner.fault_boundary == "before-send":
                             raise baseline.Crash()
@@ -180,7 +183,7 @@ class InstallationTests(unittest.TestCase):
                 try:
                     result = super().run(args, **kwargs)
                     if owner.fault_boundary == "after-send" and owner.latest()["stage"] == owner.fault_stage:
-                        if operation in ("install", "remove", "run"):
+                        if operation in ("install", "remove", "run", "enroll"):
                             raise baseline.Crash()
                 finally:
                     if operation == "run" and self.run_id and self.record:
@@ -196,7 +199,9 @@ class InstallationTests(unittest.TestCase):
         (self.job.config / "runs").mkdir(mode=0o700, exist_ok=True)
         claim = {key: record[key] for key in ("schema_version", "run_id", "request_id", "deadline", "request_hash")}
         claim.update(controller_id="original-controller", task_name=self.config["installation"]["task_name"])
-        fingerprint = installation.target_fingerprint((self.job.output / "private/target.json").read_bytes())
+        paired = self.job.output / "private/paired-target.json"
+        fingerprint = (installation.paired_fingerprint(paired.read_bytes()) if paired.exists()
+                       else installation.target_fingerprint((self.job.output / "private/target.json").read_bytes()))
         journal = {"schema_version": 1, "claim": claim, "target_fingerprint": fingerprint}
         baseline.private_file(self.job.config / "runs" / (record["run_id"] + ".json"), proof.canonical(journal))
         if record.get("session_id"):
@@ -282,7 +287,7 @@ class InstallationTests(unittest.TestCase):
         self.assertFalse((inputs / "target.json").exists())
         retained = json.loads((inputs / "operator.json").read_bytes())
         self.assertEqual(retained["runtime"]["local_manifest"], str(inputs / "runtime-manifest.json"))
-        self.assertEqual(retained["authorization"]["scope"], "host-install-run-remove")
+        self.assertEqual(retained["authorization"]["scope"], "host-install-pair-run-remove")
         self.assertEqual((inputs / "original-operator.json").read_bytes(), self.base.operator.read_bytes())
         baseline.private_file(inputs / "runtime-manifest.json", b"replaced")
         with self.assertRaisesRegex(model.ControllerError, "original-inputs-unavailable"):
@@ -496,11 +501,12 @@ class InstallationTests(unittest.TestCase):
                 other.fault_stage = None
                 with self.assertRaises((model.ControllerError, proof.ProofError)):
                     other.recover()
-                self.assertEqual([item[0] for item in other.mutations], ["install", "run"])
+                self.assertEqual([item[0] for item in other.mutations], ["install", "enroll", "enroll", "run"])
                 self.assertTrue(other.commands.owned_runtime.exists())
 
     def test_root_publication_and_ack_fault_matrix(self):
-        for stage in ("install-released", "install-observed", "run-released", "run-owned", "remove-released", "remove-observed"):
+        for stage in ("install-released", "install-observed", "pair-released", "paired", "run-released", "run-owned",
+                      "unpair-released", "unpaired", "remove-released", "remove-observed"):
             for boundary in ("before-publish", "after-publish", "wrong-ack"):
                 with self.subTest(stage=stage, boundary=boundary):
                     other = InstallationTests()
@@ -597,6 +603,131 @@ class InstallationTests(unittest.TestCase):
                 self.assertEqual(other.commands.removal_calls, 0)
                 self.assertTrue(other.commands.owned_runtime.exists())
 
+    def fresh(self):
+        other = InstallationTests()
+        other.setUp()
+        self.addCleanup(other.doCleanups)
+        return other
+
+    def test_integrated_pairing_chain_revokes_through_the_client_before_removal(self):
+        result = self.prove()
+        self.assertEqual(result["status"], "pass", result)
+        stages = [record["stage"] for record in self.records]
+        self.assertEqual(stages[stages.index("target-bound"):stages.index("remove-released")],
+                         ["target-bound", "pair-released", "paired", "run-released", "run-owned", "run-clean", "run-clean",
+                          "run-clean", "unpair-released", "unpaired"])
+        unpaired = self.records[stages.index("unpaired")]
+        (pair_id,) = self.commands.grants
+        self.assertEqual(unpaired["data"]["revocation"], {"pair_id": pair_id, "method": "client"})
+        self.assertEqual([item[:2] for item in self.mutations if item[0] in ("enroll", "revoke")],
+                         [("enroll", "pair-released"), ("enroll", "pair-released"), ("revoke", "unpair-released")])
+        self.assertEqual(self.commands.keys(), fixture.ADMIN_KEYS)
+        owned = self.records[stages.index("run-owned")]
+        paired = (self.job.output / "private/paired-target.json").read_bytes()
+        self.assertEqual(owned["data"]["run"]["journal"]["target_fingerprint"], installation.paired_fingerprint(paired))
+
+    def test_pairing_transitions_refuse_removal_and_changed_authority(self):
+        self.prove()
+        by_stage = {}
+        for record in self.records:
+            by_stage.setdefault(record["stage"], record)
+        operator = installation.retained_operator(self.job, self.controller.files, control=self.control)
+        invocation = self.base.service.invocation
+
+        def propose(before, stage, data):
+            after = {**before, "sequence": before["sequence"] + 1, "previous": proof.digest(proof.canonical(before)),
+                     "stage": stage, "data": data}
+            return installation.accept_transition(before, after, self.anchor, operator, invocation)
+
+        paired, clean = by_stage["paired"], by_stage["run-clean"]
+        released, unpair = by_stage["pair-released"], by_stage["unpair-released"]
+        remove_intent = self.records[[r["stage"] for r in self.records].index("remove-released")]["data"]["intent"]
+        refused = (
+            (paired, "remove-released", {"prior": {"stage": "paired", "data": paired["data"]}, "intent": remove_intent},
+             "pairing-unrevoked"),
+            (clean, "remove-released", {"prior": {"stage": "run-clean", "data": clean["data"]}, "intent": remove_intent},
+             "pairing-unrevoked"),
+            (unpair, "remove-released", {"prior": {"stage": "unpair-released", "data": unpair["data"]},
+                                         "intent": remove_intent}, "pairing-unrevoked"),
+            (released, "run-released", paired["data"], "installation-transition-invalid"),
+            (released, "paired", {**paired["data"], "pairing": {**paired["data"]["pairing"], "pair_id": "bbxp_other"}},
+             "installation-authority-changed"),
+            (unpair, "unpaired", {**unpair["data"], "revocation": {"pair_id": paired["data"]["pairing"]["pair_id"],
+                                                                   "method": "never-granted"}},
+             "installation-pairing-invalid"))
+        for before, stage, data, code in refused:
+            with self.subTest(before=before["stage"], after=stage, code=code):
+                with self.assertRaisesRegex(model.ControllerError, code):
+                    propose(before, stage, data)
+        self.assertEqual(propose(released, "paired", paired["data"])["stage"], "paired")
+
+    def test_pre_pairing_retained_chain_still_parses_and_recovers(self):
+        alias = lambda installed, report, client, payload: ["--target", installed.job.output / "private/target.json"]
+        with mock.patch.object(installation.Installation, "pair", alias):
+            self.fault_stage, self.fault_boundary = "run-owned", "after-publish"
+            with self.assertRaises(baseline.Crash):
+                self.prove()
+            self.fault_stage = None
+            receipt = self.recover()
+        self.assertEqual((receipt["phase"], receipt["windows_cleanup"]), ("settled", "proven"))
+        chain =sorted(path.name for path in self.control.iterdir() if path.name.startswith("installation-"))
+        stages = [json.loads((self.control / name).read_bytes())["stage"] for name in chain]
+        self.assertNotIn("pair-released", stages)
+        self.assertEqual(stages[-1], "removed")
+        owned = json.loads((self.control / chain[stages.index("run-owned")]).read_bytes())
+        self.assertEqual(set(owned["data"]), {"target", "run"})
+        self.assertEqual(self.latest()["stage"], "removed")
+
+    def test_recovery_from_each_pairing_stage_revokes_host_locally_without_replaying_enroll(self):
+        for stage, boundary, method, enrolls in (("pair-released", "after-publish", "never-granted", 0),
+                                                 ("pair-released", "after-send", "host-local", 1),
+                                                 ("paired", "after-publish", "host-local", 2),
+                                                 ("run-clean", "after-publish", "host-local", 2),
+                                                 ("unpair-released", "after-publish", "host-local", 2)):
+            with self.subTest(stage=stage, boundary=boundary):
+                other = self.fresh()
+                other.fault_stage, other.fault_boundary = stage, boundary
+                with self.assertRaises(baseline.Crash):
+                    other.prove()
+                other.fault_stage = None
+                receipt = other.recover()
+                self.assertEqual((receipt["phase"], receipt["windows_cleanup"], receipt["proof_result"]),
+                                 ("settled", "proven", "fail"))
+                self.assertEqual(sum(item[0] == "enroll" for item in other.mutations), enrolls)
+                self.assertEqual(other.latest()["stage"], "removed")
+                unpaired = next(record for record in other.records if record["stage"] == "unpaired")
+                self.assertEqual(unpaired["data"]["revocation"]["method"], method)
+                self.assertEqual(other.commands.probes, [])
+                self.assertEqual(other.commands.keys(), fixture.ADMIN_KEYS)
+                self.assertEqual({pair_id: other.commands.grant_state(pair_id) for pair_id in other.commands.grants},
+                                 {pair_id: "revoked" for pair_id in other.commands.grants})
+                self.assertFalse(other.commands.owned_runtime.exists())
+
+    def test_unproven_keys_file_after_host_revocation_keeps_the_installation(self):
+        self.fault_stage, self.fault_boundary = "paired", "after-publish"
+        with self.assertRaises(baseline.Crash):
+            self.prove()
+        self.fault_stage = None
+        self.commands.remote_file(fixture.KEYS_PATH).write_bytes(fixture.ADMIN_KEYS + b"unrelated edit\n")
+        with self.assertRaisesRegex(proof.ProofError, "pair-keys-file-changed"):
+            self.recover()
+        self.assertEqual(self.latest()["stage"], "unpair-released")
+        self.assertEqual(self.commands.removal_calls, 0)
+        self.assertTrue(self.commands.owned_runtime.exists())
+
+    def test_paired_fingerprint_matches_go_schema_three_encoding(self):
+        target = {"schema_version": 3, "platform": "windows",
+                  "ssh": {"host": "win-box.example", "port": 2222, "user": "operator",
+                          "host_public_key": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAINdamAGCsQq31Uv+08lkBzoO4XLz2qYjJa8CGmj3B1Ea",
+                          "client_public_key_hash": "1" * 64},
+                  "windows": {"ssh_user": "operator", "interactive_user": "operator", "work_root": "C:\\BB",
+                              "task_name": "BlenderBoxRun", "blender_executable": "C:\\Blender & Tools\\blender.exe",
+                              "session_broker_executable": "C:\\BB\\installations\\bbxi_x\\runtime\\blendersessiond.exe",
+                              "host_executable": "C:\\BB\\installations\\bbxi_x\\runtime\\blender-box.exe"}}
+        # Produced by target.Decode(...).Fingerprint() for this exact schema 3 document.
+        self.assertEqual(installation.paired_fingerprint(proof.canonical(target)),
+                         "92dc12b496bf27e2c9484c3e247b47d8e48d8f9e5b67903a382e8f9a2331b872")
+
     def test_public_outcome_never_contains_private_settlement_observation(self):
         result = self.prove()
         self.assertIn("installation_settlement", result)
@@ -640,7 +771,7 @@ class InstallationTests(unittest.TestCase):
         self.assertEqual(envelope["request"]["variant"], "host-install")
         report = envelope["baseline"]["report"]
         self.assertEqual(report, {key: value for key, value in result.items() if key != "installation_settlement"})
-        self.assertEqual(set(report["outcomes"]), set(proof.REQUIRED + proof.INSTALL_REQUIRED))
+        self.assertEqual(set(report["outcomes"]), set(proof.REQUIRED + proof.INSTALL_REQUIRED + proof.PAIR_REQUIRED))
         self.assertEqual(report["run"]["session_id"], result["run"]["session_id"])
         self.assertNotIn(b"installation_settlement", files["outcome.json"])
         self.assertNotIn(b"precious.blend", files["outcome.json"])

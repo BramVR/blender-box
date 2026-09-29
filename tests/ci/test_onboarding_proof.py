@@ -4,6 +4,7 @@ import json
 import os
 import socket
 import shutil
+import stat
 import subprocess
 from pathlib import Path
 import struct
@@ -305,7 +306,7 @@ class FakeCommands(proof.Commands):
                 self.cancelled.set()
                 raise proof.ProofError("interrupted")
             return b""
-        if operation in ("status", "stop") and "--target-name" in args:
+        if operation in ("status", "stop") and "--target-name" in args and proof.PROOF_TARGET in args:
             original = proof.target_document(proof.windows_target(self.config["target"]))
             if self.targets[proof.PROOF_TARGET] != original:
                 raise proof.ProofError("target-does-not-match")
@@ -917,6 +918,22 @@ with socket.create_connection(("127.0.0.1", {port})) as connection:
                 with self.assertRaisesRegex(proof.ProofError, "target-mismatch-not-rejected"):
                     self.commands.run([sys.executable, "-c", source], expected_error=expected)
 
+    def test_expected_exit_code_returns_stdout_and_names_its_own_rejection(self):
+        refused = "Permission denied (publickey)."
+        for message, code, passes in ((refused, 255, True), (refused, 1, False), (refused, 0, False), ("timed out", 255, False)):
+            source = f"import sys; print('stdout'); print({message!r}, file=sys.stderr); raise SystemExit({code})"
+            with self.subTest(message=message, code=code):
+                if passes:
+                    self.assertEqual(self.commands.run([sys.executable, "-c", source], expected_error="Permission denied",
+                                                       expected_code=255, rejection="key-accepted"), b"stdout\n")
+                    self.assertEqual(self.commands.last_stderr, (refused + "\n").encode())
+                else:
+                    with self.assertRaisesRegex(proof.ProofError, "key-accepted"):
+                        self.commands.run([sys.executable, "-c", source], expected_error="Permission denied",
+                                          expected_code=255, rejection="key-accepted")
+        source = "import sys; print('{\"schema_version\": 1}'); raise SystemExit(1)"
+        self.assertEqual(self.commands.json([sys.executable, "-c", source], expected_code=1), {"schema_version": 1})
+
     def test_transport_tripwire_blocks_both_executables_even_with_correct_error(self):
         client = self.root / "client"
         client.write_text('#!/bin/sh\nssh ignored\nscp ignored\nprintf "%s\\n" "target does not match original Run" >&2\nexit 1\n')
@@ -1088,7 +1105,7 @@ with socket.create_connection(("127.0.0.1", {port})) as connection:
 class WorkflowTests(unittest.TestCase):
     def test_installer_job_uses_durable_owner_and_uploads_only_public_receipt(self):
         workflow = (ROOT / ".github/workflows/windows-onboarding-proof.yml").read_text()
-        installer = workflow.split("  host-install:\n", 1)[1]
+        installer = workflow.split("  host-install:\n", 1)[1].split("  pair-and-run:\n", 1)[0]
         for value in ("name: host-install", "needs: [candidate, authorize, baseline]",
                       "if: always() && needs.candidate.result == 'success' && needs.authorize.result == 'success'",
                       "environment: windows-onboarding-installer", "DRIVER_SHA: ${{ github.workflow_sha }}",
@@ -1109,6 +1126,32 @@ class WorkflowTests(unittest.TestCase):
         self.assertIn("audience: ${{ vars.ONBOARDING_INSTALL_TS_AUDIENCE }}", installer)
         self.assertNotIn("oauth-secret:", installer)
         self.assertIn("group: windows-onboarding-prepared-v1", workflow)
+
+    def test_pair_and_run_recovers_and_collects_same_execution(self):
+        workflow = (ROOT / ".github/workflows/windows-onboarding-proof.yml").read_text()
+        job = workflow.split("  pair-and-run:\n", 1)[1]
+        for value in ("name: pair-and-run", "needs: [candidate, authorize, baseline]",
+                      "if: always() && needs.candidate.result == 'success' && needs.authorize.result == 'success'",
+                      "environment: windows-onboarding-installer", "id-token: write",
+                      "PROOF_EXECUTION_ID: gha_${{ github.run_id }}_onboarding",
+                      "REQUEST_EXPIRES_AT: ${{ needs.baseline.outputs.expires_at }}",
+                      "proof_dispatch.py prepare", "proof_dispatch.py recover", "proof_dispatch.py collect",
+                      "tag:blender-box-install-dispatch", "hostname: blender-box-pair-dispatch-${{ github.run_id }}",
+                      "onboarding-pair-and-run-proof/public/receipt.json", "onboarding-pair-and-run-proof/public/outcome.json"):
+            self.assertIn(value, job)
+        for value in ("proof_dispatch.py start", "viewport.png", "ONBOARDING_SSH", "ONBOARDING_TS_CLIENT_SECRET",
+                      "prepare_hosted_credentials", "onboarding_proof.py", "oauth-secret:", "candidate/scripts",
+                      "continue-on-error", "/private/"):
+            self.assertNotIn(value, job)
+        self.assertNotIn("*", job.split("name: Upload the validated public pairing outcome", 1)[1])
+        self.assertEqual(set(proof.re.findall(r"secrets\.([A-Z_]+)", job)), {
+            "ONBOARDING_INSTALL_OPERATOR_CONFIG", "ONBOARDING_INSTALL_CONTROLLER_CONFIG", "ONBOARDING_INSTALL_CONTROLLER_KEY",
+            "ONBOARDING_INSTALL_CONTROLLER_KNOWN_HOSTS", "ONBOARDING_INSTALL_TS_CLIENT_ID"})
+        baseline = workflow.split("  baseline:\n", 1)[1].split("  named-target:\n", 1)[0]
+        for value in ("expires_at: ${{ steps.bind.outputs.expires_at }}", "id: bind",
+                      'prepare --directory "$RUNNER_TEMP/onboarding-proof" >> "$GITHUB_OUTPUT"',
+                      "timeout-minutes: 105", "timeout-minutes: 80"):
+            self.assertIn(value, baseline)
 
     def test_baseline_job_dispatches_collects_and_publishes_only_validated_evidence(self):
         workflow = (ROOT / ".github/workflows/windows-onboarding-proof.yml").read_text()
@@ -1165,7 +1208,7 @@ class WorkflowTests(unittest.TestCase):
     def test_each_workflow_guard_rejects_unapproved_premerge_authority(self):
         workflow = (ROOT / ".github/workflows/windows-onboarding-proof.yml").read_text()
         guards = proof.re.findall(r"# proof-authority-start\n(.*?)          # proof-authority-end", workflow, proof.re.S)
-        self.assertEqual(len(guards), 5)
+        self.assertEqual(len(guards), 6)
         ref = "refs/heads/codex/reviewed-proof"
         prefix = "BramVR/blender-box/.github/workflows/windows-onboarding-proof.yml@"
         env = dict(os.environ, EVENT_NAME="workflow_dispatch", REQUEST_ACTOR="BramVR", RUN_ATTEMPT="1",
@@ -1188,6 +1231,16 @@ class WorkflowTests(unittest.TestCase):
 
 
 INSTALL_ID = "bbxi_" + "1" * 32
+KEYS_PATH = r"C:\ProgramData\ssh\administrators_authorized_keys"
+ADMIN_KEYS = b"ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOperatorAdminKeyForTheFixtureOnly admin\n"
+KEY_PREFIX = struct.pack(">I", 11) + b"ssh-ed25519" + struct.pack(">I", 32)
+HOST_KEY = "ssh-ed25519 " + proof.base64.b64encode(KEY_PREFIX + b"\x07" * 32).decode()
+INTENT_DOMAIN = b"blender-box-pairing-intent-v1\x00"
+RECEIPT_DOMAIN = b"blender-box-pairing-enrollment-v1\x00"
+
+
+def go_json(value):
+    return json.dumps(value, separators=(",", ":")).encode()
 
 
 def installer_config(root):
@@ -1214,7 +1267,9 @@ def installer_config(root):
                                                                       "size": len(raw), "sha256": proof.digest(raw)}},
             "before_state": {"installation_absent": True, "task_absent": True, "target_absent": True,
                              "unrelated_files": [{"path": r"C:\ExistingFixture\precious.blend", "size": 9,
-                                                  "sha256": proof.digest(b"precious!")}],
+                                                  "sha256": proof.digest(b"precious!")},
+                                                 {"path": KEYS_PATH, "size": len(ADMIN_KEYS),
+                                                  "sha256": proof.digest(ADMIN_KEYS)}],
                              "unrelated_tasks": [{"name": "ExistingFixture", "xml_sha256": proof.digest(b"<task/>")}]}}
 
 
@@ -1222,7 +1277,7 @@ def authorize_installer(config):
     config["authorization"] = {"candidate_sha": SHA, "fixture_id": config["fixture"]["id"],
                                "installation_id": config["installation"]["id"],
                                "manifest_sha256": config["runtime"]["remote_manifest"]["sha256"],
-                               "scope": "host-install-run-remove", "launch": True}
+                               "scope": "host-install-pair-run-remove", "launch": True}
     for key, source in (("destination", "installation"), ("before_state", "before_state"), ("bootstrap", "bootstrap"),
                         ("connection", "connection"), ("expected_host", "expected_host")):
         config["authorization"][key + "_sha256"] = proof.digest(proof.canonical(config[source]))
@@ -1243,7 +1298,7 @@ class FakeInstallCommands(FakeCommands):
                               (self.operator.manifest_pin["path"], (cwd / "manifest.json").read_bytes()),
                               (r"C:\Pinned\host.exe", b"host"), (r"C:\Pinned\broker.exe", b"broker"),
                               (r"C:\Pinned\daemon.whl", b"wheel"),
-                              (r"C:\ExistingFixture\precious.blend", b"precious!")):
+                              (r"C:\ExistingFixture\precious.blend", b"precious!"), (KEYS_PATH, ADMIN_KEYS)):
             local = self.remote_file(path)
             local.parent.mkdir(parents=True, exist_ok=True)
             local.write_bytes(content)
@@ -1260,13 +1315,194 @@ class FakeInstallCommands(FakeCommands):
             self.owned_task.write_bytes(b"unknown existing task")
         if fault == "cancel-before":
             self.cancelled.set()
+        self.runtime = self.remote_file(self.operator.runtime_pin["path"])
+        self.offers, self.grants, self.tombstones, self.client_pairs, self.private_keys = {}, {}, set(), {}, {}
+        self.pair_actions, self.probes = [], []
 
     def remote_file(self, path):
         return self.remote.joinpath(*proof.PureWindowsPath(path).parts[1:])
 
+    def keys(self):
+        return self.remote_file(KEYS_PATH).read_bytes()
+
+    def remove_line(self, pair_id):
+        self.tombstones.add(pair_id)
+        before = self.keys()
+        after = before.replace(self.grants[pair_id]["line"].encode(), b"")
+        if self.fault == "keys-residue" and after != before:
+            after += b"\n"
+        self.remote_file(KEYS_PATH).write_bytes(after)
+        return {"schema_version": 1, "pair_id": pair_id, "state": "revoked", "keys_sha256_before": proof.digest(before),
+                "keys_sha256_after": proof.digest(after), "tombstone_sha256": "9" * 64}
+
+    def grant_state(self, pair_id):
+        present = self.grants[pair_id]["line"].encode() in self.keys()
+        if pair_id in self.tombstones:
+            return "revoking" if present else "revoked"
+        return "granted" if present else "granting"
+
+    def host_pairing(self, cli):
+        """The installed runtime's host-local pairing and SSH verbs."""
+        def flag(name):
+            return cli[cli.index(name) + 1]
+        self.pair_actions.append(tuple(cli[:2]) + (("--apply" in cli),))
+        if cli[:2] == ["setup", "ssh"]:
+            needed = self.fault == "ssh-preparation-needed"
+            return 0, {"schema_version": 1, "state": "planned" if needed else "unchanged", "problems": [],
+                       "plan": {"plan_sha256": "6" * 64, "account": "test-user", "port": 22, "admitting_rule": "OpenSSH-Server-In-TCP",
+                                "service": {"prior_status": "Running", "prior_start_type": "Automatic",
+                                            "start": needed, "set_automatic": False}}}
+        operation = cli[1]
+        if operation == "offer":
+            installed = json.loads(self.remote_file(self.operator.installation["target_out"]).read_bytes())
+            offer = {"schema_version": 1, "bootstrap_id": "bbxb_" + "1" * 32, "expires": "2026-09-29T12:30:00Z",
+                     "platform": "windows", "connection": {"host": flag("--address"), "port": 22, "user": "test-user",
+                                                           "host_public_key": HOST_KEY},
+                     "installed": installed, "installation_id": INSTALL_ID, "root_identity": "test-volume:file-id",
+                     "account_identity": self.operator.expected["identity_sid"]}
+            raw = go_json(offer)
+            sha = proof.digest(proof.OFFER_DOMAIN + raw)
+            self.offers[sha] = offer
+            self.remote_file(flag("--out")).write_bytes(raw)
+            return 0, {"schema_version": 1, "offer_sha256": "0" * 64 if self.fault == "offer-digest" else sha,
+                       "path": flag("--out")}
+        if operation == "enroll":
+            intent = json.loads(self.remote_file(flag("--intent")).read_bytes())
+            if proof.digest(INTENT_DOMAIN + go_json(intent)) != flag("--trust-intent"):
+                return 1, None
+            pair_id = intent["pair_id"]
+            grant = self.grants.get(pair_id)
+            if grant is None:
+                offer = self.offers.get(intent["offer_hash"])
+                if offer is None and self.fault != "forged-granted":
+                    return 1, None
+                offer = offer or next(iter(self.offers.values()))
+                receipt = {"schema_version": 1, "pair_id": pair_id, "operation_id": intent["operation_id"],
+                           "intent_sha": flag("--trust-intent"), "platform": "windows", "scope_sha": "7" * 64,
+                           "target": {"schema_version": 3, "platform": "windows",
+                                      "ssh": {**offer["connection"], "client_public_key_hash": proof.digest(
+                                          proof.base64.b64decode(intent["public_key"].split(" ")[1]))},
+                                      "windows": offer["installed"]["windows"]},
+                           "public_key": intent["public_key"]}
+                grant = {"line": "restrict " + intent["public_key"] + " blender-box-pair:" + pair_id + "\n",
+                         "receipt": receipt, "receipt_sha": proof.digest(RECEIPT_DOMAIN + go_json(receipt))}
+            keys = self.keys()
+            result = {"schema_version": 1, "pair_id": pair_id, "state": "preview", "installation_id": INSTALL_ID,
+                      "login": "test-user", "keys_file": KEYS_PATH, "shared_keys_file": True, "line": grant["line"].strip(),
+                      "fingerprint": "SHA256:client", "keys_sha256_before": proof.digest(keys)}
+            if "--apply" in cli:
+                repeated = pair_id in self.grants
+                self.grants[pair_id] = grant
+                if grant["line"].encode() not in keys:
+                    keys += grant["line"].encode()
+                    self.remote_file(KEYS_PATH).write_bytes(keys)
+                receipt_sha = "8" * 64 if repeated and self.fault == "enroll-repeat-changed" else grant["receipt_sha"]
+                result.update(state="granted", keys_sha256_after=proof.digest(keys), receipt=grant["receipt"],
+                              receipt_sha=receipt_sha)
+                out = self.remote_file(flag("--out"))
+                proof.require(not out.exists() or out.read_bytes() == go_json(grant["receipt"]), "command-failed")
+                out.write_bytes(go_json(grant["receipt"]))
+            return 0, result
+        if operation == "revoke":
+            if cli[2:4] != ["--state-root", self.operator.installation["state_root"]] or flag("--pair") not in self.grants \
+                    or self.fault == "host-revoke-fails":
+                return 1, None
+            return 0, self.remove_line(flag("--pair"))
+        if operation == "status":
+            wanted = flag("--pair") if "--pair" in cli else None
+            if wanted is not None and wanted not in self.grants:
+                return 1, None
+            return 0, [{"schema_version": 1, "pair_id": pair_id, "state": self.grant_state(pair_id),
+                        "installation_id": INSTALL_ID, "login": "test-user", "keys_file": KEYS_PATH,
+                        "fingerprint": "SHA256:client", "granted": "2026-09-29T12:00:00Z"}
+                       for pair_id in sorted(self.grants) if wanted in (None, pair_id)]
+        raise AssertionError(cli)
+
+    def client_pairing(self, args, kwargs):
+        """The local client's pair verbs, bound to the fake host above."""
+        operation, name = args[2], args[3]
+        def flag(key):
+            return args[args.index(key) + 1]
+        config = Path(self.env["BLENDER_BOX_CONFIG_DIR"])
+        pairing = self.client_pairs.get(name)
+        if operation == "status":
+            return proof.canonical({"schema_version": 1, "pair_id": pairing["intent"]["pair_id"] if pairing else "",
+                                    "access": pairing["access"] if pairing else "none", "readiness": "unchecked",
+                                    "next": "next step"})
+        if operation == "prepare":
+            raw = Path(flag("--offer")).read_bytes()
+            trusted = proof.digest(proof.OFFER_DOMAIN + raw) == flag("--trust-offer")
+            if kwargs.get("expected_error") is not None:
+                if trusted or self.fault == "tampered-accepted":
+                    raise proof.ProofError(kwargs["rejection"])
+                return b""
+            proof.require(trusted, "command-failed")
+            seed = bytes([len(self.private_keys) + 1]) * 32
+            fingerprint = proof.digest(KEY_PREFIX + seed)
+            intent = {"schema_version": 1, "pair_id": "bbxp_" + fingerprint[:32], "operation_id": "bbxq_" + fingerprint[32:],
+                      "offer_hash": flag("--trust-offer"), "public_key": "ssh-ed25519 " + proof.base64.b64encode(KEY_PREFIX + seed).decode(),
+                      "expires": json.loads(raw)["expires"]}
+            key = config / "credentials" / fingerprint / "id_ed25519"
+            key.parent.mkdir(parents=True, exist_ok=True)
+            key.write_bytes(b"PRIVATE " + fingerprint.encode())
+            self.private_keys[key.read_bytes()] = intent["pair_id"]
+            self.client_pairs[name] = {"intent": intent, "access": "prepared-unconfirmed", "key": key}
+            self.last_stderr = ("Enrollment request SHA-256 " + proof.digest(INTENT_DOMAIN + go_json(intent)) + "\n").encode()
+            return json.dumps(intent, indent=2).encode() + b"\n"
+        if operation == "complete":
+            raw = Path(flag("--receipt")).read_bytes()
+            proof.require(proof.digest(RECEIPT_DOMAIN + raw) == flag("--trust-receipt"), "command-failed")
+            receipt = json.loads(raw)
+            pairing["access"] = "enrolled"
+            self.targets[name] = receipt["target"]
+            return proof.canonical({"schema_version": 1, "name": name, "access": "enrolled", "readiness": "unchecked",
+                                    "target": receipt["target"]})
+        if operation == "revoke":
+            pair_id = pairing["intent"]["pair_id"]
+            if self.fault == "client-revoke-key-rejected":
+                return proof.canonical({"schema_version": 1, "pair_id": pair_id, "state": "key-rejected", "host": "already-rejected"})
+            self.remove_line(pair_id)
+        forgotten = self.client_pairs.pop(name)
+        forgotten["key"].unlink()
+        self.targets.pop(name, None)
+        pair_id = forgotten["intent"]["pair_id"]
+        if operation == "revoke":
+            return proof.canonical({"schema_version": 1, "pair_id": pair_id, "state": "revoked", "host": "revoked"})
+        return proof.canonical({"schema_version": 1, "pair_id": pair_id, "remote_access": "unconfirmed", "next": "check host"})
+
+    def local_ssh(self, args, kwargs):
+        if args[1] == "-G":
+            return b"user test-user\nhostname test-host.example\nport 22\n"
+        pair_id = self.private_keys[Path(args[args.index("-i") + 1]).read_bytes()]
+        self.probes.append(pair_id)
+        if self.fault == "key-authorized-elsewhere" or self.grants[pair_id]["line"].encode() in self.keys():
+            raise proof.ProofError(kwargs["rejection"])
+        return b""
+
+    def doctor(self, args, kwargs):
+        target = json.loads(Path(args[args.index("--target") + 1]).read_bytes())
+        if target["ssh"]["host_public_key"] == HOST_KEY or self.fault == "pin-accepted":
+            raise proof.ProofError(kwargs["rejection"])
+        problem = "auth-rejected" if self.fault == "pin-auth-rejected" else "host-key-mismatch"
+        return proof.canonical({"schema_version": 1, "status": "fail", "plan": {"schema_version": 1, "status": "pass"},
+                                "host": {"schema_version": 1, "status": "fail", "captures": None,
+                                         "problems": [{"class": problem, "check": "ssh.connection",
+                                                       "message": "detail", "next": "next"}]}})
+
     def run(self, args, **kwargs):
         proof.require(kwargs.get("recovery") or not self.cancelled.is_set(), "interrupted")
         args = [str(a) for a in args]
+        if args[0] == "ssh" and "stdin" not in kwargs:
+            self.calls.append(args)
+            self.call_options.append(kwargs)
+            return self.local_ssh(args, kwargs)
+        if args[1:2] in (["pair"], ["doctor"]):
+            self.calls.append(args)
+            self.call_options.append(kwargs)
+            return self.client_pairing(args, kwargs) if args[1] == "pair" else self.doctor(args, kwargs)
+        if "--target-name" in args:
+            proof.require(args[args.index("--target-name") + 1] == proof.PAIR_TARGET and proof.PAIR_TARGET in self.targets,
+                          "command-failed")
         if args[0] != "ssh":
             if args[1:2] == ["run"] and self.fault == "no-run-marker":
                 self.calls.append(args)
@@ -1281,6 +1517,9 @@ class FakeInstallCommands(FakeCommands):
         self.call_options.append(kwargs)
         proof.require(len(" ".join(args[args.index("--") + 2:])) < 8000, "windows-shell-command-limit")
         script = kwargs["stdin"].decode("utf-8")
+        if "admin=$true" in script:
+            proof.require(self.fault != "admin-probe-fails", "command-failed")
+            return proof.canonical({"schema_version": 1, "admin": True})
         if "$inputData" not in script:
             observed = observation(self.config)
             if self.fault == "wrong-host":
@@ -1302,6 +1541,11 @@ class FakeInstallCommands(FakeCommands):
             if self.fault == "observation-extra":
                 result["surprise"] = "PRIVATE"
             return proof.canonical(result)
+        if "content" in inputs:
+            content, path = proof.base64.b64decode(inputs["content"]), self.remote_file(inputs["path"])
+            proof.require(not path.exists() or path.read_bytes() == content, "command-failed")
+            path.write_bytes(content)
+            return proof.canonical({"schema_version": 1, "sha256": proof.digest(content)})
         if "path" in inputs:
             raw = self.remote_file(inputs["path"]).read_bytes()
             if self.fault == "target-fetch":
@@ -1312,6 +1556,11 @@ class FakeInstallCommands(FakeCommands):
             content = self.remote_file(pin["path"]).read_bytes()
             proof.require(len(content) == pin["size"] and proof.digest(content) == pin["sha256"], "command-failed")
         cli = inputs["args"]
+        if inputs["executable"] == self.operator.runtime_pin["path"]:
+            code, value = self.host_pairing(cli)
+            return proof.canonical({"schema_version": 1, "exit_code": code,
+                                    "output": "" if value is None else json.dumps(value, indent=2) + "\n"})
+        proof.require(inputs["executable"] == self.operator.bootstrap["path"], "command-failed")
         operation, apply = cli[1], "--apply" in cli
         self.installer_actions.append((operation, apply, kwargs.get("recovery", False)))
         if operation != "inspect":
@@ -1347,6 +1596,8 @@ class FakeInstallCommands(FakeCommands):
             self.receipt.parent.mkdir(exist_ok=True)
             self.receipt.write_bytes(b"owned receipt")
             self.owned_runtime.write_bytes(b"owned runtime")
+            self.runtime.parent.mkdir(parents=True, exist_ok=True)
+            self.runtime.write_bytes(b"host")
             self.owned_task.write_bytes(b"owned task")
             self.installation_state = "installed"
         if operation == "remove" and apply:
@@ -1356,6 +1607,7 @@ class FakeInstallCommands(FakeCommands):
                                         "output": '{"schema_version":1,"installation_id":"' + INSTALL_ID + '","state":"partial"}'})
             self.owned_task.unlink(missing_ok=True)
             self.owned_runtime.unlink(missing_ok=True)
+            self.runtime.unlink(missing_ok=True)
             self.receipt.write_bytes(b"removed tombstone")
             self.installation_state = "removed"
             if self.fault == "unrelated-changed":
@@ -1748,7 +2000,7 @@ class HostInstallTests(unittest.TestCase):
     def test_complete_branch_installs_uses_generated_target_settles_then_removes(self):
         result = self.execute()
         self.assertEqual(result["status"], "pass", result)
-        self.assertEqual(set(result["outcomes"]), set(proof.REQUIRED + proof.INSTALL_REQUIRED))
+        self.assertEqual(set(result["outcomes"]), set(proof.REQUIRED + proof.INSTALL_REQUIRED + proof.PAIR_REQUIRED))
         self.assertEqual(self.commands.installer_actions, [("inspect", False, False), ("install", False, False),
                          ("install", True, False), ("status", False, True), ("status", False, True), ("install", True, True), ("remove", False, True),
                          ("inspect", False, True), ("remove", True, True), ("status", False, True), ("remove", True, True)])
@@ -1760,14 +2012,17 @@ class HostInstallTests(unittest.TestCase):
         self.assertEqual(self.commands.remote_file(r"C:\ExistingFixture\precious.blend").read_bytes(), b"precious!")
         calls = self.commands.calls
         last_status = max(i for i, call in enumerate(calls) if call[1:2] == ["status"])
-        first_remove = min(i for i, call in enumerate(calls) if call[0] == "ssh"
+        first_remove = min(i for i, call in enumerate(calls) if call[0] == "ssh" and b"$inputData" in self.commands.call_options[i].get("stdin", b"")
                            and '"remove"' in proof.base64.b64decode(proof.re.search(r"FromBase64String\('([^']+)'\)",
                                self.commands.call_options[i]["stdin"].decode("utf-8")).group(1)).decode())
         self.assertLess(last_status, first_remove)
-        selectors = [Path(call[call.index("--target") + 1]).read_bytes() for call in calls if "--target" in call]
-        self.assertTrue(selectors and all(x == selectors[0] for x in selectors))
-        self.assertEqual(json.loads(selectors[0])["windows"]["host_executable"],
+        selected = [call for call in calls if call[0].endswith("/blender-box") and call[1] in ("windows", "run", "status", "stop")]
+        self.assertTrue(selected and all(call[call.index("--target-name") + 1] == proof.PAIR_TARGET for call in selected))
+        paired = json.loads((self.request.output / "private/paired-target.json").read_bytes())
+        self.assertEqual(paired["windows"]["host_executable"],
                          str(proof.windows_path(self.config["installation"]["state_root"]) / "installations" / INSTALL_ID / "runtime" / "blender-box.exe"))
+        self.assertEqual(paired["ssh"], {"host": "test-host.example", "port": 22, "user": "test-user", "host_public_key": HOST_KEY,
+                                         "client_public_key_hash": paired["ssh"]["client_public_key_hash"]})
         self.assertFalse(any(call[0] == "scp" or call[1:3] == ["windows", "setup"] for call in calls))
         public = (self.request.output / "public/outcome.json").read_text()
         for private in ("TestFixture", "TEST-HOST", "test-user", "ExistingFixture", str(self.root)):
@@ -1967,6 +2222,106 @@ class HostInstallTests(unittest.TestCase):
                 result = self.execute(fault)
                 self.assertEqual(result["status"], "fail")
                 self.assertEqual(result["outcomes"][stage]["status"], "fail")
+
+
+class PairingTests(unittest.TestCase):
+    """The pair-and-run stages of host-install, through fake host, SSH and client boundaries."""
+
+    def execute(self, fault=None):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        root = Path(self.temp.name)
+        config = installer_config(root)
+        authorize_installer(config)
+        path = root / "operator.json"
+        path.write_bytes(proof.canonical(config))
+        path.chmod(0o600)
+        self.request = proof.ProofRequest(SHA, root, path, root / "output", proof="host-install")
+        def factory(private, cwd):
+            self.commands = FakeInstallCommands(private, cwd, config, fault)
+            return self.commands
+        return proof.baseline(self.request, factory)
+
+    def assert_host_restored(self, result):
+        self.assertEqual(self.commands.keys(), ADMIN_KEYS)
+        self.assertEqual({pair_id: self.commands.grant_state(pair_id) for pair_id in self.commands.grants},
+                         {pair_id: "revoked" for pair_id in self.commands.grants})
+        self.assertEqual(result["installation"]["state"], "removed", result)
+        self.assertFalse(self.commands.runtime.exists())
+
+    def test_pair_and_run_passes_every_outcome_and_restores_the_keys_file(self):
+        result = self.execute()
+        self.assertEqual(result["status"], "pass", result)
+        self.assertEqual({name: result["outcomes"][name] for name in proof.PAIR_REQUIRED}, {
+            "ssh-preparation": {"status": "pass", "code": "ssh-already-prepared"},
+            "pair-offer": {"status": "pass", "code": "offer-digest-verified"},
+            "pair-trust-mismatch": {"status": "pass", "code": "tampered-forged-and-wrong-pin-refused"},
+            "pair-enroll": {"status": "pass", "code": "enroll-applied-and-repeated"},
+            "pair-target": {"status": "pass", "code": "paired-target-saved"},
+            "pair-revoke": {"status": "pass", "code": "client-revoked-host-confirmed"},
+            "pair-revoked-rejected": {"status": "pass", "code": "revoked-key-rejected"},
+            "pair-unrelated-access": {"status": "pass", "code": "admin-access-and-keys-file-preserved"}})
+        self.assertNotIn("pairing", result["not_exercised"])
+        self.assertIn("pairing-interruption", result["not_exercised"])
+        self.assert_host_restored(result)
+        (pair_id,) = self.commands.grants
+        self.assertEqual(self.commands.probes, [pair_id])
+        self.assertEqual(self.commands.pair_actions.count(("pair", "enroll", True)), 2)
+        self.assertEqual(self.commands.client_pairs, {})
+        self.assertEqual(stat.S_IMODE((self.request.output / "private/revoked-key").stat().st_mode), 0o600)
+        run = next(call for call in self.commands.calls if call[1:2] == ["run"])
+        self.assertEqual(run[run.index("--target-name") + 1], proof.PAIR_TARGET)
+        public = (self.request.output / "public/outcome.json").read_text()
+        for private in (pair_id, "test-host.example", HOST_KEY.split(" ")[1], "ProgramData"):
+            self.assertNotIn(private, public)
+
+    def test_every_pairing_defect_fails_its_own_outcome(self):
+        # fault, failing outcome, code, whether the owned installation is still removed afterwards
+        cases = (("ssh-preparation-needed", "ssh-preparation", "ssh-preparation-required", True),
+                 ("offer-digest", "pair-offer", "pair-offer-digest-mismatch", True),
+                 ("tampered-accepted", "pair-trust-mismatch", "pair-tampered-offer-accepted", True),
+                 ("forged-granted", "pair-trust-mismatch", "pair-forged-offer-accepted", True),
+                 ("pin-auth-rejected", "pair-trust-mismatch", "pair-wrong-pin-misclassified", True),
+                 ("pin-accepted", "pair-trust-mismatch", "pair-wrong-pin-accepted", True),
+                 ("enroll-repeat-changed", "pair-enroll", "pair-enroll-repeat-changed", True),
+                 ("client-revoke-key-rejected", "pair-revoke", "pair-revoke-unconfirmed", True),
+                 ("key-authorized-elsewhere", "pair-revoked-rejected", "pair-revoked-key-accepted", True),
+                 ("admin-probe-fails", "pair-unrelated-access", "command-failed", True),
+                 ("keys-residue", "pair-revoke", "pair-host-not-revoked", False))
+        for fault, stage, code, removed in cases:
+            with self.subTest(fault=fault):
+                result = self.execute(fault)
+                self.assertEqual(result["status"], "fail")
+                self.assertEqual(result["outcomes"][stage], {"status": "fail", "code": code})
+                if removed:
+                    self.assert_host_restored(result)
+                else:
+                    self.assertEqual(result["outcomes"]["remove-preview"], {"status": "fail", "code": "pairing-unrevoked"})
+                    self.assertEqual(self.commands.removal_calls, 0)
+                    self.assertNotEqual(self.commands.keys(), ADMIN_KEYS)
+
+    def test_forged_offer_preview_never_creates_a_grant(self):
+        result = self.execute("forged-granted")
+        self.assertEqual(result["outcomes"]["pair-enroll"]["status"], "not-run")
+        self.assertEqual(self.commands.grants, {})
+        self.assertNotIn(("pair", "enroll", True), self.commands.pair_actions)
+
+    def test_wrong_pin_uses_the_enrolled_key_against_a_random_host_key(self):
+        self.execute()
+        wrong = json.loads((self.request.output / "private/pair-wrong-pin.json").read_bytes())
+        paired = json.loads((self.request.output / "private/paired-target.json").read_bytes())
+        self.assertEqual({**wrong["ssh"], "host_public_key": HOST_KEY}, paired["ssh"])
+        self.assertNotEqual(wrong["ssh"]["host_public_key"], HOST_KEY)
+        self.assertTrue(proof.ed25519_key(wrong["ssh"]["host_public_key"]))
+
+    def test_host_revocation_failure_keeps_the_paired_installation(self):
+        result = self.execute("host-revoke-fails")
+        self.assertEqual(result["status"], "fail")
+        self.assertEqual(result["outcomes"]["pair-revoke"], {"status": "fail", "code": "pair-host-command-failed"})
+        self.assertEqual(result["outcomes"]["remove-preview"], {"status": "fail", "code": "pairing-unrevoked"})
+        self.assertEqual(result["installation"]["state"], "unknown")
+        self.assertEqual(self.commands.removal_calls, 0)
+        self.assertTrue(self.commands.runtime.exists())
 
 
 if __name__ == "__main__":
