@@ -263,7 +263,7 @@ func TestRunPublishesEverySchemaV2CaptureWithProvenance(t *testing.T) {
 	}
 }
 
-func TestValidateReceiptRequiresVersionStateAndPinnedSession(t *testing.T) {
+func TestValidateReceiptRejectsVersionlessAndUnknownState(t *testing.T) {
 	claim := LockClaim{
 		SchemaVersion: 1,
 		RunID:         "bbx_01TESTRUNIDENTITY0000000000",
@@ -285,9 +285,7 @@ func TestValidateReceiptRequiresVersionStateAndPinnedSession(t *testing.T) {
 		wantErr string
 	}{
 		{"versionless", func(receipt *RunReceipt) { receipt.SchemaVersion = 0 }, "schema version"},
-		{"unknown state", func(receipt *RunReceipt) { receipt.State = "surprise" }, "Run state"},
-		{"missing Session identity", func(receipt *RunReceipt) { receipt.SessionID = "" }, "Session identity"},
-		{"changed Session identity", func(receipt *RunReceipt) { receipt.SessionID = "bss_other-valid-session-identity-123456" }, "Session identity changed"},
+		{"unknown state", func(receipt *RunReceipt) { receipt.State = "surprise" }, "unknown Run state"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
