@@ -336,7 +336,7 @@ def retained_operator(job, files, *, control=None):
     runtime = files.read(root / "inputs/runtime-manifest.json", 128 << 10)
     model.require(proof.digest(operator_raw) == manifest["files"]["operator.json"]
                   and proof.digest(runtime) == manifest["files"]["runtime-manifest.json"], "original-inputs-unavailable")
-    return proof.InstallOperator.from_document(model.document(operator_raw), job.request.candidate_sha, runtime)
+    return proof.InstallOperator.from_document(model.document(operator_raw), job.request.candidate_sha, runtime, retained=True)
 
 
 def read_chain(control, job, anchor, files):

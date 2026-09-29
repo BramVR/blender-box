@@ -1870,6 +1870,22 @@ class InstallerRecoveryTests(unittest.TestCase):
         wait.assert_not_called()
 
 
+class RetainedOperatorScopeTests(unittest.TestCase):
+    def test_retained_pre_pairing_grant_loads_but_never_starts_a_new_execution(self):
+        with tempfile.TemporaryDirectory() as temp:
+            config = installer_config(Path(temp))
+            authorize_installer(config)
+            config["authorization"]["scope"] = "host-install-run-remove"
+            raw = Path(config["runtime"]["local_manifest"]).read_bytes()
+            retained = proof.InstallOperator.from_document(copy.deepcopy(config), SHA, raw, retained=True)
+            self.assertEqual(retained.authorization["scope"], "host-install-run-remove")
+            with self.assertRaisesRegex(proof.ProofError, "installer-not-authorized"):
+                proof.InstallOperator.from_document(copy.deepcopy(config), SHA, raw)
+            config["authorization"]["scope"] = "host-install-anything"
+            with self.assertRaisesRegex(proof.ProofError, "installer-not-authorized"):
+                proof.InstallOperator.from_document(copy.deepcopy(config), SHA, raw, retained=True)
+
+
 class InstallerRecoveryDeadlineTests(unittest.TestCase):
     def setUp(self):
         temp = tempfile.TemporaryDirectory()

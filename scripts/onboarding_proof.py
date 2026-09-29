@@ -33,6 +33,8 @@ REQUIRED = ("preparation", "readiness", "scenario", "evidence", "recovery", "cle
 NAMED_REQUIRED = ("target-catalog", "target-binding", "target-restoration", "target-forget")
 INSTALL_REQUIRED = ("install-inspect", "install-preview", "install-apply", "install-target",
                     "install-repeat", "remove-preview", "remove-apply", "remove-repeat", "fixture-preserved")
+PAIR_SCOPE = "host-install-pair-run-remove"
+RETAINED_SCOPES = ("host-install-run-remove", PAIR_SCOPE)
 PAIR_REQUIRED = ("ssh-preparation", "pair-offer", "pair-trust-mismatch", "pair-enroll", "pair-target",
                  "pair-revoke", "pair-revoked-rejected", "pair-unrelated-access")
 # Host-install proves pairing, so it replaces the shared "pairing" gap with the pairing cases it leaves unproven.
@@ -533,7 +535,9 @@ class InstallOperator:
         return cls.from_document(data, candidate)
 
     @classmethod
-    def from_document(cls, data, candidate, raw_manifest=None):
+    def from_document(cls, data, candidate, raw_manifest=None, *, retained=False):
+        """Validates an installer operator. New executions need the pairing grant; a retained execution
+        recorded before pairing existed keeps its original host-install-run-remove grant."""
         require(set(data) <= {"schema_version", "platform", "connection", "expected_host", "fixture", "installation",
                               "bootstrap", "runtime", "before_state", "authorization", "ssh_config", "publish_viewport"}
                 and data.get("platform") == "windows", "installer-config-invalid")
@@ -622,7 +626,9 @@ class InstallOperator:
                          "manifest_sha256": manifest_pin["sha256"], "destination_sha256": digest(canonical(installation)),
                          "before_state_sha256": digest(canonical(before)), "bootstrap_sha256": digest(canonical(bootstrap)),
                          "connection_sha256": digest(canonical(connection)), "expected_host_sha256": digest(canonical(expected)),
-                         "scope": "host-install-pair-run-remove", "launch": True}
+                         "scope": PAIR_SCOPE, "launch": True}
+        if retained and isinstance(auth, dict) and auth.get("scope") in RETAINED_SCOPES:
+            expected_auth["scope"] = auth["scope"]
         require(canonical(auth) == canonical(expected_auth), "installer-not-authorized")
         ssh = data.get("ssh_config")
         require(ssh is None or isinstance(ssh, str), "installer-config-invalid")
