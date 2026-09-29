@@ -5,6 +5,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"strings"
 	"time"
 
 	"github.com/BramVR/blender-box/internal/pairing"
@@ -14,15 +15,16 @@ import (
 
 func pairCommand(ctx context.Context, args []string, stdout, stderr io.Writer, dependencies Dependencies) int {
 	if len(args) == 0 || args[0] == "--help" || args[0] == "-h" {
-		fmt.Fprintln(stdout, "Pairing client uses independently verified host-local offer and receipt digests.\n  pair prepare NAME --offer PATH --trust-offer SHA256 (prints the enrollment request JSON)\n  pair complete NAME --receipt PATH --trust-receipt SHA256 [--json]\n  pair status NAME [--json]\nHost offer/enrollment/revoke and setup ssh are unsupported in this unit. Readiness requires a separate doctor command. Retain the request and credential while host enrollment is unconfirmed.")
+		fmt.Fprintln(stdout, "Pairing client uses independently verified host-local offer and receipt digests.\n  pair prepare NAME --offer PATH --trust-offer SHA256 (prints the enrollment request JSON)\n  pair complete NAME --receipt PATH --trust-receipt SHA256 [--json]\n  pair status NAME [--json]\nHost verbs take --state-root instead of NAME: pair offer|enroll|revoke|status --state-root PATH (see pair offer --help). Readiness requires a separate doctor command. Retain the request and credential while host enrollment is unconfirmed.")
 		if len(args) == 0 {
 			return 2
 		}
 		return 0
 	}
 	operation := args[0]
-	if operation == "offer" || operation == "enroll" || operation == "revoke" {
-		return fail(stderr, "pair "+operation, fmt.Errorf("host enrollment and revocation are unsupported; no host changes performed"))
+	// A positional NAME selects the client pairing; --state-root selects the host.
+	if operation == "offer" || operation == "enroll" || (operation == "revoke" || operation == "status") && len(args) > 1 && strings.HasPrefix(args[1], "-") {
+		return pairHostCommand(ctx, operation, args[1:], stdout, stderr, dependencies)
 	}
 	if operation != "prepare" && operation != "complete" && operation != "status" {
 		return fail(stderr, "pair", fmt.Errorf("expected prepare, complete or status"))

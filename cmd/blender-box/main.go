@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"os/signal"
 
@@ -9,6 +10,7 @@ import (
 	"github.com/BramVR/blender-box/internal/host"
 	linuxhost "github.com/BramVR/blender-box/internal/linux"
 	"github.com/BramVR/blender-box/internal/orchestrator"
+	"github.com/BramVR/blender-box/internal/pairing"
 	sshtransport "github.com/BramVR/blender-box/internal/ssh"
 	"github.com/BramVR/blender-box/internal/target"
 	"github.com/BramVR/blender-box/internal/windows"
@@ -33,6 +35,12 @@ func main() {
 		os.Stderr,
 		cli.Dependencies{
 			SSH: sshRunner,
+			Pairing: func(platform string) (pairing.Platform, error) {
+				if platform == "windows" {
+					return windowsinstall.NewPairingPlatform(), nil
+				}
+				return nil, fmt.Errorf("host pairing is unsupported on %s; no host changes performed", platform)
+			},
 			RunnerFor: func(selected target.Target) cli.RunService {
 				if selected.Platform() == "linux" {
 					return orchestrator.New(linuxhost.NewAdapter(sshRunner), configRoot)
