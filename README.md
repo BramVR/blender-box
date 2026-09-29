@@ -98,7 +98,7 @@ Keep operator configuration outside the consuming repository. The [installer](do
 
 Keep credentials, hostnames, IP addresses, and private network details out of this file. `ssh_alias` selects an entry from your SSH config.
 
-Both `session_broker_executable` and `host_executable` must be inside `work_root` and below a dedicated executable directory. Blender may be installed elsewhere. The work root must be an ASCII drive path without spaces for the Run transport's legacy SCP support.
+Both `session_broker_executable` and `host_executable` must be inside `work_root` and below a dedicated executable directory. Blender may be installed elsewhere. The work root must be an ASCII drive path without spaces.
 
 Version 2 also accepts a strict `linux` body for Ubuntu 24.04 GNOME on Xorg. Follow the [Linux host guide](docs/linux.md) for its UID, desktop, static unit, and reviewed runtime requirements. Existing flat schema version 1 Windows files remain valid input with unchanged normalized bytes and fingerprints. Unsupported platforms and malformed documents fail before a connection or setup change.
 
