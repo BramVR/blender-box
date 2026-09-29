@@ -95,6 +95,8 @@ func revokeSummary(outcome pairing.RevokeOutcome) string {
 	switch outcome.State {
 	case pairing.Revoked:
 		return fmt.Sprintf("Pair %s revoked: %s and a fresh paired connection is rejected. Local pairing state removed.", outcome.PairID, hostSaid)
+	case pairing.KeyRejected:
+		return fmt.Sprintf("Pair %s: %s, but a fresh paired connection is rejected. Local pairing state removed; host removal of the key is unconfirmed.", outcome.PairID, hostSaid)
 	case pairing.HostRevokedUnconfirmed:
 		return fmt.Sprintf("Pair %s: %s, but a fresh paired connection is not proven rejected. Local pairing state kept.", outcome.PairID, hostSaid)
 	default:

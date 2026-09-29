@@ -185,7 +185,7 @@ func TestRevokeAlreadyRejectedKeyConvergesWithoutHostResult(t *testing.T) {
 	client, receipt := enrolled(t)
 	remote := &fakeRemote{revokeErr: sshFailure(sshtransport.AuthRejected), probeErrs: []error{sshFailure(sshtransport.AuthRejected)}}
 	outcome, err := client.Revoke(context.Background(), "work", remote)
-	if err != nil || outcome.State != "revoked" || outcome.Host != "already-rejected" {
+	if err != nil || outcome.State != "key-rejected" || outcome.Host != "already-rejected" {
 		t.Fatalf("outcome = %+v, %v", outcome, err)
 	}
 	if want := `blender-box pair status --state-root C:\Box --pair ` + receipt.PairID; !strings.Contains(outcome.Next, want) {

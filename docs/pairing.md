@@ -168,7 +168,7 @@ blender-box pair revoke studio
 - `host-revoked-unconfirmed`. The host reported removal, but no fresh connection was proven rejected. Local state stays. If the key still authenticates, look on the host for another authorized copy of the key. Then repeat `pair revoke`. The retry repeats only the rejection check.
 - `unconfirmed`. The host did not confirm removal. The JSON `failure` field names the connection class when there is one. Every local file stays. Retry when the host is reachable, or revoke on the host as described below.
 
-If the host already rejects the key, `pair revoke` still converges. This happens when a lost response hid an earlier removal. The command records that the host returned no revocation result, proves a fresh connection is rejected, and removes local state. It then tells you to confirm with the host `pair status` command.
+If the host already rejects the key, `pair revoke` still converges. This happens when a lost response hid an earlier removal. The command records that the host returned no revocation result, proves a fresh connection is rejected, and removes local state. It reports `key-rejected`, not `revoked`, because the host did not confirm removal. Confirm with the host `pair status` command.
 
 The host refuses revocation while a Run is active or unresolved on it. Finish or recover that Run first. `--timeout` bounds the whole command. The default is 2 minutes. `--json` prints the outcome with `state`, `host`, `failure`, and `next`. A pairing without an accepted receipt has no host access to revoke, so `pair revoke` tells you to run `pair forget`.
 

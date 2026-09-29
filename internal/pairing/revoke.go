@@ -23,7 +23,10 @@ type Remote interface {
 }
 
 const (
-	Revoked                = "revoked"
+	Revoked = "revoked"
+	// KeyRejected means the host returned no revocation result but a fresh paired connection is
+	// rejected; local state is forgotten, yet host removal of the line stays unconfirmed.
+	KeyRejected            = "key-rejected"
 	HostRevokedUnconfirmed = "host-revoked-unconfirmed"
 	Unconfirmed            = "unconfirmed"
 )
@@ -108,6 +111,7 @@ func (client Client) Revoke(ctx context.Context, name string, remote Remote) (Re
 		}
 		outcome.State = Revoked
 		if record.Host == hostAlreadyRejected {
+			outcome.State = KeyRejected
 			outcome.Next = fmt.Sprintf("the host returned no revocation result in this attempt, but a fresh paired connection is rejected; confirm on the host with `%s`", hostCommand(value.Offer.Installed, "status", pairID))
 		}
 		return outcome, nil
