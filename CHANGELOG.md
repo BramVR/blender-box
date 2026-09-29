@@ -10,6 +10,7 @@
 - Classify SSH and SCP connection failures as `host-unreachable`, `tailscale-unreachable`, `host-key-mismatch` or `auth-rejected` with a next step, and report failed readiness checks from `doctor` and `run` as `interactive-desktop-unavailable`, `runtime-incompatible`, `account-mismatch` or `setup-incomplete` problems, including `host.problems` in doctor JSON.
 - Print the enrollment request SHA-256 on stderr from `pair prepare` so the operator can pass it to host `pair enroll --trust-intent`.
 - Add the [pairing guide](docs/pairing.md) for onboarding, connection troubleshooting and revocation.
+- Settle a Windows setup execution whose worker ends at its deadline before reporting as a resumable `partial` result when the installation receipt shows no pending Scheduled Task change; it no longer fences the shared state root for manual review.
 - Add local pairing preparation and trusted-receipt reconciliation, schema-3 targets with pinned SSH identity, shared SSH/SCP credential policy and unchanged legacy fingerprints; client credentials remain POSIX-only.
 - Reserve pairing recovery state before credentials so oversized requests, concurrent preparation and interrupted publication do not leave undiscoverable private keys or change the original request on retry.
 - Stop Linux qualification cases through the same owner identity as operational attempts; `descendant-stop` and `startup-withheld` no longer crash reading an operational-only receipt field during exact stop.
