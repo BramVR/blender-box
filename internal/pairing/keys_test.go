@@ -45,6 +45,7 @@ func TestAppendAndRemovePreserveUnrelatedBytes(t *testing.T) {
 		{"unterminated crlf", otherKey + "\r\n" + rsaKey, otherKey + "\r\n" + rsaKey + "\r\n" + line + "\r\n", otherKey + "\r\n" + rsaKey + "\r\n"},
 		{"comments and blanks", "# managed by ops\n\n  \n" + otherKey + "\n\n", "# managed by ops\n\n  \n" + otherKey + "\n\n" + line + "\n", "# managed by ops\n\n  \n" + otherKey + "\n\n"},
 		{"options", `no-pty,command="/bin/false" ` + rsaKey + "\n", `no-pty,command="/bin/false" ` + rsaKey + "\n" + line + "\n", `no-pty,command="/bin/false" ` + rsaKey + "\n"},
+		{"in-use administrators file crlf", otherKey + "\r\n" + "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIBvXqvcQzNgW1pDPqS2R8b2Pj3Lm7v0KfAqz1u2Hq9Yk\r\n", otherKey + "\r\n" + "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIBvXqvcQzNgW1pDPqS2R8b2Pj3Lm7v0KfAqz1u2Hq9Yk\r\n" + line + "\r\n", otherKey + "\r\n" + "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIBvXqvcQzNgW1pDPqS2R8b2Pj3Lm7v0KfAqz1u2Hq9Yk\r\n"},
 		{"stock admin file", otherKey + "\n" + "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIBvXqvcQzNgW1pDPqS2R8b2Pj3Lm7v0KfAqz1u2Hq9Yk\n", otherKey + "\n" + "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIBvXqvcQzNgW1pDPqS2R8b2Pj3Lm7v0KfAqz1u2Hq9Yk\n" + line + "\n", otherKey + "\n" + "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIBvXqvcQzNgW1pDPqS2R8b2Pj3Lm7v0KfAqz1u2Hq9Yk\n"},
 	}
 	for _, tc := range cases {
