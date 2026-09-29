@@ -147,7 +147,7 @@ jobs:
           set -euo pipefail
           python3 driver/scripts/proof_dispatch.py prepare --directory "$RUNNER_TEMP/onboarding-proof" >> "$GITHUB_OUTPUT"
       - name: Connect to the qualified persistent controller
-        uses: tailscale/github-action@53acf823325fe9ca47f4cdaa951f90b4b0de5bb9 # v4.1.1
+        uses: tailscale/github-action@d1b6cd204f8dceda5b3eaad7f1f767be390056cd # v4.2.0
         with:
           oauth-client-id: ${{ secrets.ONBOARDING_INSTALL_TS_CLIENT_ID }}
           audience: ${{ vars.ONBOARDING_INSTALL_TS_AUDIENCE }}
@@ -173,7 +173,7 @@ jobs:
           python3 driver/scripts/proof_dispatch.py collect --directory "$RUNNER_TEMP/onboarding-proof"
       - name: Upload allowlisted proof
         if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: windows-onboarding-${{ needs.candidate.outputs.sha }}
           if-no-files-found: error
@@ -261,7 +261,7 @@ jobs:
               raise SystemExit("Onboarding credential preparation failed.")
           PY
       - name: Connect ephemeral controller
-        uses: tailscale/github-action@53acf823325fe9ca47f4cdaa951f90b4b0de5bb9 # v4.1.1
+        uses: tailscale/github-action@d1b6cd204f8dceda5b3eaad7f1f767be390056cd # v4.2.0
         with:
           oauth-client-id: ${{ secrets.ONBOARDING_TS_CLIENT_ID }}
           oauth-secret: ${{ secrets.ONBOARDING_TS_CLIENT_SECRET }}
@@ -282,7 +282,7 @@ jobs:
         run: test -f "$RUNNER_TEMP/onboarding-named-target-proof/public/outcome.json"
       - name: Upload allowlisted proof
         if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: windows-onboarding-named-target-${{ needs.candidate.outputs.sha }}
           if-no-files-found: error
@@ -359,7 +359,7 @@ jobs:
           set -euo pipefail
           python3 driver/scripts/proof_dispatch.py prepare --directory "$RUNNER_TEMP/onboarding-host-install-proof"
       - name: Connect to the qualified persistent controller
-        uses: tailscale/github-action@53acf823325fe9ca47f4cdaa951f90b4b0de5bb9 # v4.1.1
+        uses: tailscale/github-action@d1b6cd204f8dceda5b3eaad7f1f767be390056cd # v4.2.0
         with:
           oauth-client-id: ${{ secrets.ONBOARDING_INSTALL_TS_CLIENT_ID }}
           audience: ${{ vars.ONBOARDING_INSTALL_TS_AUDIENCE }}
@@ -373,7 +373,7 @@ jobs:
           python3 driver/scripts/proof_dispatch.py recover --directory "$RUNNER_TEMP/onboarding-host-install-proof"
       - name: Upload only the validated public controller receipt
         if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: windows-onboarding-host-install-${{ needs.candidate.outputs.sha }}
           if-no-files-found: error
