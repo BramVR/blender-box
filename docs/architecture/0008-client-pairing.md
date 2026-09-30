@@ -78,6 +78,8 @@ The platform owns the edit. `ReadKeys` returns bytes, hash and security descript
 
 A future platform implements `pairing.Platform` (identity facts plus the keys-file transaction) and an `SSHPreparer` for its own `setup ssh --platform`; readiness already lives in each platform's host adapter. The common flow, records and receipts do not change. The fake Linux platform test runs offer, client preparation, enroll, client completion and revoke end to end and yields a paired Linux target. Hosted pair-and-run against the real Windows host remains the acceptance gate for native behavior.
 
+The hosted gate runs inside the retained `host-install` execution on the qualified proof controller. Its grant scope is `host-install-pair-run-remove`, because an installer grant does not authorize an `authorized_keys` change by implication. The controller keeps the client configuration, paired key, receipt, paired target and Run claim in its private store, and its installation chain records `pair-released` before the enrollment apply. Recovery from any pairing stage uses host-local `pair revoke --pair ID --apply` over the admin channel, or proves that no grant exists, and never replays enrollment. Removal refuses until the pairing is revoked and the declared keys-file pin matches again.
+
 ## Verification
 
 Focused tests cover strict target parsing, alias schema compatibility, changed connection fields before Run recovery, local trust and retry behavior, secret-key checks, and both platform transport callers. Public CLI proof uses disposable keys and fake SSH processes. OpenSSH configuration parsing can be checked with `ssh -G` without contacting a host.

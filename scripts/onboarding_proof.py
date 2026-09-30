@@ -3,9 +3,11 @@
 
 import argparse
 import base64
+import contextlib
 import dataclasses
 import datetime
 import hashlib
+import ipaddress
 import json
 import os
 from pathlib import Path, PureWindowsPath
@@ -32,8 +34,18 @@ REQUIRED = ("preparation", "readiness", "scenario", "evidence", "recovery", "cle
 NAMED_REQUIRED = ("target-catalog", "target-binding", "target-restoration", "target-forget")
 INSTALL_REQUIRED = ("install-inspect", "install-preview", "install-apply", "install-target",
                     "install-repeat", "remove-preview", "remove-apply", "remove-repeat", "fixture-preserved")
-INSTALL_NOT_EXERCISED = ("installer-interruption", "active-run-removal-refusal", "active-session-removal-refusal")
+PAIR_SCOPE = "host-install-pair-run-remove"
+RETAINED_SCOPES = ("host-install-run-remove", PAIR_SCOPE)
+PAIR_REQUIRED = ("ssh-preparation", "pair-offer", "pair-trust-mismatch", "pair-enroll", "pair-target",
+                 "pair-revoke", "pair-revoked-rejected", "pair-unrelated-access")
+# Host-install proves pairing, so it replaces the shared "pairing" gap with the pairing cases it leaves unproven.
+INSTALL_NOT_EXERCISED = ("fixture-reset", "kept-session-stop", "installer-interruption", "active-run-removal-refusal",
+                         "active-session-removal-refusal", "pairing-interruption", "ssh-preparation-apply")
 PROOF_TARGET = "onboarding-proof"
+PAIR_TARGET = "onboarding-paired"
+PAIR_ID = r"[a-zA-Z0-9][a-zA-Z0-9_-]{0,127}"
+PAIR_FILES = ("offer", "intent", "receipt", "forged-intent")
+OFFER_DOMAIN = b"blender-box-pairing-offer-v1\x00"
 CLEANUP = ("session_stopped", "payload_removed", "run_root_removed", "lock_released")
 CHECKS = {
     "host.windows", "host.console-user", "host.ssh-user", "host.limited-token-policy",
@@ -56,6 +68,31 @@ class ProofError(Exception):
         super().__init__(code)
 
 
+class StageError(ProofError):
+    """A failure that belongs to a named outcome rather than to the caller's current stage."""
+
+    def __init__(self, stage, code):
+        super().__init__(code)
+        self.stage = stage
+
+
+def error_code(error, default="proof-internal-error"):
+    code = getattr(error, "code", None)
+    return code if isinstance(code, str) else default
+
+
+@contextlib.contextmanager
+def outcome_stage(report, name, code):
+    try:
+        yield
+    except StageError:
+        raise
+    except Exception as error:
+        raise StageError(name, error_code(error)) from error
+    if code is not None:
+        report["outcomes"][name] = {"status": "pass", "code": code}
+
+
 def require(condition, code):
     if not condition:
         raise ProofError(code)
@@ -65,7 +102,7 @@ def matches(pattern, value):
     return isinstance(value, str) and re.fullmatch(pattern, value) is not None
 
 
-def document(raw, version=1):
+def strict_json(raw):
     def pairs(items):
         result = {}
         for key, value in items:
@@ -73,10 +110,14 @@ def document(raw, version=1):
             result[key] = value
         return result
     try:
-        value = json.loads(raw, object_pairs_hook=pairs,
-                           parse_constant=lambda _: (_ for _ in ()).throw(ProofError("invalid-json")))
+        return json.loads(raw, object_pairs_hook=pairs,
+                          parse_constant=lambda _: (_ for _ in ()).throw(ProofError("invalid-json")))
     except (ValueError, UnicodeError) as error:
         raise ProofError("invalid-json") from error
+
+
+def document(raw, version=1):
+    value = strict_json(raw)
     require(isinstance(value, dict), "invalid-json")
     require(type(value.get("schema_version")) is int and value["schema_version"] == version,
             "invalid-schema")
@@ -432,6 +473,11 @@ def pinned_file(value):
     return value
 
 
+def pair_exchange(target_out):
+    # Pairing exchange files sit beside the declared target export and stay as public residue.
+    return {name: target_out + ".pair-" + name + ".json" for name in PAIR_FILES}
+
+
 @dataclasses.dataclass(frozen=True)
 class InstallOperator:
     connection: dict
@@ -458,6 +504,16 @@ class InstallOperator:
                 "blender_executable": self.installation["blender"]}
 
     @property
+    def runtime_pin(self):
+        host = next(item for item in self.manifest["artifacts"] if item["role"] == "host-executable")
+        runtime = windows_path(self.installation["state_root"]) / "installations" / self.installation["id"] / "runtime"
+        return {"path": str(runtime / "blender-box.exe"), "size": host["size"], "sha256": host["sha256"]}
+
+    @property
+    def pair_files(self):
+        return pair_exchange(self.installation["target_out"])
+
+    @property
     def manifest_sha256(self):
         # Go hashes the typed manifest in declaration order, independent of source formatting.
         fields = ("schema_version", "platform", "architecture", "artifacts", "python_requires",
@@ -480,7 +536,9 @@ class InstallOperator:
         return cls.from_document(data, candidate)
 
     @classmethod
-    def from_document(cls, data, candidate, raw_manifest=None):
+    def from_document(cls, data, candidate, raw_manifest=None, *, retained=False):
+        """Validates an installer operator. New executions need the pairing grant; a retained execution
+        recorded before pairing existed keeps its original host-install-run-remove grant."""
         require(set(data) <= {"schema_version", "platform", "connection", "expected_host", "fixture", "installation",
                               "bootstrap", "runtime", "before_state", "authorization", "ssh_config", "publish_viewport"}
                 and data.get("platform") == "windows", "installer-config-invalid")
@@ -551,9 +609,12 @@ class InstallOperator:
         managed = windows_path(installation["state_root"]) / "installations" / installation["id"]
         external = [bootstrap["path"], manifest_pin["path"], installation["blender"], installation["python"],
                     installation["target_out"], *[x["name"] for x in manifest["artifacts"]]]
+        exchange = list(pair_exchange(installation["target_out"]).values())
+        external += exchange
         for item in before["unrelated_files"]:
             external.append(pinned_file(item)["path"])
-            require(windows_path(item["path"]) != windows_path(installation["target_out"]), "installer-scope-overlap")
+            require(all(windows_path(item["path"]) != windows_path(path) for path in [installation["target_out"], *exchange]),
+                    "installer-scope-overlap")
         for path_value in external:
             value = windows_path(path_value)
             require(value != managed and managed not in value.parents and value not in managed.parents, "installer-scope-overlap")
@@ -566,7 +627,9 @@ class InstallOperator:
                          "manifest_sha256": manifest_pin["sha256"], "destination_sha256": digest(canonical(installation)),
                          "before_state_sha256": digest(canonical(before)), "bootstrap_sha256": digest(canonical(bootstrap)),
                          "connection_sha256": digest(canonical(connection)), "expected_host_sha256": digest(canonical(expected)),
-                         "scope": "host-install-run-remove", "launch": True}
+                         "scope": PAIR_SCOPE, "launch": True}
+        if retained and isinstance(auth, dict) and auth.get("scope") in RETAINED_SCOPES:
+            expected_auth["scope"] = auth["scope"]
         require(canonical(auth) == canonical(expected_auth), "installer-not-authorized")
         ssh = data.get("ssh_config")
         require(ssh is None or isinstance(ssh, str), "installer-config-invalid")
@@ -597,6 +660,7 @@ class Commands:
         self.group_cleanup_known = True
         self.on_run_id = None
         self.task = "windows-onboarding-baseline"
+        self.last_stderr = b""
 
     def marker(self, line):
         if line.startswith(b"RUN_ID="):
@@ -614,7 +678,7 @@ class Commands:
                 self.on_run_id(value)
 
     def run(self, args, timeout=180, stdin=None, marker=False, env=None, recovery=False, limit=24 << 20, cleanup_grace=5,
-            expected_error=None):
+            expected_error=None, expected_code=None, rejection="target-mismatch-not-rejected"):
         require(os.name == "posix" and os.uname().sysname in ("Darwin", "Linux")
                 and all(hasattr(os, name) for name in ("waitid", "WNOWAIT", "P_PID")),
                 "controller-platform-unsupported")
@@ -776,11 +840,12 @@ class Commands:
             settle_process()
         if failure or errors:
             raise failure or errors[0]
-        if expected_error is not None:
-            require(process.returncode != 0 and expected_error.encode() in outputs["stderr"],
-                    "target-mismatch-not-rejected")
+        if expected_error is not None or expected_code is not None:
+            require(process.returncode != 0 and process.returncode == (expected_code or process.returncode)
+                    and (expected_error is None or expected_error.encode() in outputs["stderr"]), rejection)
         else:
             require(process.returncode == 0, "command-failed")
+        self.last_stderr = outputs["stderr"]
         return outputs["stdout"]
 
     def json(self, args, **kwargs):
@@ -971,22 +1036,33 @@ def installer_call(commands, operator, operation, *, operation_id=None, apply=Fa
             *[{"path": a["name"], "size": a["size"], "sha256": a["sha256"]} for a in operator.manifest["artifacts"]]]
     if operation in ("status", "stop"):
         pins = [operator.bootstrap]
-    inputs = {"bootstrap": operator.bootstrap["path"], "pins": pins, "args": args}
+    exit_code, raw = pinned_call(commands, operator, operator.bootstrap["path"], pins, args,
+                                 timeout=45 if operation in ("status", "stop") else 360, recovery=recovery,
+                                 recovery_deadline=recovery_deadline, record="installer-result")
+    value = document(raw)
+    return validate_installer_result(value, operator, operation, operation_id=operation_id, apply=apply,
+                                     expected_plan=expected_plan, target_out=target_out, fresh=fresh,
+                                     exit_code=exit_code)
+
+
+def pinned_call(commands, operator, executable, pins, args, *, timeout, recovery=False, recovery_deadline=None, record):
+    """Runs one host executable while every pinned file stays leased read-only; returns its exit code and stdout."""
+    inputs = {"executable": executable, "pins": pins, "args": args}
     script = INSTALL_SHELL + r"""
 $leases = [Collections.Generic.List[IO.FileStream]]::new()
 try {
     foreach ($pin in $inputData.pins) { $leases.Add((Pin $pin)) }
     $arguments = @($inputData.args | ForEach-Object { [string]$_ })
     $ErrorActionPreference = 'Continue'
-    $outputText = (& $inputData.bootstrap @arguments | Out-String)
+    $outputText = (& $inputData.executable @arguments | Out-String)
     $code = $LASTEXITCODE
     $ErrorActionPreference = 'Stop'
     [ordered]@{schema_version=1;exit_code=$code;output=$outputText} | ConvertTo-Json -Depth 2 -Compress
 } finally { foreach ($lease in $leases) { $lease.Dispose() } }
 """
     script = script.replace("__INPUT__", base64.b64encode(canonical(inputs)).decode())
-    timeout = 45 if operation in ("status", "stop") else 360
     if recovery_deadline is not None:
+        # Local request preparation spends the same recovery budget as the remote call.
         timeout = min(timeout, recovery_deadline - time.monotonic())
         require(timeout > 0, "installer-stop-unsettled")
     response = host_json(commands, operator.connection["ssh_alias"], script,
@@ -994,11 +1070,8 @@ try {
     require(set(response) == {"schema_version", "exit_code", "output"} and type(response["exit_code"]) is int
             and isinstance(response["output"], str), "installer-response-invalid")
     raw = response["output"].encode()
-    (commands.private / f"installer-result-{commands.sequence:03d}.json").write_bytes(raw)
-    value = document(raw)
-    return validate_installer_result(value, operator, operation, operation_id=operation_id, apply=apply,
-                                     expected_plan=expected_plan, target_out=target_out, fresh=fresh,
-                                     exit_code=response["exit_code"])
+    (commands.private / f"{record}-{commands.sequence:03d}.json").write_bytes(raw)
+    return response["exit_code"], raw
 
 
 def validate_installer_result(value, operator, operation, *, operation_id=None, apply=False, expected_plan=None,
@@ -1201,24 +1274,48 @@ def installer_target(commands, operator, result, destination):
         require(actual[key] == expected[key], "installer-target-changed")
     for key, filename in (("host_executable", "blender-box.exe"), ("session_broker_executable", "blendersessiond.exe")):
         require(windows_path(actual[key]) == runtime / filename, "installer-target-changed")
-    inputs = {"path": operator.installation["target_out"]}
+    raw = fetch_host_file(commands, operator, operator.installation["target_out"], "installer-target-invalid")
+    require(document(raw, version=2) == target, "installer-target-changed")
+    destination.write_bytes(raw)
+    return actual
+
+
+def fetch_host_file(commands, operator, path, invalid):
     script = INSTALL_SHELL + r"""
 $item = Regular $inputData.path 65536
 $raw = [IO.File]::ReadAllBytes($item.FullName)
 [ordered]@{schema_version=1;content=[Convert]::ToBase64String($raw);sha256=(Get-FileHash -LiteralPath $item.FullName -Algorithm SHA256).Hash.ToLowerInvariant()} | ConvertTo-Json -Compress
 """
     response = host_json(commands, operator.connection["ssh_alias"],
-                         script.replace("__INPUT__", base64.b64encode(canonical(inputs)).decode()), timeout=120, limit=128 << 10)
+                         script.replace("__INPUT__", base64.b64encode(canonical({"path": path})).decode()),
+                         timeout=120, limit=128 << 10)
     require(set(response) == {"schema_version", "content", "sha256"} and isinstance(response.get("content"), str)
-            and matches(HASH, response.get("sha256")), "installer-target-invalid")
+            and matches(HASH, response.get("sha256")), invalid)
     try:
         raw = base64.b64decode(response["content"], validate=True)
     except ValueError as error:
-        raise ProofError("installer-target-invalid") from error
-    require(0 < len(raw) <= 64 << 10 and digest(raw) == response["sha256"], "installer-target-invalid")
-    require(document(raw, version=2) == target, "installer-target-changed")
-    destination.write_bytes(raw)
-    return actual
+        raise ProofError(invalid) from error
+    require(0 < len(raw) <= 64 << 10 and digest(raw) == response["sha256"], invalid)
+    return raw
+
+
+def put_host_file(commands, operator, path, content):
+    """Creates one exchange file on the host; an existing file must already hold the same bytes."""
+    script = INSTALL_SHELL + r"""
+$bytes = [Convert]::FromBase64String($inputData.content)
+if (Test-Path -LiteralPath $inputData.path) {
+    $existing = [IO.File]::ReadAllBytes((Regular $inputData.path 65536).FullName)
+    if ([Convert]::ToBase64String($existing) -cne $inputData.content) { throw 'exchange file exists with different contents' }
+} else {
+    $stream = [IO.File]::Open($inputData.path, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
+    try { $stream.Write($bytes, 0, $bytes.Length); $stream.Flush($true) } finally { $stream.Dispose() }
+}
+[ordered]@{schema_version=1;sha256=(Get-FileHash -LiteralPath $inputData.path -Algorithm SHA256).Hash.ToLowerInvariant()} | ConvertTo-Json -Compress
+"""
+    inputs = {"path": path, "content": base64.b64encode(content).decode()}
+    response = host_json(commands, operator.connection["ssh_alias"],
+                         script.replace("__INPUT__", base64.b64encode(canonical(inputs)).decode()), timeout=120)
+    require(response == {"schema_version": 1, "sha256": digest(content)}, "pair-exchange-failed")
 
 
 def inspect_host(commands, target):
@@ -1237,6 +1334,286 @@ $hostHash = if (Test-Path -LiteralPath $config.host_executable) { (Get-FileHash 
 [ordered]@{schema_version=1; hostname=[Environment]::MachineName; windows_build=[string]$os.BuildNumber; blender_version=[string]$version; controller_sid=[Security.Principal.WindowsIdentity]::GetCurrent().User.Value; console_sid=$consoleSid; configured_ssh_sid=(Sid $config.ssh_user); configured_interactive_sid=(Sid $config.interactive_user); daemon_sha256=(Get-FileHash -LiteralPath $config.session_broker_executable -Algorithm SHA256).Hash.ToLowerInvariant(); host_sha256=$hostHash; blender_process_count=@(Get-CimInstance Win32_Process -Filter "Name = 'blender.exe'").Count; host_lock_present=[bool](Test-Path -LiteralPath ([IO.Path]::Combine($config.work_root,'host-lock.json')))} | ConvertTo-Json -Compress
 """.replace("__CONFIG__", encoded)
     return host_json(commands, target["ssh_alias"], script, timeout=120)
+
+
+def runtime_call(commands, operator, args, *, recovery=False):
+    """Runs one host pairing or SSH verb through the installed, pinned runtime over the admin channel."""
+    args = [args[0], args[1], "--state-root", operator.installation["state_root"], *args[2:], "--json"]
+    return pinned_call(commands, operator, operator.runtime_pin["path"], [operator.runtime_pin], args,
+                       timeout=120, recovery=recovery, record="pair-result")
+
+
+def runtime_json(commands, operator, args, *, recovery=False):
+    exit_code, raw = runtime_call(commands, operator, args, recovery=recovery)
+    require(exit_code == 0, "pair-host-command-failed")
+    return strict_json(raw)
+
+
+def host_grants(commands, operator, pair_id=None, *, recovery=False):
+    views = runtime_json(commands, operator, ["pair", "status", *(["--pair", pair_id] if pair_id else [])],
+                         recovery=recovery)
+    require(isinstance(views, list) and all(isinstance(view, dict) and matches(PAIR_ID, view.get("pair_id"))
+                                            and matches(r"bbxi_[a-f0-9]{32}", view.get("installation_id"))
+                                            for view in views), "pair-status-invalid")
+    # Removal keeps the shared state root, so earlier installations' grants stay listed; they must be revoked.
+    ours = {view["pair_id"]: view for view in views if view["installation_id"] == operator.installation["id"]}
+    require(all(view.get("state") == "revoked" for view in views if view["installation_id"] != operator.installation["id"]),
+            "pair-earlier-grant-active")
+    return ours
+
+
+def keys_pin(operator, keys_file):
+    """The effective authorized keys file must be one of the declared, pinned unrelated files."""
+    require(isinstance(keys_file, str), "pair-keys-file-unpinned")
+    pins = [pin for pin in operator.before["unrelated_files"] if windows_path(pin["path"]) == windows_path(keys_file)]
+    require(len(pins) == 1, "pair-keys-file-unpinned")
+    return pins[0]
+
+
+def host_revoke(commands, operator, pair_id, *, recovery=False):
+    result = runtime_json(commands, operator, ["pair", "revoke", "--pair", pair_id, "--apply"], recovery=recovery)
+    require(isinstance(result, dict) and result.get("pair_id") == pair_id and result.get("state") == "revoked"
+            and all(matches(HASH, result.get(key)) for key in ("keys_sha256_before", "keys_sha256_after")),
+            "pair-host-revoke-failed")
+    return result
+
+
+def keys_preserved(commands, operator):
+    observed = installer_observation(commands, operator, recovery=True)
+    require(observed["unrelated_files"] == operator.before["unrelated_files"], "pair-keys-file-changed")
+
+
+def host_unpair(commands, operator, pair_id, *, required):
+    """Converges one pairing through host-local revocation over the admin channel; never replays enrollment."""
+    grants = host_grants(commands, operator, recovery=True)
+    if pair_id in grants:
+        host_revoke(commands, operator, pair_id, recovery=True)
+        require(host_grants(commands, operator, pair_id, recovery=True)[pair_id].get("state") == "revoked",
+                "pair-host-not-revoked")
+        method = "host-local"
+    else:
+        require(not required, "pair-grant-missing")
+        method = "never-granted"
+    keys_preserved(commands, operator)
+    return method
+
+
+def ssh_address(commands, alias):
+    lines = commands.run(["ssh", "-G", alias], timeout=30).decode("utf-8", errors="replace").splitlines()
+    values = [line.split(" ", 1)[1] for line in lines if line.startswith("hostname ")]
+    require(len(values) == 1, "pair-address-invalid")
+    if not matches(r"[a-zA-Z0-9][a-zA-Z0-9.-]{0,252}", values[0]):
+        try:
+            ipaddress.ip_address(values[0])
+        except ValueError:
+            raise ProofError("pair-address-invalid") from None
+        require("%" not in values[0], "pair-address-invalid")
+    return values[0]
+
+
+def random_host_key():
+    wire = struct.pack(">I", 11) + b"ssh-ed25519" + struct.pack(">I", 32) + os.urandom(32)
+    return "ssh-ed25519 " + base64.b64encode(wire).decode("ascii")
+
+
+def ed25519_key(value):
+    if not isinstance(value, str) or not value.startswith("ssh-ed25519 "):
+        return False
+    try:
+        wire = base64.b64decode(value[len("ssh-ed25519 "):], validate=True)
+    except ValueError:
+        return False
+    return len(wire) == 51 and wire[:19] == struct.pack(">I", 11) + b"ssh-ed25519" + struct.pack(">I", 32)
+
+
+def prepare_pairing(commands, client, name, offer_path, offer_sha):
+    raw = commands.run([client, "pair", "prepare", name, "--offer", offer_path, "--trust-offer", offer_sha])
+    intent = document(raw)
+    stated = re.fullmatch(rb"Enrollment request SHA-256 ([0-9a-f]{64})\r?\n?", commands.last_stderr)
+    require(stated is not None and matches(PAIR_ID, intent.get("pair_id")) and intent.get("offer_hash") == offer_sha,
+            "pair-intent-invalid")
+    return raw, intent, stated.group(1).decode("ascii")
+
+
+def enroll(commands, operator, intent_path, intent_sha, *, apply=False):
+    args = ["pair", "enroll", "--intent", intent_path, "--trust-intent", intent_sha]
+    if apply:
+        args += ["--apply", "--out", operator.pair_files["receipt"]]
+    value = runtime_json(commands, operator, args)
+    require(isinstance(value, dict) and value.get("state") == ("granted" if apply else "preview")
+            and value.get("installation_id") == operator.installation["id"] and matches(PAIR_ID, value.get("pair_id"))
+            and matches(HASH, value.get("keys_sha256_before"))
+            and (not apply or matches(HASH, value.get("keys_sha256_after")) and matches(HASH, value.get("receipt_sha"))
+                 and isinstance(value.get("receipt"), dict)), "pair-enroll-invalid")
+    return value
+
+
+def verify_trust_mismatch(commands, operator, client, raw, offer_sha):
+    """A tampered offer never reaches enrollment, and a self-consistent forged offer never gets a host grant."""
+    name = PAIR_TARGET + "-forged"
+    genuine = document(raw)["connection"]["host_public_key"].encode("ascii")
+    forged_key = random_host_key().encode("ascii")
+    tampered = raw.replace(genuine, forged_key)
+    require(raw.count(genuine) == 1 and tampered.count(forged_key) == 1, "pair-offer-invalid")
+    path = commands.private / "pair-offer-tampered.json"
+    path.write_bytes(tampered)
+    commands.run([client, "pair", "prepare", name, "--offer", path, "--trust-offer", offer_sha],
+                 expected_error="ERROR: trust offer:", expected_code=1, rejection="pair-tampered-offer-accepted")
+    require(commands.json([client, "pair", "status", name, "--json"]).get("access") == "none", "pair-tampered-offer-retained")
+    intent_raw, intent, intent_sha = prepare_pairing(commands, client, name, path, digest(OFFER_DOMAIN + tampered))
+    put_host_file(commands, operator, operator.pair_files["forged-intent"], intent_raw)
+    exit_code, _ = runtime_call(commands, operator, ["pair", "enroll", "--intent", operator.pair_files["forged-intent"],
+                                                     "--trust-intent", intent_sha])
+    require(exit_code != 0, "pair-forged-offer-accepted")
+    require(intent["pair_id"] not in host_grants(commands, operator), "pair-forged-offer-granted")
+    forgotten = commands.json([client, "pair", "forget", name, "--json"])
+    require(forgotten.get("pair_id") == intent["pair_id"] and forgotten.get("remote_access") == "unconfirmed"
+            and commands.json([client, "pair", "status", name, "--json"]).get("access") == "none", "pair-forged-forget-failed")
+
+
+def verify_wrong_pin(commands, client, target, payload):
+    """A changed pinned host key must fail as host-key-mismatch even though the enrolled client key would authenticate."""
+    wrong = dict(target, ssh=dict(target["ssh"], host_public_key=random_host_key()))
+    path = commands.private / "pair-wrong-pin.json"
+    path.write_bytes(canonical(wrong))
+    result = commands.json([client, "doctor", "--target", path, "--payload", payload, "--json"], timeout=180,
+                           expected_code=1, rejection="pair-wrong-pin-accepted")
+    host = result.get("host")
+    problems = host.get("problems") if isinstance(host, dict) else None
+    require(result.get("status") == "fail" and isinstance(problems, list) and len(problems) == 1
+            and isinstance(problems[0], dict)
+            and (problems[0].get("class"), problems[0].get("check")) == ("host-key-mismatch", "ssh.connection"),
+            "pair-wrong-pin-misclassified")
+
+
+def pair_client(commands, operator, client, report, payload, release):
+    """Pairs a fresh client with the installed host; release(pairing) runs before the host grant is applied."""
+    private, files = commands.private, operator.pair_files
+    installed = document(read_regular(private, "target.json", 64 << 10), version=2)
+    with outcome_stage(report, "ssh-preparation", "ssh-already-prepared"):
+        status = commands.json([client, "pair", "status", PAIR_TARGET, "--json"])
+        require(status.get("access") == "none" and not status.get("pair_id")
+                and commands.json([client, "targets", "list", "--json"]) == {"schema_version": 1, "targets": []},
+                "pair-client-not-fresh")
+        prepared = runtime_json(commands, operator, ["setup", "ssh", "--platform", "windows",
+                                                     "--installation", operator.installation["id"]])
+        plan = prepared.get("plan") if isinstance(prepared, dict) else None
+        service = plan.get("service") if isinstance(plan, dict) else None
+        require(prepared.get("state") == "unchanged" and prepared.get("problems") == [] and isinstance(service, dict)
+                and service.get("start") is False and service.get("set_automatic") is False and "rule" not in plan,
+                "ssh-preparation-required")
+    with outcome_stage(report, "pair-offer", "offer-digest-verified"):
+        address = ssh_address(commands, operator.connection["ssh_alias"])
+        issued = runtime_json(commands, operator, ["pair", "offer", "--installation", operator.installation["id"],
+                                                   "--address", address, "--out", files["offer"]])
+        require(isinstance(issued, dict) and set(issued) == {"schema_version", "offer_sha256", "path"}
+                and matches(HASH, issued["offer_sha256"]) and isinstance(issued["path"], str)
+                and windows_path(issued["path"]) == windows_path(files["offer"]), "pair-offer-invalid")
+        raw = fetch_host_file(commands, operator, files["offer"], "pair-offer-invalid")
+        offer_sha = issued["offer_sha256"]
+        require(digest(OFFER_DOMAIN + raw) == offer_sha, "pair-offer-digest-mismatch")
+        offer = document(raw)
+        connection = offer.get("connection")
+        require(offer.get("installation_id") == operator.installation["id"] and offer.get("platform") == "windows"
+                and isinstance(connection, dict) and set(connection) == {"host", "port", "user", "host_public_key"}
+                and connection["host"] == address and connection["user"] == operator.connection["windows_user"]
+                and type(connection["port"]) is int and 0 < connection["port"] <= 65535
+                and ed25519_key(connection["host_public_key"]) and isinstance(offer.get("installed"), dict)
+                and offer["installed"].get("windows") == installed["windows"], "pair-offer-invalid")
+        offer_path = private / "pair-offer.json"
+        offer_path.write_bytes(raw)
+    with outcome_stage(report, "pair-trust-mismatch", None):
+        verify_trust_mismatch(commands, operator, client, raw, offer_sha)
+    with outcome_stage(report, "pair-enroll", "enroll-applied-and-repeated"):
+        intent_raw, intent, intent_sha = prepare_pairing(commands, client, PAIR_TARGET, offer_path, offer_sha)
+        put_host_file(commands, operator, files["intent"], intent_raw)
+        preview = enroll(commands, operator, files["intent"], intent_sha)
+        pin = keys_pin(operator, preview.get("keys_file"))
+        require(preview["pair_id"] == intent["pair_id"] and preview["keys_sha256_before"] == pin["sha256"],
+                "pair-keys-file-unpinned")
+        pairing = {"pair_id": intent["pair_id"], "offer_sha256": offer_sha, "intent_sha256": intent_sha}
+        release(dict(pairing))
+        granted = enroll(commands, operator, files["intent"], intent_sha, apply=True)
+        receipt_raw = fetch_host_file(commands, operator, files["receipt"], "pair-receipt-invalid")
+        repeated = enroll(commands, operator, files["intent"], intent_sha, apply=True)
+        stable = ("pair_id", "line", "receipt", "receipt_sha")
+        require(granted["pair_id"] == intent["pair_id"] and granted["keys_sha256_before"] == pin["sha256"]
+                and granted["keys_sha256_after"] != pin["sha256"] and document(receipt_raw) == granted["receipt"]
+                and repeated["keys_sha256_before"] == repeated["keys_sha256_after"] == granted["keys_sha256_after"]
+                and {key: repeated.get(key) for key in stable} == {key: granted.get(key) for key in stable}
+                and fetch_host_file(commands, operator, files["receipt"], "pair-receipt-invalid") == receipt_raw,
+                "pair-enroll-repeat-changed")
+    with outcome_stage(report, "pair-target", "paired-target-saved"):
+        receipt_path = private / "pair-receipt.json"
+        receipt_path.write_bytes(receipt_raw)
+        completed = commands.json([client, "pair", "complete", PAIR_TARGET, "--receipt", receipt_path,
+                                   "--trust-receipt", granted["receipt_sha"], "--json"])
+        target = completed.get("target")
+        require(completed == {"schema_version": 1, "name": PAIR_TARGET, "access": "enrolled", "readiness": "unchecked",
+                              "target": target}
+                and commands.json([client, "targets", "show", PAIR_TARGET, "--json"])
+                == {"schema_version": 1, "name": PAIR_TARGET, "platform": "windows", "target": target}
+                and isinstance(target, dict) and set(target) == {"schema_version", "platform", "ssh", "windows"}
+                and target["schema_version"] == 3 and target["platform"] == "windows"
+                and target["windows"] == installed["windows"] and isinstance(target["ssh"], dict)
+                and {key: target["ssh"].get(key) for key in connection} == connection
+                and matches(HASH, target["ssh"].get("client_public_key_hash")), "pair-target-mismatch")
+        status = commands.json([client, "pair", "status", PAIR_TARGET, "--json"])
+        require((status.get("pair_id"), status.get("access"), status.get("readiness"))
+                == (intent["pair_id"], "enrolled", "unchecked"), "pair-target-mismatch")
+        paired_raw = canonical(target)
+        (private / "paired-target.json").write_bytes(paired_raw)
+    with outcome_stage(report, "pair-trust-mismatch", "tampered-forged-and-wrong-pin-refused"):
+        verify_wrong_pin(commands, client, target, payload)
+    return {**pairing, "receipt_sha256": granted["receipt_sha"], "paired_sha256": digest(paired_raw)}
+
+
+def probe_revoked(commands, key, endpoint):
+    """A fresh connection with the revoked key must verify the pinned host key, then be refused."""
+    known = commands.private / "pair-known-hosts"
+    known.write_text("blender-box-pinned " + endpoint["host_public_key"] + "\n")
+    commands.run(["ssh", "-F", "/dev/null", "-i", key, "-o", "IdentitiesOnly=yes", "-o", "IdentityAgent=none",
+                  "-o", "BatchMode=yes", "-o", "PreferredAuthentications=publickey", "-o", "PasswordAuthentication=no",
+                  "-o", "KbdInteractiveAuthentication=no", "-o", "StrictHostKeyChecking=yes",
+                  "-o", "HostKeyAlias=blender-box-pinned", "-o", "HostKeyAlgorithms=ssh-ed25519",
+                  "-o", "GlobalKnownHostsFile=none", "-o", "UserKnownHostsFile=" + str(known), "-o", "ConnectTimeout=30",
+                  "-p", str(endpoint["port"]), "-l", endpoint["user"], endpoint["host"], "exit"],
+                 timeout=60, recovery=True, expected_error="Permission denied (publickey", expected_code=255,
+                 rejection="pair-revoked-key-accepted")
+
+
+def probe_admin(commands, operator):
+    value = host_json(commands, operator.connection["ssh_alias"],
+                      "[ordered]@{schema_version=1;admin=$true} | ConvertTo-Json -Compress", timeout=60, recovery=True)
+    require(value == {"schema_version": 1, "admin": True}, "pair-admin-access-lost")
+    keys_preserved(commands, operator)
+
+
+def unpair_client(commands, operator, client, pairing, report):
+    """Revokes through the client, then proves the key is refused and unrelated admin access survives."""
+    pair_id, private = pairing["pair_id"], commands.private
+    with outcome_stage(report, "pair-revoke", "client-revoked-host-confirmed"):
+        target = document(read_regular(private, "paired-target.json", 64 << 10), version=3)
+        config = Path(commands.env["BLENDER_BOX_CONFIG_DIR"])
+        key = read_regular(config, "credentials/" + target["ssh"]["client_public_key_hash"] + "/id_ed25519", 16 << 10)
+        snapshot = private / "revoked-key"
+        with os.fdopen(os.open(snapshot, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "wb") as stream:
+            stream.write(key)
+        revoked = commands.json([client, "pair", "revoke", PAIR_TARGET, "--json"], timeout=180, recovery=True)
+        require((revoked.get("pair_id"), revoked.get("state"), revoked.get("host")) == (pair_id, "revoked", "revoked"),
+                "pair-revoke-unconfirmed")
+        require(commands.json([client, "pair", "status", PAIR_TARGET, "--json"], recovery=True).get("access") == "none",
+                "pair-client-state-retained")
+        view = host_grants(commands, operator, pair_id, recovery=True)[pair_id]
+        repeated = host_revoke(commands, operator, pair_id, recovery=True)
+        require(view.get("state") == "revoked"
+                and repeated["keys_sha256_before"] == repeated["keys_sha256_after"]
+                == keys_pin(operator, view.get("keys_file"))["sha256"], "pair-host-not-revoked")
+    with outcome_stage(report, "pair-revoked-rejected", "revoked-key-rejected"):
+        probe_revoked(commands, snapshot, target["ssh"])
+    with outcome_stage(report, "pair-unrelated-access", "admin-access-and-keys-file-preserved"):
+        probe_admin(commands, operator)
+    return {"pair_id": pair_id, "method": "client"}
 
 
 def write_outcome(public, report):
@@ -1359,15 +1736,13 @@ def baseline(request, commands_factory=Commands, host=None, *, native_authority=
     public.mkdir(mode=0o700)
     named = request.proof == "named-target"
     installing = request.proof == "host-install"
-    required = REQUIRED + (INSTALL_REQUIRED if installing else NAMED_REQUIRED if named else ())
+    required = REQUIRED + (INSTALL_REQUIRED + PAIR_REQUIRED if installing else NAMED_REQUIRED if named else ())
     report = {"schema_version": 1, "proof": host.name + "-" + request.proof,
               "candidate_sha": request.candidate_sha if matches(SHA, request.candidate_sha) else None,
               "driver_sha": request.driver_sha if matches(SHA, request.driver_sha) else None,
               "execution": request.execution, "status": "fail", "run": None, "cleanup": None,
               "outcomes": {name: {"status": "not-run", "code": "not-run"} for name in required},
-              "not_exercised": list(host.not_exercised), "artifacts": []}
-    if installing:
-        report["not_exercised"] += list(INSTALL_NOT_EXERCISED)
+              "not_exercised": list(INSTALL_NOT_EXERCISED if installing else host.not_exercised), "artifacts": []}
     commands = commands_factory(private, request.candidate_checkout)
     commands.task = host.name + "-baseline"
     commands.env["BLENDER_BOX_CONFIG_DIR"] = str((private / "config").absolute())
@@ -1381,6 +1756,7 @@ def baseline(request, commands_factory=Commands, host=None, *, native_authority=
     installation_owned, install_attempted, scenario_attempted = False, False, False
     original_observation = None
     retained_installation = None
+    pair_released, pairing = {}, None
     old_signals = {}
     qualification = None
     fixture, run_timeout, command_timeout = FIXTURE, "20m", 1320
@@ -1445,6 +1821,7 @@ def baseline(request, commands_factory=Commands, host=None, *, native_authority=
             report["binaries"] = {"host_sha256": host_hash, "host_size": artifacts_by_role["host-executable"]["size"],
                                   "client_sha256": digest(read_regular(private, client.name, 128 << 20))}
             current = "preparation"
+            selector = retained_installation.pair(report, client, fixture / "payload.json")
         elif installing:
             operation_ids = {name: "bbxo_" + os.urandom(16).hex() for name in ("install", "remove")}
             with (private / "installer-operations.json").open("x") as stream:
@@ -1496,6 +1873,8 @@ def baseline(request, commands_factory=Commands, host=None, *, native_authority=
             report["binaries"] = {"host_sha256": host_hash, "host_size": artifacts_by_role["host-executable"]["size"],
                                   "client_sha256": digest(read_regular(private, client.name, 128 << 20))}
             current = "preparation"
+            pairing = pair_client(commands, operator, client, report, fixture / "payload.json", pair_released.update)
+            selector = ["--target-name", PAIR_TARGET]
         else:
             host_binary = private / host.host_filename
             host_env = dict(commands.env, GOOS=host.platform, GOARCH="amd64", CGO_ENABLED="0")
@@ -1570,7 +1949,7 @@ def baseline(request, commands_factory=Commands, host=None, *, native_authority=
         current = "recovery"
     except Exception as error:
         code = error.code if isinstance(error, ProofError) else "proof-internal-error"
-        report["outcomes"][current] = {"status": "fail", "code": code}
+        report["outcomes"][getattr(error, "stage", current)] = {"status": "fail", "code": code}
     finally:
         if named and catalog_attempted and commands.group_cleanup_known:
             try:
@@ -1631,6 +2010,22 @@ def baseline(request, commands_factory=Commands, host=None, *, native_authority=
                 report["outcomes"]["target-forget"] = {"status": "pass", "code": "proof-profile-forgotten"}
             except Exception:
                 report["outcomes"]["target-forget"] = {"status": "fail", "code": "target-forget-failed"}
+        pair_settled = not pair_released
+        if (retained_installation is None and pair_released and commands.group_cleanup_known
+                and (not scenario_attempted or report["cleanup"])):
+            try:
+                if pairing is not None:
+                    try:
+                        unpair_client(commands, operator, client, pairing, report)
+                    except Exception as error:
+                        report["outcomes"][getattr(error, "stage", "pair-revoke")] = {"status": "fail", "code": error_code(error)}
+                        host_unpair(commands, operator, pairing["pair_id"], required=True)
+                else:
+                    host_unpair(commands, operator, pair_released["pair_id"], required=False)
+                pair_settled = True
+            except Exception as error:
+                if report["outcomes"]["pair-revoke"]["status"] != "fail":
+                    report["outcomes"]["pair-revoke"] = {"status": "fail", "code": error_code(error)}
         if retained_installation is None and installing and install_attempted:
             if commands.group_cleanup_known:
                 try:
@@ -1638,8 +2033,12 @@ def baseline(request, commands_factory=Commands, host=None, *, native_authority=
                     installation_owned = applied["state"] == "installed"
                 except Exception:
                     installation_owned = False
-            if (installation_owned and commands.group_cleanup_known
-                    and (not scenario_attempted or report["cleanup"] and report["outcomes"]["evidence"]["status"] != "fail")):
+            removable = (installation_owned and commands.group_cleanup_known
+                         and (not scenario_attempted or report["cleanup"] and report["outcomes"]["evidence"]["status"] != "fail"))
+            if removable and not pair_settled:
+                report["outcomes"]["remove-preview"] = {"status": "fail", "code": "pairing-unrevoked"}
+                report["installation"]["state"] = "unknown"
+            elif removable:
                 repeat_install = scenario_attempted and not commands.cancelled.is_set()
                 removal_stage = "install-repeat" if repeat_install else "remove-preview"
                 try:
@@ -1706,6 +2105,11 @@ def baseline(request, commands_factory=Commands, host=None, *, native_authority=
                     if retained_installation.data["install_repeat"] == "pending":
                         retained_installation.repeat("install")
                         report["outcomes"]["install-repeat"] = {"status": "pass", "code": "identical-install-repeated-after-run"}
+                try:
+                    retained_installation.unpair(report, client)
+                except Exception as error:
+                    # recover() below still converges the pairing through host-local revocation.
+                    report["outcomes"][getattr(error, "stage", "pair-revoke")] = {"status": "fail", "code": error_code(error)}
                 report.update(retained_installation.recover())
                 if retained_installation.stage == "removed":
                     report["installation"] = {"installation_id": operator.installation["id"], "state": "removed"}

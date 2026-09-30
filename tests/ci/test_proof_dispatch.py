@@ -1,12 +1,14 @@
 import base64
 import copy
 from dataclasses import asdict, replace
+from datetime import datetime, timedelta, timezone
 import json
 from pathlib import Path
 import shutil
 import subprocess
 import tempfile
 import unittest
+from unittest import mock
 
 import test_proof_controller as baseline
 import test_proof_installation as installation_tests
@@ -28,7 +30,7 @@ class DispatchTests(unittest.TestCase):
                     "INSTALL_CONTROLLER_CONFIG": json.dumps({"schema_version": 1, "hostname": "controller.invalid",
                                                             "user": "proof-control", "port": 22}),
                     "INSTALL_OPERATOR_CONFIG": json.dumps({"schema_version": 1,
-                        "authorization": {"candidate_sha": baseline.SHA, "scope": "host-install-run-remove", "launch": True},
+                        "authorization": {"candidate_sha": baseline.SHA, "scope": "host-install-pair-run-remove", "launch": True},
                         "fixture": {"kind": "dedicated", "state": "absent"}})}
 
     def receipt(self, **changes):
@@ -124,6 +126,36 @@ class DispatchTests(unittest.TestCase):
             with self.subTest(bad=bad), self.assertRaises(model.ControllerError):
                 dispatch.dispatch(self.root, "start", commands=Commands())
             self.assertFalse((self.root / "public/receipt.json").exists())
+
+    def test_observer_job_rebuilds_the_starting_request_from_its_expiry(self):
+        started = dispatch.prepare(self.root, self.env)
+        observer = self.root.parent / "observer"
+        self.assertEqual(dispatch.prepare(observer, self.env | {"REQUEST_EXPIRES_AT": started.expires_at}).digest, started.digest)
+        self.assertEqual((observer / "request.json").read_bytes(), (self.root / "request.json").read_bytes())
+        for expires in ("2999-01-01T00:00:00Z", "tomorrow"):
+            with self.subTest(expires=expires), self.assertRaises(model.ControllerError):
+                dispatch.prepare(self.root.parent / ("refused-" + expires[:4]), self.env | {"REQUEST_EXPIRES_AT": expires})
+            self.assertFalse((self.root.parent / ("refused-" + expires[:4])).exists())
+
+    def test_delayed_observer_preserves_expired_authority_and_can_recover(self):
+        now = datetime(2026, 9, 29, 12, tzinfo=timezone.utc)
+        with mock.patch.object(dispatch, "datetime") as clock:
+            clock.now.return_value = now
+            started = dispatch.prepare(self.root, self.env)
+            clock.now.return_value = now + timedelta(hours=3)
+            observer = self.root.parent / "delayed-observer"
+            retained = dispatch.prepare(observer, self.env | {"REQUEST_EXPIRES_AT": started.expires_at})
+        self.assertEqual(retained.digest, started.digest)
+        self.assertEqual((observer / "request.json").read_bytes(), (self.root / "request.json").read_bytes())
+        requests = []
+        response = self.receipt(phase="settled", closed=True, local_termination="proven",
+                                windows_cleanup="proven", proof_result="pass")
+        class Commands:
+            def run(self, args, **options):
+                requests.append(model.parse_command(options["stdin"]))
+                return proof.canonical(response)
+        self.assertEqual(dispatch.dispatch(observer, "recover", commands=Commands()), response)
+        self.assertEqual([command.operation for command in requests], ["recover"])
 
     def test_unauthorized_rerun_or_wrong_grant_precedes_credential_files(self):
         for changes in ({"GITHUB_RUN_ATTEMPT": "2"}, {"CANDIDATE_SHA": "c" * 40}):

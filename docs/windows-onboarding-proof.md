@@ -83,8 +83,8 @@ The installer operator document uses schema version 1 and these fields:
 - `installation` contains `id` (`bbxi_` plus 32 lowercase hex characters), `state_root`, `task_name`, `blender`, `python`, and `target_out`. The exported target must be absent and outside the entire state root. It remains after removal for recovery and review.
 - `bootstrap` contains its exact Windows `path`, byte `size`, and `sha256`.
 - `runtime` contains `local_manifest`, an absolute private controller path, and `remote_manifest` with Windows `path`, byte `size`, and `sha256`. Both copies must have identical bytes. Artifact `name` fields are exact absolute Windows paths already provisioned on the host.
-- `before_state` contains `installation_absent: true`, `task_absent: true`, `target_absent: true`, `unrelated_files`, and `unrelated_tasks`. Declare 1–32 unrelated files with `path`, `size`, and `sha256`, and 0–8 unrelated tasks with `name` and `xml_sha256`. Task hashes cover UTF-8 `Export-ScheduledTask` output. These exact fixtures remain outside the installation subtree.
-- `authorization` contains `candidate_sha`, `fixture_id`, `installation_id`, `manifest_sha256`, `destination_sha256`, `before_state_sha256`, `bootstrap_sha256`, `connection_sha256`, `expected_host_sha256`, `scope: "host-install-run-remove"`, and `launch: true`.
+- `before_state` contains `installation_absent: true`, `task_absent: true`, `target_absent: true`, `unrelated_files`, and `unrelated_tasks`. Declare 1–32 unrelated files with `path`, `size`, and `sha256`, and 0–8 unrelated tasks with `name` and `xml_sha256`. Task hashes cover UTF-8 `Export-ScheduledTask` output. These exact fixtures remain outside the installation subtree. One unrelated file must be the account's effective authorized keys file, the file host `pair enroll` names as `keys_file`. For an administrator account this is `C:\ProgramData\ssh\administrators_authorized_keys`. Its last line must end with a newline, because revocation restores the exact bytes only for an EOL-terminated file.
+- `authorization` contains `candidate_sha`, `fixture_id`, `installation_id`, `manifest_sha256`, `destination_sha256`, `before_state_sha256`, `bootstrap_sha256`, `connection_sha256`, `expected_host_sha256`, `scope: "host-install-pair-run-remove"`, and `launch: true`. The scope names the keys-file change explicitly, because an installer grant does not authorize pairing by implication.
 - Optional `ssh_config` and `publish_viewport` retain their baseline meanings.
 
 Authorization's `manifest_sha256` binds raw manifest bytes. Other authorization digests bind the corresponding complete object using compact, key-sorted UTF-8 JSON with Python's default ASCII escaping. `destination_sha256` hashes `installation`; `bootstrap_sha256` hashes the whole bootstrap pin, not just executable bytes. For a loaded object `value`, the digest input is `json.dumps(value, sort_keys=True, separators=(",", ":")).encode()`. Preserve the exact candidate and grant; the installer does not accept the baseline protected-environment placeholder.
@@ -100,7 +100,7 @@ python3 scripts/onboarding_proof.py host-install \
 	--execution local
 ```
 
-Require the baseline outcomes plus `install-inspect`, `install-preview`, `install-apply`, `install-target`, `install-repeat`, `remove-preview`, `remove-apply`, `remove-repeat`, and `fixture-preserved`. The proof checks the before-state, inspects and previews, installs, fetches the generated target, runs readiness and the real Scenario, verifies exact recovery, repeats installation, previews and repeats removal, then compares unrelated fixtures. No target paths are hand-edited.
+Require the baseline outcomes plus `install-inspect`, `install-preview`, `install-apply`, `install-target`, `install-repeat`, `remove-preview`, `remove-apply`, `remove-repeat`, and `fixture-preserved`, and the pairing outcomes below. The proof checks the before-state, inspects and previews, installs, fetches the generated target, pairs a fresh client, runs readiness and the real Scenario through the paired target, verifies exact recovery, repeats installation, revokes the pairing, previews and repeats removal, then compares unrelated fixtures. No target paths are hand-edited.
 
 Retain private CLI receipts and original target snapshots after failure. Recover a lost setup response through fresh `setup status` using the recorded installation and operation IDs. If cancellation is needed, `setup stop --apply` must name the observed execution token. A cancellation receipt alone does not prove cleanup. Remove only an installation whose ownership is known and whose Run and installer execution are proven settled. Missing Run authority, unknown process-tree or launcher cleanup, or unsettled task mutation must retain the runtime and pending setup fence for recovery. Successful removal retains the shared authority skeleton, receipt tombstone, execution records, and exported target.
 
@@ -108,7 +108,46 @@ Recovery polls an admitted execution whose process identities have not appeared 
 
 The observation budget starts before the first status request. Each status or stop receives the time remaining from that 15-second budget; expiry prevents another request. Settling an interrupted local command can still take the separate existing cleanup grace, so the budget is not a total shutdown-time guarantee.
 
-This sequence does not inject installation interruption, drop SSH deliberately, or exercise removal refusal during a live or kept Session. Those remain explicit `not_exercised` entries; local failure tests do not prove their native behavior. Native acceptance must cover those cases separately before closing the installation issue.
+This sequence does not inject installation or pairing interruption, apply SSH preparation, drop SSH deliberately, or exercise removal refusal during a live or kept Session. Those remain explicit `not_exercised` entries; local failure tests do not prove their native behavior. Native acceptance must cover those cases separately before closing the installation issue.
+
+### Pair and run
+
+After the generated target is verified, the proof pairs the fresh client config with the installed host. Host verbs run through the installed runtime `blender-box.exe`, pinned to the manifest's host artifact, over the admin SSH alias. Each outcome must pass:
+
+- `ssh-preparation`. The client has no pairing and no saved target. Host `setup ssh` previews `unchanged` with no service change and no owned rule. The proof never applies SSH preparation.
+- `pair-offer`. Host `pair offer` uses the admin alias's resolved `HostName` as `--address`, accepting hostnames and IPv4 or IPv6 literals. The local SHA-256 of the fetched offer bytes must equal the digest the host prints.
+- `pair-trust-mismatch`. A copy of the offer with a different host key is refused by `pair prepare` under the real digest and leaves no client state. The same copy trusted under its own digest prepares locally, but host `pair enroll` refuses it and grants nothing. After completion, a copy of the paired target with a random pinned host key fails `doctor` as `host-key-mismatch`, never `auth-rejected`.
+- `pair-enroll`. `pair prepare` prints the request and its digest. Host `pair enroll` previews, applies, and applies again. The repeat returns the same receipt bytes and digest, and the keys file digest before the first apply matches its declared pin.
+- `pair-target`. `pair complete` saves a schema 3 target with the offered endpoint, and `pair status` reports `enrolled` with readiness `unchecked`.
+- `pair-revoke`. Client `pair revoke` must report `revoked`; `key-rejected` does not pass. Host `pair status` then reports `revoked`, and a repeated host-local revoke changes nothing.
+- `pair-revoked-rejected`. A fresh SSH connection with a snapshot of the revoked key verifies the pinned host key, then fails with `Permission denied (publickey`.
+- `pair-unrelated-access`. The admin alias still authenticates, and every declared unrelated file, including the keys file, matches its pin.
+
+Pairing exchange files are written beside `target_out` as `TARGET_OUT.pair-offer.json`, `.pair-intent.json`, `.pair-receipt.json`, and `.pair-forged-intent.json`. They hold only public keys and host identity and remain after removal, like the exported target. Declared unrelated files must not use those paths.
+
+If pairing fails after the host grant may exist, the proof revokes through host-local `pair revoke --pair ID --apply` over the admin alias and never replays enrollment. Removal proceeds only after the pairing is revoked and the keys file matches its pin again. Otherwise the installation stays in place and `remove-preview` fails with `pairing-unrevoked`.
+
+Removal keeps the shared state root, so host `pair status` also lists grants from earlier installations, such as the required local pass. The proof ignores them when they are `revoked` and fails with `pair-earlier-grant-active` otherwise.
+
+### Run one local pass before freezing a candidate
+
+Pairing edits the file that also holds the admin key, so a keys-file defect can cut the recovery channel. Before a candidate is frozen for the hosted gate, run one authorized local pass against a throwaway Windows fixture whose console you can reach. Build the host artifacts and runtime manifest from that candidate as described above. Use a fresh `installation.id`, `task_name`, `target_out`, and absent before-state. The pass needs these operator fields beyond an ordinary host-install document:
+
+- `before_state.unrelated_files` includes the effective keys file, such as `{"path": "C:\\ProgramData\\ssh\\administrators_authorized_keys", "size": KEYS_SIZE, "sha256": "KEYS_SHA256"}`. Read the values on the host with `(Get-Item -LiteralPath PATH).Length` and `(Get-FileHash -LiteralPath PATH -Algorithm SHA256).Hash.ToLowerInvariant()`.
+- The keys file ends with a newline. `[IO.File]::ReadAllBytes(PATH)[-1] -eq 10` must print `True`.
+- `authorization.before_state_sha256` is recomputed after the keys file is added, and `authorization.scope` is `host-install-pair-run-remove`.
+- `connection.ssh_alias` reaches an elevated session for `connection.windows_user`, because host pairing verbs refuse without elevation.
+
+```sh
+python3 scripts/onboarding_proof.py host-install \
+	--candidate "$CANDIDATE_SHA" \
+	--candidate-checkout "$CANDIDATE_CHECKOUT" \
+	--operator-config "$INSTALL_OPERATOR_CONFIG" \
+	--output "$PAIR_PROOF_OUTPUT" \
+	--execution local
+```
+
+The local pass runs the same pairing stages as the hosted gate without controller checkpoints. Require `status: "pass"` and every pairing outcome in `public/outcome.json`, then confirm on the console that the keys file bytes match the pin and the admin alias still connects.
 
 ## Enable the hosted gate
 
@@ -116,7 +155,9 @@ Direct hosted execution still fails preflight with `hosted-recovery-retention-un
 
 Treat workflow preparation and infrastructure enrollment as separate operations. Adding the workflow does not authorize access to a host.
 
-The workflow is `Windows onboarding proof`, with jobs `baseline`, `named-target`, and `host-install`. Baseline dispatches one host-install execution: the controller installs the exact candidate into the dedicated absent fixture, which is the prepared state, runs the baseline Scenario, and removes the installation, which restores the absent state. Baseline passes only when `collect` returns the controller-validated baseline outcomes, evidence, and a passing settlement. Host-install then recovers that same execution ID and requires its settled receipt, so a dispatch consumes one fixture. Named-target runs only after baseline succeeds, on a separate fresh runner. All jobs share workflow-level host serialization. Create `windows-onboarding-approval`, `windows-onboarding-host`, and `windows-onboarding-installer` before dispatch; require a reviewer and restrict each to trusted main or the exact separately approved premerge branch. A missing environment can otherwise be created without protection. Keep baseline host credentials only in `windows-onboarding-host`. Ordinary pull-request jobs must not receive them. GitHub documents [environment protection and branch restrictions](https://docs.github.com/en/actions/reference/workflows-and-actions/deployments-and-environments); Tailscale documents [ephemeral CI access](https://tailscale.com/kb/1586/secure-github-runners).
+The workflow is `Windows onboarding proof`, with jobs `baseline`, `named-target`, `host-install`, and `pair-and-run`. Baseline dispatches one host-install execution: the controller installs the exact candidate into the dedicated absent fixture, which is the prepared state, runs the baseline Scenario, and removes the installation, which restores the absent state. Baseline passes only when `collect` returns the controller-validated baseline outcomes, evidence, and a passing settlement. Host-install then recovers that same execution ID and requires its settled receipt, so a dispatch consumes one fixture. Pair-and-run also recovers that execution, then collects it and passes only when every pairing outcome and the settlement pass. It rebuilds the baseline job's exact request from the job output `expires_at`, so `collect` binds the same request digest. The pair-and-run job is the pairing gate. Named-target runs only after baseline succeeds, on a separate fresh runner. All jobs share workflow-level host serialization. Create `windows-onboarding-approval`, `windows-onboarding-host`, and `windows-onboarding-installer` before dispatch; require a reviewer and restrict each to trusted main or the exact separately approved premerge branch. A missing environment can otherwise be created without protection. Keep baseline host credentials only in `windows-onboarding-host`. Ordinary pull-request jobs must not receive them. GitHub documents [environment protection and branch restrictions](https://docs.github.com/en/actions/reference/workflows-and-actions/deployments-and-environments); Tailscale documents [ephemeral CI access](https://tailscale.com/kb/1586/secure-github-runners).
+
+Observer preparation preserves the original `expires_at` even if it expired while waiting for environment approval. Recovery and collection use the retained execution authority; the controller still rejects starting a new execution with an expired request.
 
 For one premerge proof, review the final immutable workflow/driver and candidate commits, then set administrator-controlled repository variables `ONBOARDING_PREMERGE_REF` (the exact `refs/heads/...`), `ONBOARDING_PREMERGE_DRIVER_SHA`, and `ONBOARDING_PREMERGE_CANDIDATE_SHA`. Each guard independently checks the repository, workflow path, actor, first attempt, ref, and both SHA pins before host credentials. Dispatch with that exact branch ref and inspect the resolved run before environment approval. Any new commit requires new review, pins, controller policy, and proof. Remove the premerge grant after landing. These checks supplement protected environment review and the controller’s independent immutable tuple; branch code cannot be treated as a security boundary against itself.
 
@@ -126,14 +167,14 @@ Baseline and host-install use the separate protected `windows-onboarding-install
 
 Configure these installer environment secrets separately:
 
-- `ONBOARDING_INSTALL_OPERATOR_CONFIG` contains the exact original enrolled operator bytes, including whitespace, with the approved candidate and `host-install-run-remove` grant. The dispatch digest must equal the qualified policy's `installer_inputs["operator.json"]`.
+- `ONBOARDING_INSTALL_OPERATOR_CONFIG` contains the exact original enrolled operator bytes, including whitespace, with the approved candidate and `host-install-pair-run-remove` grant. The dispatch digest must equal the qualified policy's `installer_inputs["operator.json"]`.
 - `ONBOARDING_INSTALL_CONTROLLER_CONFIG` is schema version 1 with `hostname`, `user`, and integer `port` for the dedicated Linux dispatch account.
 - `ONBOARDING_INSTALL_CONTROLLER_KEY` and `ONBOARDING_INSTALL_CONTROLLER_KNOWN_HOSTS` provide the dedicated dispatch key and preverified controller trust. This key must have only the fixed controller forced command.
 - `ONBOARDING_INSTALL_TS_CLIENT_ID` identifies a Tailscale OIDC federated identity. Set environment variable `ONBOARDING_INSTALL_TS_AUDIENCE` to its audience. Bind federation to this repository, approved workflow identity, and installer environment; allow `tag:blender-box-install-dispatch` to reach only the dedicated controller SSH port. Only this job receives `id-token: write`; it stores no Tailscale client secret. The [pinned Tailscale action](https://github.com/tailscale/github-action/blob/53acf823325fe9ca47f4cdaa951f90b4b0de5bb9/action.yml) supports the client ID and audience inputs.
 
 The baseline job sends one immutable start request, polls status, invokes recovery in `always()`, and collects the retained evidence. The host-install job only recovers the same execution. That recovery step can disappear with the job; the root-owned controller record remains the durable owner. Reuse the recorded execution ID for later `status` or `recover` through the fixed dispatcher. Never issue a fresh start to bypass an unresolved fixture.
 
-Baseline uploads the validated `public/receipt.json`, the root-generated `public/outcome.json`, and an approved `public/viewport.png`. Host-install uploads only `public/receipt.json`. The fixed receipt distinguishes proof failure, local termination, and Windows cleanup without publishing installer tokens or private inputs. A lost response is not permission to replay apply. Native qualification and a real passing hosted job remain required. The job's existence is not installation proof.
+Baseline uploads the validated `public/receipt.json`, the root-generated `public/outcome.json`, and an approved `public/viewport.png`. Host-install uploads only `public/receipt.json`. Pair-and-run uploads `public/receipt.json` and `public/outcome.json`, and no viewport. The fixed receipt distinguishes proof failure, local termination, and Windows cleanup without publishing installer tokens or private inputs. A lost response is not permission to replay apply. Native qualification and a real passing hosted job remain required. The job's existence is not installation proof.
 
 Configure these environment secrets:
 
@@ -161,7 +202,7 @@ Inspect the actual hosted job conclusion and returned receipts. A missing, skipp
 
 Reuse `scripts/onboarding_proof.py` for the expected-host assertion, bundle integrity, complete Run authority comparison, and cleanup assertions. Keep feature-specific Scenario checks separate from those generic assertions. Run the existing baseline fixture when a later job needs to prove the Run path after its feature operation.
 
-The shared outcome vocabulary covers host preparation, pairing, readiness, Scenario execution, evidence, recovery, and cleanup. Baseline requires preparation, readiness, Scenario, evidence, recovery, and cleanup. It does not claim pairing or fixture reset. Named-target and host-install add the feature outcomes above. A later `pair-and-run` job needs its own outcomes and real hosted proof.
+The shared outcome vocabulary covers host preparation, pairing, readiness, Scenario execution, evidence, recovery, and cleanup. Baseline requires preparation, readiness, Scenario, evidence, recovery, and cleanup. It does not claim pairing or fixture reset. Named-target and host-install add the feature outcomes above. Host-install also claims pairing, so its `not_exercised` list replaces `pairing` with `pairing-interruption` and `ssh-preparation-apply`. The `pair-and-run` job still needs a real passing hosted run.
 
 Prepared and unpaired starting states require an operator-owned restoration mechanism with exact test-resource ownership. Preserve operator SSH access, credentials, users, Blender preferences, Python, and unrelated applications. Do not implement restoration by deleting a root prefix or registering over an unknown task. Until authorized repeatable restoration and automatic trusted execution are proven, dependent onboarding work remains blocked or requires maintainer participation.
 

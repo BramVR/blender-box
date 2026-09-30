@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Let delayed pairing-proof observers recover and collect the original expired request, and accept IPv6 SSH endpoints when resolving the pairing address.
+- Prove pairing inside the `host-install` proof: preview SSH preparation, verify the offer digest, refuse a tampered offer, a forged offer and a wrong pinned host key, enroll twice with identical receipts, run the baseline Scenario through the paired target, revoke through the client, and require the revoked key to be refused while admin access and the pinned keys file survive; recovery from any pairing stage revokes host-locally and never replays enrollment.
+- Add the `pair-and-run` job to the Windows onboarding proof workflow, which recovers and collects the baseline job's execution and passes only when every pairing outcome and the settlement pass; the installer grant scope is now `host-install-pair-run-remove`.
 - Add host-local pairing commands `pair offer|enroll|revoke|status --state-root` and the `host pair-revoke` machine command: create-only offer, grant and tombstone records, one `restrict` line admitted into the keys file sshd resolves for the account, exact removal that preserves every other byte, byte-identical receipts on retry, and revocation fenced by host maintenance.
 - Add `setup ssh` preview, apply and remove for Windows OpenSSH: start sshd and set it Automatic when needed, create one owned inbound firewall rule only when no enabled rule admits the port, refuse when public-key authentication is off, and restore only what it changed.
 - Add the Windows pairing platform: elevated `sshd -T` resolution of the account's authorized keys file, descriptor checks sshd accepts, and a one-process keys-file replace that keeps the protected Administrators descriptor and verifies bytes and ACL after the write.
@@ -10,6 +13,7 @@
 - Classify SSH and SCP connection failures as `host-unreachable`, `tailscale-unreachable`, `host-key-mismatch` or `auth-rejected` with a next step, and report failed readiness checks from `doctor` and `run` as `interactive-desktop-unavailable`, `runtime-incompatible`, `account-mismatch` or `setup-incomplete` problems, including `host.problems` in doctor JSON.
 - Print the enrollment request SHA-256 on stderr from `pair prepare` so the operator can pass it to host `pair enroll --trust-intent`.
 - Add the [pairing guide](docs/pairing.md) for onboarding, connection troubleshooting and revocation.
+- Settle a Windows setup execution whose worker ends at its deadline before reporting as a resumable `partial` result when the installation receipt shows no pending Scheduled Task change; it no longer fences the shared state root for manual review.
 - Add local pairing preparation and trusted-receipt reconciliation, schema-3 targets with pinned SSH identity, shared SSH/SCP credential policy and unchanged legacy fingerprints; client credentials remain POSIX-only.
 - Reserve pairing recovery state before credentials so oversized requests, concurrent preparation and interrupted publication do not leave undiscoverable private keys or change the original request on retry.
 - Linux qualification `start` no longer replies `native-unavailable` when a fast case exits during observation; it settles the case when the unit is already empty and otherwise reports `released` for `status` to settle.
