@@ -19,9 +19,6 @@ type nativeMember struct {
 
 type nativeJobCounts struct{ total, active uint32 }
 
-// nativeMemberList is Windows' raw reading. assigned can exceed len(pids) while a
-// member whose process already signaled is still counted; readCompleteMembers owns
-// whether a reading is trusted.
 type nativeMemberList struct {
 	assigned uint32
 	pids     []uint32
@@ -106,11 +103,9 @@ func (members *nativeMembers) observeCounts() nativeJobCounts {
 	return counts
 }
 
-// readCompleteMembers returns the Job's member PIDs from a reading whose assigned count
-// equals its listed members. Windows can briefly keep counting a member whose process
-// already signaled while omitting it from the list, and an immediate re-read reports it
-// gone. Lagging readings are discarded, never repaired. Reads are bounded by the member
-// limit; an overflowing or never-complete list stays an error.
+// readCompleteMembers trusts only a reading whose assigned count equals its listed PIDs.
+// Windows can briefly count a signaled member it no longer lists; an immediate re-read
+// settles it, so lagging readings are discarded and re-read up to the member limit.
 func readCompleteMembers(api nativeMemberBoundary) ([]uint32, error) {
 	for range nativeMemberLimit + 1 {
 		list, err := api.list()
@@ -141,9 +136,8 @@ func (members *nativeMembers) snapshot() []uint32 {
 	return pids
 }
 
-// coveredEmpty reports whether the Job is empty and every process it ever held is
-// retained. Membership is read before accounting because accounting still counts a
-// signaled member until the list settles.
+// Membership is read before accounting because accounting still counts a signaled
+// member until the list settles.
 func (members *nativeMembers) coveredEmpty() bool {
 	remaining := members.snapshot()
 	if members.fault != nil {
