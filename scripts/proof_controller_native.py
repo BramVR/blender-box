@@ -831,17 +831,24 @@ def linux_observe(intent, files, ops, *, stop=False):
         owner = receipt.owner
         model.require(unit.invocation_id == owner.invocation_id and unit.main_pid == owner.parent_pid and unit.job_id == 0,
                       "service-identity-changed")
-        supervisor = ops.process(owner.parent_pid)
-        child = ops.process(owner.leader_pid)
-        model.require(supervisor.start == owner.supervisor_start and supervisor.cgroup == UNIT_CGROUP
-                      and (child.start, child.parent, child.cgroup) == (owner.leader_start_ticks, owner.parent_pid, owner.cgroup),
-                      "native-process-changed")
-        with ops.group(owner.cgroup) as group:
-            info = os.fstat(group)
-            model.require((info.st_dev, info.st_ino) == (owner.cgroup_device, owner.cgroup_inode), "native-cgroup-changed")
-        model.require(ops.boot() == boot and ops.unit() == unit, "service-identity-changed")
-        response["phase"] = "released" if released else "starting"
-        return response
+        try:
+            supervisor = ops.process(owner.parent_pid)
+            child = ops.process(owner.leader_pid)
+            model.require(supervisor.start == owner.supervisor_start and supervisor.cgroup == UNIT_CGROUP
+                          and (child.start, child.parent, child.cgroup) == (owner.leader_start_ticks, owner.parent_pid, owner.cgroup),
+                          "native-process-changed")
+            with ops.group(owner.cgroup) as group:
+                info = os.fstat(group)
+                model.require((info.st_dev, info.st_ino) == (owner.cgroup_device, owner.cgroup_inode), "native-cgroup-changed")
+        except FileNotFoundError:
+            # A fast case can exit after the emptiness check; settle it now or leave it to status.
+            exited = ops.whole_empty()
+        else:
+            exited = False
+            model.require(ops.boot() == boot and ops.unit() == unit, "service-identity-changed")
+        if not exited:
+            response["phase"] = "released" if released else "starting"
+            return response
     unit = ops.unit()
     model.require(unit.active in ("inactive", "failed") and unit.main_pid == 0 and unit.job_id == 0
                   and ops.whole_empty() and ops.boot() == boot and ops.unit() == unit, "local-termination-unknown")
