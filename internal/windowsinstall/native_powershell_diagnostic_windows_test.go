@@ -239,15 +239,15 @@ exit 24
 		row := powerShellProbeSnapshot{Stage: stage}
 		counts, countErr := api.counts()
 		row.Total, row.Active = counts.total, counts.active
-		list, listErr := api.list()
-		row.Listed = list.pids
+		pids, listErr := readCompleteMembers(api)
+		row.Listed = pids
 		if countErr != nil {
 			row.Error += countErr.Error()
 		}
 		if listErr != nil {
 			row.Error += listErr.Error()
 		}
-		for _, pid := range list.pids {
+		for _, pid := range pids {
 			member, found := held[pid]
 			if !found {
 				var err error

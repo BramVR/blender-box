@@ -60,8 +60,8 @@ func (api nativeMemberWindows) list() (nativeMemberList, error) {
 	if ok, _, err := nativeQueryJob.Call(uintptr(api.job), 3, uintptr(unsafe.Pointer(&list)), unsafe.Sizeof(list), 0); ok == 0 {
 		return nativeMemberList{}, fmt.Errorf("query native job members: %w", err)
 	}
-	if list.Listed > nativeMemberLimit || list.Assigned != list.Listed {
-		return nativeMemberList{}, fmt.Errorf("native job member list is incomplete")
+	if list.Listed > nativeMemberLimit {
+		return nativeMemberList{}, fmt.Errorf("native job member list exceeds its buffer")
 	}
 	pids := make([]uint32, list.Listed)
 	for i := range pids {

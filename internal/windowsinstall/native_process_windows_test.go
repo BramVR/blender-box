@@ -658,15 +658,40 @@ func TestNativeJobCompletionObservations(t *testing.T) {
 					Assigned, Listed uint32
 					PIDs             [32]uintptr
 				}
-				observe := func(phase string) (nativeAccounting, jobList) {
-					var accounting nativeAccounting
-					var length uint32
-					ok, _, queryErr := nativeQueryJob.Call(uintptr(job.handle), 1, uintptr(unsafe.Pointer(&accounting)), unsafe.Sizeof(accounting), uintptr(unsafe.Pointer(&length)))
+				queryAccounting := func() (accounting nativeAccounting, ok uintptr, length uint32, err error) {
+					ok, _, err = nativeQueryJob.Call(uintptr(job.handle), 1, uintptr(unsafe.Pointer(&accounting)), unsafe.Sizeof(accounting), uintptr(unsafe.Pointer(&length)))
+					return
+				}
+				observe := func(phase string) (nativeAccounting, []uint32) {
+					accounting, ok, length, queryErr := queryAccounting()
 					var list jobList
 					listOK, _, listErr := nativeQueryJob.Call(uintptr(job.handle), 3, uintptr(unsafe.Pointer(&list)), unsafe.Sizeof(list), 0)
 					row("phase=%s sequential=true query_ok=%d query_error=%v length=%d accounting=%+v list_ok=%d list_error=%v assigned=%d listed=%d pids=%v captured_distinct=%d", phase, ok, queryErr, length, accounting, listOK, listErr, list.Assigned, list.Listed, list.PIDs, len(captured))
-					if ok == 0 || length != uint32(unsafe.Sizeof(accounting)) || listOK == 0 || list.Assigned != list.Listed || list.Listed > uint32(len(list.PIDs)) {
-						t.Fatal("native observation query failed or incomplete")
+					if ok == 0 || length != uint32(unsafe.Sizeof(accounting)) || listOK == 0 || list.Listed > uint32(len(list.PIDs)) {
+						t.Fatal("native observation query failed")
+					}
+					pids := make([]uint32, list.Listed)
+					raw := make(map[uint32]bool, len(pids))
+					for i := range pids {
+						if list.PIDs[i] == 0 || list.PIDs[i] > uintptr(^uint32(0)) {
+							t.Fatal("invalid Job PID")
+						}
+						pids[i] = uint32(list.PIDs[i])
+						raw[pids[i]] = true
+					}
+					if list.Assigned != list.Listed {
+						settled, settleErr := readCompleteMembers(nativeMemberWindows{job.handle})
+						// Accounting lags with the list, so it is read again after the list settles.
+						accounting, ok, length, queryErr = queryAccounting()
+						subset := true
+						for _, pid := range settled {
+							subset = subset && raw[pid]
+						}
+						row("phase=%s list_lag=true raw_assigned=%d raw_listed=%d settled_pids=%v settle_error=%v settled_subset_of_raw=%t query_ok=%d query_error=%v accounting=%+v", phase, list.Assigned, list.Listed, settled, settleErr, subset, ok, queryErr, accounting)
+						if settleErr != nil || ok == 0 || length != uint32(unsafe.Sizeof(accounting)) {
+							t.Fatal("product member reader did not settle a lagging Job list")
+						}
+						pids = settled
 					}
 					for _, process := range append([]member{{pid: spawn.Info.ProcessId, handle: spawn.Info.Process}, {pid: witnessPID, handle: witness}}, captured...) {
 						if process.handle == 0 {
@@ -678,7 +703,7 @@ func TestNativeJobCompletionObservations(t *testing.T) {
 							t.Fatal("native observation signal query failed")
 						}
 					}
-					return accounting, list
+					return accounting, pids
 				}
 				if mode == "probe-parent" || mode == "probe-early" {
 					pinWitness()
@@ -693,18 +718,18 @@ func TestNativeJobCompletionObservations(t *testing.T) {
 						t.Fatal("early witness did not exit before capture")
 					}
 				}
-				_, list := observe("candidate-capture")
+				_, candidates := observe("candidate-capture")
 				seen := make(map[uint32]bool)
-				for _, pid := range list.PIDs[:list.Listed] {
-					if pid == 0 || pid > uintptr(^uint32(0)) || seen[uint32(pid)] {
-						t.Fatal("invalid or duplicate Job PID")
+				for _, pid := range candidates {
+					if seen[pid] {
+						t.Fatal("duplicate Job PID")
 					}
-					seen[uint32(pid)] = true
-					handle, err := syscall.OpenProcess(syscall.SYNCHRONIZE|0x1000, false, uint32(pid))
+					seen[pid] = true
+					handle, err := syscall.OpenProcess(syscall.SYNCHRONIZE|0x1000, false, pid)
 					if err != nil {
 						t.Fatalf("open exact Job member %d: %v", pid, err)
 					}
-					captured = append(captured, member{pid: uint32(pid), handle: handle})
+					captured = append(captured, member{pid: pid, handle: handle})
 					process := &captured[len(captured)-1]
 					verifyMember(handle)
 					var exited, kernel, user syscall.Filetime
@@ -720,10 +745,10 @@ func TestNativeJobCompletionObservations(t *testing.T) {
 					if err != nil || (wait != syscall.WAIT_OBJECT_0 && wait != syscall.WAIT_TIMEOUT) {
 						t.Fatal("candidate member signal query failed")
 					}
-					if (uint32(pid) == spawn.Info.ProcessId || (mode == "probe-parent" && uint32(pid) == witnessPID)) && wait != syscall.WAIT_TIMEOUT {
+					if (pid == spawn.Info.ProcessId || (mode == "probe-parent" && pid == witnessPID)) && wait != syscall.WAIT_TIMEOUT {
 						t.Fatal("controlled process exited before release")
 					}
-					if uint32(pid) == spawn.Info.ProcessId && process.created != spawn.Created {
+					if pid == spawn.Info.ProcessId && process.created != spawn.Created {
 						t.Fatal("captured root creation mismatch")
 					}
 				}
@@ -773,8 +798,8 @@ func TestNativeJobCompletionObservations(t *testing.T) {
 						t.Fatal("captured member did not terminate")
 					}
 				}
-				accounting, finalList := observe("after-captured-waits")
-				row("phase=count-certificate-observation total=%d captured_distinct=%d count_matches=%t active=%d listed=%d", accounting.TotalProcesses, len(captured), accounting.TotalProcesses == uint32(len(captured)), accounting.ActiveProcesses, finalList.Listed)
+				accounting, finalPIDs := observe("after-captured-waits")
+				row("phase=count-certificate-observation total=%d captured_distinct=%d count_matches=%t active=%d listed=%d", accounting.TotalProcesses, len(captured), accounting.TotalProcesses == uint32(len(captured)), accounting.ActiveProcesses, len(finalPIDs))
 				if mode == "probe-late" && accounting.TotalProcesses <= uint32(len(captured)) {
 					t.Fatal("controlled missing witness did not produce a lifetime count gap")
 				}

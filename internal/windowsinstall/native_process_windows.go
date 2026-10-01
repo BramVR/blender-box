@@ -426,16 +426,16 @@ func runNativeJobWithIntent(ctx context.Context, intent nativeLaunchIntent, exec
 		if check {
 			api := nativeMemberWindows{job.handle}
 			counts, err := api.counts()
-			var list nativeMemberList
+			var pids []uint32
 			if err == nil {
-				list, err = api.list()
+				pids, err = readCompleteMembers(api)
 			}
 			if err != nil {
 				operationErr = errors.Join(operationErr, err)
 				cleanupErr = errors.Join(cleanupErr, errNativeCleanupUnknown, err)
 				running = false
 			} else {
-				naturallyEmpty = counts.active == 0 && len(list.pids) == 0
+				naturallyEmpty = counts.active == 0 && len(pids) == 0
 				running = !naturallyEmpty
 			}
 		}
