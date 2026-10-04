@@ -511,6 +511,23 @@ func TestExecutionWorkerRefusalBeforeAdmittedPlanSettlesAndResumes(t *testing.T)
 	}
 }
 
+func TestExecutionWorkerRefusalWithUnsettledProbeKeepsFence(t *testing.T) {
+	owner, machine, request := ownerFixture(t)
+	run := owner.run
+	owner.run = func(ctx context.Context, record executionRequest, publish func(executionOwnership) error) (workerOutcome, *treeExit, error) {
+		machine.inspectionErr = fmt.Errorf("probe tree: %w", errNativeCleanupUnknown)
+		defer func() { machine.inspectionErr = nil }()
+		return run(ctx, record, publish)
+	}
+	refused, err := owner.Execute(context.Background(), request)
+	if err == nil || !strings.Contains(err.Error(), "inspection-failed: probe tree") {
+		t.Fatalf("refusal error=%v", err)
+	}
+	if refused.Execution == nil || refused.Execution.FenceState != "held" || refused.Execution.TaskMutation != "unknown" {
+		t.Fatalf("unsettled probe released the fence: %+v", refused.Execution)
+	}
+}
+
 func TestWorkerReportExplainsMissingOrInvalidResult(t *testing.T) {
 	one, zero := 1, 0
 	garbage := `{"result":` + strings.Repeat(" ", maxWorkerEvidence) + `"cut`

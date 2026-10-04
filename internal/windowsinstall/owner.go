@@ -749,9 +749,10 @@ func (o *owner) keepAdmitted(ctx context.Context, record executionRequest) (Resu
 // work runs the admitted operation inside the worker and reports it under the execution's identity.
 func (e *installer) work(ctx context.Context, record executionRequest) workerOutcome {
 	result, err := e.Execute(ctx, record.Request)
-	if err != nil && (result.InstallationID != record.Request.InstallationID || result.OperationID != record.Request.OperationID || result.Plan.PlanSHA256 != record.Preview.Plan.PlanSHA256) {
+	if err != nil && !errors.Is(err, errNativeCleanupUnknown) && (result.InstallationID != record.Request.InstallationID || result.OperationID != record.Request.OperationID || result.Plan.PlanSHA256 != record.Preview.Plan.PlanSHA256) {
 		// Execute loses the admitted identity only when it refuses at or before its plan check, in the
-		// same read-only code the preview runs, so no file, receipt or task changed.
+		// same read-only code the preview runs, so no file, receipt or task changed. A probe whose
+		// process tree did not settle still keeps the fence.
 		refused := record.Preview
 		refused.State, refused.Completion, refused.Problems = "partial", "known", result.Problems
 		return workerOutcome{Result: refused, TaskMutation: "settled", Error: err.Error()}
