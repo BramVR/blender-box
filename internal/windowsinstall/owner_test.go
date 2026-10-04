@@ -3,6 +3,7 @@ package windowsinstall
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -13,6 +14,7 @@ import (
 
 	"github.com/BramVR/blender-box/internal/host"
 	"github.com/BramVR/blender-box/internal/orchestrator"
+	"github.com/BramVR/blender-box/internal/strictjson"
 )
 
 func ownerFixture(t *testing.T) (*owner, *fakeMachine, Request) {
@@ -41,21 +43,7 @@ func ownerFixture(t *testing.T) (*owner, *fakeMachine, Request) {
 		worker := *installer
 		claim := record.claim()
 		worker.claim = &claim
-		result, err := worker.Execute(ctx, record.Request)
-		outcome := workerOutcome{Result: result, TaskMutation: "settled"}
-		if errors.Is(err, errTaskMutationUnknown) || errors.Is(err, errNativeCleanupUnknown) {
-			outcome.TaskMutation = "unknown"
-		}
-		if err == nil {
-			outcome.Result, err = PublishTarget(ctx, record.Request, result)
-		}
-		if err == nil {
-			outcome.inspectPublication(record.Request)
-		}
-		if err != nil {
-			outcome.Error = err.Error()
-		}
-		return outcome, &treeExit{Kind: "tree-empty", Keeper: own.Keeper, ObservedAt: time.Now().UTC(), Worker: own.Worker, WorkerExitObserved: true}, nil
+		return worker.work(ctx, record), &treeExit{Kind: "tree-empty", Keeper: own.Keeper, ObservedAt: time.Now().UTC(), Worker: own.Worker, WorkerExitObserved: true}, nil
 	}
 	owner.schedule = func(ctx context.Context, record executionRequest) (Result, error) {
 		fingerprint := objectDigest(record.launcherTask())
@@ -497,6 +485,134 @@ func TestExecutionProvenNoStartReleasesFenceAndResumes(t *testing.T) {
 	}
 }
 
+func TestExecutionWorkerRefusalBeforeAdmittedPlanSettlesAndResumes(t *testing.T) {
+	owner, machine, request := ownerFixture(t)
+	run := owner.run
+	owner.run = func(ctx context.Context, record executionRequest, publish func(executionOwnership) error) (workerOutcome, *treeExit, error) {
+		machine.inspectionErr = errors.New("Python trust audit deadline exceeded")
+		defer func() { machine.inspectionErr = nil }()
+		return run(ctx, record, publish)
+	}
+	refused, err := owner.Execute(context.Background(), request)
+	if err == nil || err.Error() != "inspection-failed: Python trust audit deadline exceeded" {
+		t.Fatalf("refusal error=%v", err)
+	}
+	if refused.State != "partial" || refused.Completion != "known" || refused.Execution == nil || refused.Execution.TaskMutation != "settled" || refused.Execution.FenceState != "released" {
+		t.Fatalf("refused=%s/%s %+v", refused.State, refused.Completion, refused.Execution)
+	}
+	if len(refused.Problems) != 1 || refused.Problems[0].Code != "inspection-failed" {
+		t.Fatalf("refusal problems=%+v", refused.Problems)
+	}
+	if _, err := os.Stat(filepath.Join(request.StateRoot, "installations", string(request.InstallationID))); !os.IsNotExist(err) {
+		t.Fatal("refusal changed installation")
+	}
+	owner.run = run
+	resumed, err := owner.Execute(context.Background(), request)
+	if err != nil || resumed.State != "installed" || resumed.Execution.Token == refused.Execution.Token {
+		t.Fatalf("resumed=%+v %v", resumed.Execution, err)
+	}
+}
+
+func TestExecutionWorkerRefusalWithUnsettledProbeKeepsFence(t *testing.T) {
+	owner, machine, request := ownerFixture(t)
+	run := owner.run
+	owner.run = func(ctx context.Context, record executionRequest, publish func(executionOwnership) error) (workerOutcome, *treeExit, error) {
+		machine.inspectionErr = fmt.Errorf("probe tree: %w", errNativeCleanupUnknown)
+		defer func() { machine.inspectionErr = nil }()
+		return run(ctx, record, publish)
+	}
+	refused, err := owner.Execute(context.Background(), request)
+	if err == nil || !strings.Contains(err.Error(), "inspection-failed: probe tree") {
+		t.Fatalf("refusal error=%v", err)
+	}
+	if refused.Execution == nil || refused.Execution.FenceState != "held" || refused.Execution.TaskMutation != "unknown" {
+		t.Fatalf("unsettled probe released the fence: %+v", refused.Execution)
+	}
+}
+
+func TestWorkerReportExplainsMissingOrInvalidResult(t *testing.T) {
+	one, zero := 1, 0
+	garbage := `{"result":` + strings.Repeat(" ", maxWorkerEvidence) + `"cut`
+	for _, tc := range []struct {
+		name    string
+		stdout  string
+		process workerExit
+		runErr  error
+		err     string
+		evident workerExit
+	}{
+		{"failed worker", "", workerExit{ExitCode: &one, StderrTail: "keeper identity unavailable\n"}, errors.New("native operation failed: exit status 1: keeper identity unavailable"),
+			"worker produced no result (exit 1)\nnative operation failed: exit status 1: keeper identity unavailable", workerExit{ExitCode: &one, StderrTail: "keeper identity unavailable\n"}},
+		{"unobserved exit", "\n", workerExit{}, context.DeadlineExceeded,
+			"worker produced no result (exit unknown)\ncontext deadline exceeded", workerExit{}},
+		{"truncated result", garbage, workerExit{ExitCode: &zero}, nil,
+			"invalid worker result (exit 0): unexpected EOF", workerExit{ExitCode: &zero, StdoutTail: garbage[len(garbage)-maxWorkerEvidence:]}},
+		{"zero outcome", `{"result":{},"task_mutation":""}`, workerExit{ExitCode: &zero}, nil,
+			"invalid worker result (exit 0): invalid task completion", workerExit{ExitCode: &zero, StdoutTail: `{"result":{},"task_mutation":""}`}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			outcome, err := workerReport([]byte(tc.stdout), tc.process, tc.runErr)
+			if err == nil || err.Error() != tc.err {
+				t.Fatalf("error=%q", err)
+			}
+			if outcome.TaskMutation != "" || outcome.WorkerExit == nil || outcome.WorkerExit.status() != tc.evident.status() || outcome.WorkerExit.StdoutTail != tc.evident.StdoutTail || outcome.WorkerExit.StderrTail != tc.evident.StderrTail {
+				t.Fatalf("outcome=%+v exit=%+v", outcome, outcome.WorkerExit)
+			}
+		})
+	}
+}
+
+func TestExecutionWithoutWorkerResultRetainsExitAndHoldsFence(t *testing.T) {
+	owner, _, request := ownerFixture(t)
+	run := owner.run
+	owner.run = func(ctx context.Context, record executionRequest, publish func(executionOwnership) error) (workerOutcome, *treeExit, error) {
+		_, exit, _ := run(ctx, record, publish)
+		code := 1
+		outcome, err := workerReport(nil, workerExit{ExitCode: &code, StderrTail: "worker admission changed: invalid execution journal size\n"}, errors.New("native operation failed: exit status 1: worker admission changed: invalid execution journal size"))
+		return outcome, exit, err
+	}
+	lost, err := owner.Execute(context.Background(), request)
+	want := "worker result unavailable\nworker produced no result (exit 1)\nnative operation failed: exit status 1: worker admission changed: invalid execution journal size"
+	if err == nil || err.Error() != want {
+		t.Fatalf("lost error=%q", err)
+	}
+	if lost.Execution == nil || lost.Execution.TaskMutation != "unknown" || lost.Execution.FenceState != "held" || lost.Completion != "unknown" {
+		t.Fatalf("lost=%s %+v", lost.Completion, lost.Execution)
+	}
+	if err := host.RejectPendingSetup(request.StateRoot); err == nil {
+		t.Fatal("absent worker result released fence")
+	}
+	var terminal executionTerminal
+	if err := readExecutionJSON(filepath.Join(request.StateRoot, "setup-operations", string(request.OperationID), lost.Execution.Token, "terminal.json"), &terminal); err != nil {
+		t.Fatal(err)
+	}
+	evidence := terminal.Outcome.WorkerExit
+	if evidence == nil || evidence.status() != "exit 1" || evidence.StderrTail != "worker admission changed: invalid execution journal size\n" || evidence.StdoutTail != "" {
+		t.Fatalf("worker exit evidence=%+v", evidence)
+	}
+	status, err := newOwner(owner.installer.machine).Status(context.Background(), statusRequest(request))
+	if err == nil || err.Error() != want || status.Execution.FenceState != "held" {
+		t.Fatalf("status=%+v %v", status.Execution, err)
+	}
+}
+
+func TestExecutionRejectedWorkerResultKeepsWorkerReason(t *testing.T) {
+	owner, _, request := ownerFixture(t)
+	run := owner.run
+	owner.run = func(ctx context.Context, record executionRequest, publish func(executionOwnership) error) (workerOutcome, *treeExit, error) {
+		_, exit, _ := run(ctx, record, publish)
+		code := 0
+		foreign := emptyResult(record.Request)
+		outcome := workerOutcome{Result: foreign, TaskMutation: "settled", Error: "plan-changed: expected plan digest differs from current intent", WorkerExit: &workerExit{ExitCode: &code}}
+		return outcome, exit, nil
+	}
+	rejected, err := owner.Execute(context.Background(), request)
+	want := "worker result unavailable\nworker result rejected: worker result identity changed; worker reported: plan-changed: expected plan digest differs from current intent"
+	if err == nil || err.Error() != want || rejected.Execution == nil || rejected.Execution.FenceState != "held" {
+		t.Fatalf("rejected=%+v %v", rejected.Execution, err)
+	}
+}
+
 func TestExecutionLostWorkerResultSettlesOnlyWithoutPendingTaskMutation(t *testing.T) {
 	for _, tc := range []struct {
 		operation, interrupt, taskMutation, fence string
@@ -597,5 +713,27 @@ func TestExecutionTerminalFenceRecoveredByExactStopBeforeRunAdmission(t *testing
 	}
 	if err := service.Acquire(context.Background(), request.StateRoot, host.AcquireRequest{SchemaVersion: 1, Claim: claim}); err != nil {
 		t.Fatal("settled stop did not reopen Run admission", err)
+	}
+}
+
+func TestUnobservedWorkerExitStaysStrictlyReadable(t *testing.T) {
+	data, err := json.Marshal(workerOutcome{TaskMutation: "unknown", WorkerExit: &workerExit{StderrTail: "lost\n"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var decoded struct {
+		WorkerExit workerExit `json:"worker_exit"`
+	}
+	raw := struct {
+		WorkerExit json.RawMessage `json:"worker_exit"`
+	}{}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		t.Fatal(err)
+	}
+	if err := strictjson.Decode([]byte(`{"worker_exit":`+string(raw.WorkerExit)+`}`), &decoded); err != nil {
+		t.Fatalf("strict read of worker_exit %s: %v", raw.WorkerExit, err)
+	}
+	if decoded.WorkerExit.ExitCode != nil || decoded.WorkerExit.StderrTail != "lost\n" {
+		t.Fatalf("decoded worker exit %+v", decoded.WorkerExit)
 	}
 }

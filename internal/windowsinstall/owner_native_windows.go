@@ -5,7 +5,6 @@ package windowsinstall
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -16,7 +15,6 @@ import (
 	"unsafe"
 
 	"github.com/BramVR/blender-box/internal/host"
-	"github.com/BramVR/blender-box/internal/strictjson"
 )
 
 var nativeResumeThread = nativeProcessKernel.NewProc("ResumeThread")
@@ -132,6 +130,7 @@ func runNativeWorker(ctx context.Context, record executionRequest, publish func(
 		return outcome, nil, err
 	}
 	var exit *treeExit
+	var process workerExit
 	output, runErr := runNativeJobGated(ctx, record.Bootstrap.Path, []string{"__setup-worker", record.directory(), string(objectDigest(record))}, nil, environment, &nativeRunGate{
 		NotStarted: func() { exit = &treeExit{Kind: "not-started", Keeper: keeper, ObservedAt: time.Now().UTC()} },
 		Admit: func(spawn nativeSpawn) error {
@@ -139,6 +138,13 @@ func runNativeWorker(ctx context.Context, record executionRequest, publish func(
 		},
 		TreeExited: func(spawn nativeSpawn) {
 			exit = &treeExit{Kind: "tree-empty", Keeper: keeper, ObservedAt: time.Now().UTC(), Worker: processIdentity(spawn.Info.ProcessId, spawn.Created), ActiveProcesses: 0, WorkerExitObserved: true}
+		},
+		Exited: func(state *os.ProcessState, stderr []byte) {
+			if state != nil {
+				code := state.ExitCode()
+				process.ExitCode = &code
+			}
+			process.StderrTail = evidenceTail(string(stderr))
 		},
 	})
 	if exit != nil && exit.Kind == "not-started" {
@@ -150,13 +156,8 @@ func runNativeWorker(ctx context.Context, record executionRequest, publish func(
 		}
 		return outcome, exit, nil
 	}
-	if err := strictjson.Decode(output, &outcome); err != nil {
-		return workerOutcome{}, exit, errors.Join(runErr, fmt.Errorf("invalid worker result: %w", err))
-	}
-	if outcome.TaskMutation != "settled" && outcome.TaskMutation != "unknown" {
-		return workerOutcome{}, exit, fmt.Errorf("invalid worker task completion")
-	}
-	return outcome, exit, runErr
+	outcome, err = workerReport(output, process, runErr)
+	return outcome, exit, err
 }
 
 func runSetupWorker(directory, hash string) (workerOutcome, error) {
@@ -221,21 +222,7 @@ func runSetupWorker(directory, hash string) (workerOutcome, error) {
 		return workerOutcome{}, err
 	}
 	installer := &installer{machine: nativeMachine{}, claim: &claim}
-	result, workErr := installer.Execute(ctx, record.Request)
-	outcome := workerOutcome{Result: result, TaskMutation: "settled"}
-	if errors.Is(workErr, errTaskMutationUnknown) || errors.Is(workErr, errNativeCleanupUnknown) {
-		outcome.TaskMutation = "unknown"
-	}
-	if workErr == nil {
-		outcome.Result, workErr = PublishTarget(ctx, record.Request, result)
-	}
-	if workErr == nil {
-		outcome.inspectPublication(record.Request)
-	}
-	if workErr != nil {
-		outcome.Error = workErr.Error()
-	}
-	return outcome, nil
+	return installer.work(ctx, record), nil
 }
 
 // RunInternal accepts only the finite keeper and exact-process worker roles.
@@ -250,7 +237,11 @@ func RunInternal(args []string, stdin io.Reader, stdout, stderr io.Writer) (bool
 	if args[0] == "__setup-keeper" && len(args) == 3 {
 		value, err = runScheduledKeeper(args[1], args[2])
 	} else if args[0] == "__setup-worker" && len(args) == 3 {
-		value, err = runSetupWorker(args[1], args[2])
+		// A failed worker writes no result, so the keeper reports its exit and stderr instead of a zero outcome.
+		var outcome workerOutcome
+		if outcome, err = runSetupWorker(args[1], args[2]); err == nil {
+			value = outcome
+		}
 	} else {
 		err = fmt.Errorf("invalid internal setup role")
 	}

@@ -84,6 +84,9 @@ func TestNativeOwnerHelper(t *testing.T) {
 		}
 		_, _ = syscall.WaitForSingleObject(syscall.Handle(event), syscall.INFINITE)
 		os.Exit(88)
+	case "refuse":
+		_, _ = os.Stderr.WriteString("worker refused\n")
+		os.Exit(7)
 	case "keeper-loss":
 		job, err := newNativeJob()
 		if err != nil {
@@ -175,6 +178,25 @@ func TestNativeOwnerOutputUsesExecutionBound(t *testing.T) {
 			}
 			if mode == "overflow" && (err == nil || errors.Is(err, errNativeCleanupUnknown)) {
 				t.Fatalf("overflow cleanup=%v", err)
+			}
+		})
+	}
+}
+
+func TestNativeOwnerReportsWorkerExitAndStderr(t *testing.T) {
+	for _, tc := range []struct {
+		mode, stderr string
+		code         int
+	}{{"refuse", "worker refused\n", 7}, {"mutate", "", 0}} {
+		t.Run(tc.mode, func(t *testing.T) {
+			executable, _ := os.Executable()
+			code, stderr, exited := -1, "unset", false
+			_, err := runNativeJobGated(context.Background(), executable, ownerNativeArgs(tc.mode, t.TempDir()), nil, ownerNativeEnvironment(t), &nativeRunGate{
+				Admit: func(nativeSpawn) error { return nil }, TreeExited: func(nativeSpawn) { exited = true },
+				Exited: func(state *os.ProcessState, output []byte) { code, stderr = state.ExitCode(), string(output) },
+			})
+			if !exited || code != tc.code || stderr != tc.stderr || (tc.code == 0) != (err == nil) {
+				t.Fatalf("exit=%d stderr=%q tree=%v err=%v", code, stderr, exited, err)
 			}
 		})
 	}

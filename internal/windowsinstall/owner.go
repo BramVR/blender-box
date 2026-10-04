@@ -1,6 +1,7 @@
 package windowsinstall
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -19,6 +20,7 @@ const executionTimeout = 5 * time.Minute
 const bootstrapInputTimeout = 30 * time.Second
 const maxExecutions = 64
 const maxExecutionRecord = 2 << 20
+const maxWorkerEvidence = 16 << 10
 
 var errTaskMutationUnknown = errors.New("Task Scheduler mutation completion is unknown")
 var executionID = regexp.MustCompile(`^bbxe_[a-f0-9]{32}$`)
@@ -92,11 +94,51 @@ type treeExit struct {
 	WorkerExitObserved bool            `json:"worker_exit_observed"`
 }
 type workerOutcome struct {
-	Result          Result `json:"result"`
-	Error           string `json:"error,omitempty"`
-	TaskMutation    string `json:"task_mutation"`
-	PublicationFile *File  `json:"publication_file,omitempty"`
+	Result          Result      `json:"result"`
+	Error           string      `json:"error,omitempty"`
+	TaskMutation    string      `json:"task_mutation"`
+	PublicationFile *File       `json:"publication_file,omitempty"`
+	WorkerExit      *workerExit `json:"worker_exit,omitempty"`
 }
+
+// workerExit is the keeper's observation of the worker process. It explains a result and never grants authority.
+type workerExit struct {
+	ExitCode   *int   `json:"exit_code,omitempty"`
+	StdoutTail string `json:"stdout_tail,omitempty"`
+	StderrTail string `json:"stderr_tail,omitempty"`
+}
+
+func (w workerExit) status() string {
+	if w.ExitCode == nil {
+		return "exit unknown"
+	}
+	return fmt.Sprintf("exit %d", *w.ExitCode)
+}
+func evidenceTail(data string) string {
+	if len(data) > maxWorkerEvidence {
+		return data[len(data)-maxWorkerEvidence:]
+	}
+	return data
+}
+
+// workerReport decodes the worker's stdout result and attaches the observed exit.
+func workerReport(stdout []byte, process workerExit, runErr error) (workerOutcome, error) {
+	if len(bytes.TrimSpace(stdout)) == 0 {
+		return workerOutcome{WorkerExit: &process}, errors.Join(fmt.Errorf("worker produced no result (%s)", process.status()), runErr)
+	}
+	var outcome workerOutcome
+	err := strictjson.Decode(stdout, &outcome)
+	if err == nil && outcome.TaskMutation != "settled" && outcome.TaskMutation != "unknown" {
+		err = fmt.Errorf("invalid task completion")
+	}
+	if err != nil {
+		process.StdoutTail = evidenceTail(string(stdout))
+		return workerOutcome{WorkerExit: &process}, errors.Join(fmt.Errorf("invalid worker result (%s): %w", process.status(), err), runErr)
+	}
+	outcome.WorkerExit = &process
+	return outcome, runErr
+}
+
 type executionTerminal struct {
 	SchemaVersion int             `json:"schema_version"`
 	Claim         host.SetupClaim `json:"claim"`
@@ -657,11 +699,18 @@ func (o *owner) keepAdmitted(ctx context.Context, record executionRequest) (Resu
 		return publishExecutionJSON(filepath.Join(record.directory(), "ownership.json"), record.Request.StateRoot, ownership, o.installer.checkpoint)
 	})
 	if err := validateWorkerOutcome(record, outcome); err != nil {
-		runErr = errors.Join(runErr, err)
-		outcome = workerOutcome{}
+		// A decoded result always names its task completion; an absent one is already explained by runErr.
+		if outcome.TaskMutation != "" || runErr == nil {
+			err = fmt.Errorf("worker result rejected: %w", err)
+			if outcome.Error != "" {
+				err = fmt.Errorf("%w; worker reported: %s", err, evidenceTail(outcome.Error))
+			}
+			runErr = errors.Join(runErr, err)
+		}
+		outcome = workerOutcome{WorkerExit: outcome.WorkerExit}
 	}
 	if outcome.Result.SchemaVersion != 1 || outcome.Result.InstallationID != request.InstallationID || outcome.Result.OperationID != request.OperationID {
-		outcome = workerOutcome{Result: preview, TaskMutation: "unknown", Error: "worker result unavailable"}
+		outcome = workerOutcome{Result: preview, TaskMutation: "unknown", Error: "worker result unavailable", WorkerExit: outcome.WorkerExit}
 		outcome.Result.State = "unknown"
 		outcome.Result.Completion = "unknown"
 		if exit != nil && exit.Kind == "tree-empty" {
@@ -695,6 +744,33 @@ func (o *owner) keepAdmitted(ctx context.Context, record executionRequest) (Resu
 		settled.ownership = &ownership
 	}
 	return o.result(settled)
+}
+
+// work runs the admitted operation inside the worker and reports it under the execution's identity.
+func (e *installer) work(ctx context.Context, record executionRequest) workerOutcome {
+	result, err := e.Execute(ctx, record.Request)
+	if err != nil && !errors.Is(err, errNativeCleanupUnknown) && (result.InstallationID != record.Request.InstallationID || result.OperationID != record.Request.OperationID || result.Plan.PlanSHA256 != record.Preview.Plan.PlanSHA256) {
+		// Execute loses the admitted identity only when it refuses at or before its plan check, in the
+		// same read-only code the preview runs, so no file, receipt or task changed. A probe whose
+		// process tree did not settle still keeps the fence.
+		refused := record.Preview
+		refused.State, refused.Completion, refused.Problems = "partial", "known", result.Problems
+		return workerOutcome{Result: refused, TaskMutation: "settled", Error: err.Error()}
+	}
+	outcome := workerOutcome{Result: result, TaskMutation: "settled"}
+	if errors.Is(err, errTaskMutationUnknown) || errors.Is(err, errNativeCleanupUnknown) {
+		outcome.TaskMutation = "unknown"
+	}
+	if err == nil {
+		outcome.Result, err = PublishTarget(ctx, record.Request, result)
+	}
+	if err == nil {
+		outcome.inspectPublication(record.Request)
+	}
+	if err != nil {
+		outcome.Error = err.Error()
+	}
+	return outcome
 }
 
 // unfinishedWithoutTaskMutation settles a worker lost after exact tree exit. The worker saves a
