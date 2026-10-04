@@ -138,6 +138,9 @@ func validateWorkerOutcome(record executionRequest, outcome workerOutcome) error
 	if outcome.TaskMutation != "settled" && outcome.TaskMutation != "unknown" || result.Completion != "known" && result.Completion != "unknown" {
 		return fmt.Errorf("invalid worker completion")
 	}
+	if err := validateStepTimings(outcome.Timings); err != nil {
+		return err
+	}
 	switch result.State {
 	case "planned", "prepared", "partial", "installed", "removing", "removed", "conflict", "unknown":
 	default:

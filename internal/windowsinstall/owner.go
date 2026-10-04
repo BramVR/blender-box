@@ -46,6 +46,7 @@ type Execution struct {
 	CancelRequested bool             `json:"cancel_requested"`
 	Keeper          *ProcessIdentity `json:"keeper,omitempty"`
 	Worker          *ProcessIdentity `json:"worker,omitempty"`
+	Timings         []StepTiming     `json:"timings,omitempty"`
 }
 
 type executionRequest struct {
@@ -94,11 +95,12 @@ type treeExit struct {
 	WorkerExitObserved bool            `json:"worker_exit_observed"`
 }
 type workerOutcome struct {
-	Result          Result      `json:"result"`
-	Error           string      `json:"error,omitempty"`
-	TaskMutation    string      `json:"task_mutation"`
-	PublicationFile *File       `json:"publication_file,omitempty"`
-	WorkerExit      *workerExit `json:"worker_exit,omitempty"`
+	Result          Result       `json:"result"`
+	Error           string       `json:"error,omitempty"`
+	TaskMutation    string       `json:"task_mutation"`
+	PublicationFile *File        `json:"publication_file,omitempty"`
+	WorkerExit      *workerExit  `json:"worker_exit,omitempty"`
+	Timings         []StepTiming `json:"timings,omitempty"`
 }
 
 // workerExit is the keeper's observation of the worker process. It explains a result and never grants authority.
@@ -428,6 +430,7 @@ func (o *owner) result(observed observedExecution) (Result, error) {
 	if observed.terminal != nil {
 		result = observed.terminal.Outcome.Result
 		execution.TaskMutation = observed.terminal.Outcome.TaskMutation
+		execution.Timings = observed.terminal.Outcome.Timings
 		if observed.terminal.TreeExit != nil {
 			execution.TreeCleanup = "known"
 			if observed.terminal.TreeExit.Kind == "not-started" {
@@ -747,8 +750,11 @@ func (o *owner) keepAdmitted(ctx context.Context, record executionRequest) (Resu
 }
 
 // work runs the admitted operation inside the worker and reports it under the execution's identity.
-func (e *installer) work(ctx context.Context, record executionRequest) workerOutcome {
+func (e *installer) work(ctx context.Context, record executionRequest) (outcome workerOutcome) {
+	defer func() { outcome.Timings = stepTimings(ctx) }()
+	stopExecute := timeStep(ctx, "execute")
 	result, err := e.Execute(ctx, record.Request)
+	stopExecute()
 	if err != nil && !errors.Is(err, errNativeCleanupUnknown) && (result.InstallationID != record.Request.InstallationID || result.OperationID != record.Request.OperationID || result.Plan.PlanSHA256 != record.Preview.Plan.PlanSHA256) {
 		// Execute loses the admitted identity only when it refuses at or before its plan check, in the
 		// same read-only code the preview runs, so no file, receipt or task changed. A probe whose
@@ -757,12 +763,14 @@ func (e *installer) work(ctx context.Context, record executionRequest) workerOut
 		refused.State, refused.Completion, refused.Problems = "partial", "known", result.Problems
 		return workerOutcome{Result: refused, TaskMutation: "settled", Error: err.Error()}
 	}
-	outcome := workerOutcome{Result: result, TaskMutation: "settled"}
+	outcome = workerOutcome{Result: result, TaskMutation: "settled"}
 	if errors.Is(err, errTaskMutationUnknown) || errors.Is(err, errNativeCleanupUnknown) {
 		outcome.TaskMutation = "unknown"
 	}
 	if err == nil {
+		stopPublish := timeStep(ctx, "publish-target")
 		outcome.Result, err = PublishTarget(ctx, record.Request, result)
+		stopPublish()
 	}
 	if err == nil {
 		outcome.inspectPublication(record.Request)

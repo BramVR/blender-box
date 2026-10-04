@@ -1845,6 +1845,18 @@ class InstallerRecoveryTests(unittest.TestCase):
         with self.assertRaisesRegex(proof.ProofError, "installer-state-unknown"):
             proof.validate_installer_execution(self.observation(launcher_cleanup="unknown"), terminal=True)
 
+    def test_worker_step_timings_are_accepted_only_when_bounded(self):
+        timings = [{"step": "before-worker", "calls": 1, "milliseconds": 900},
+                   {"step": "powershell", "calls": 41, "milliseconds": 180000}]
+        observed = self.observation(timings=timings)
+        self.assertEqual(proof.validate_installer_execution(observed, terminal=True)["timings"], timings)
+        excessive = [{"step": "step-" + chr(97 + i // 26) + chr(97 + i % 26), "calls": 1, "milliseconds": 0} for i in range(33)]
+        for invalid in ([], excessive, [timings[0], timings[0]], [{**timings[0], "calls": 0}],
+                        [{**timings[0], "milliseconds": -1}], [{**timings[0], "calls": True}],
+                        [{**timings[0], "step": "Before Worker"}], [{**timings[0], "extra": 1}], {"step": "x"}):
+            with self.subTest(invalid=invalid), self.assertRaisesRegex(proof.ProofError, "installer-execution-invalid"):
+                proof.validate_installer_execution(self.observation(timings=invalid), terminal=True)
+
     def test_released_terminal_needs_no_stop(self):
         terminal = self.observation()
         self.assertEqual(self.recover([("status", terminal)]), terminal)

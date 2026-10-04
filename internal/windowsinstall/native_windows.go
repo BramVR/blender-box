@@ -41,6 +41,7 @@ func powerShell(ctx context.Context, action string, input any) ([]byte, error) {
 	return powerShellWithTimeout(ctx, action, input, 15*time.Second)
 }
 func powerShellWithTimeout(ctx context.Context, action string, input any, timeout time.Duration) ([]byte, error) {
+	defer timeStep(ctx, "powershell")()
 	data, err := json.Marshal(input)
 	if err != nil {
 		return nil, err
@@ -61,6 +62,7 @@ func powerShellWithTimeout(ctx context.Context, action string, input any, timeou
 	return runNativeJobWithIntent(ctx, nativeTrustedPowerShell, executable, []string{"-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand", base64.StdEncoding.EncodeToString(encoded)}, data, powerShellEnvironment(os.Environ(), directory), nil)
 }
 func (m nativeMachine) inspect(ctx context.Context, r Request) (Inspection, error) {
+	defer timeStep(ctx, "inspect")()
 	inspection := Inspection{BlenderCandidates: []Candidate{}}
 	if !windowstarget.ValidateWindowsPath(r.StateRoot) {
 		return inspection, fmt.Errorf("unsafe Windows state root")
@@ -142,6 +144,7 @@ type prerequisiteCheck struct {
 // identity, so the asserted ACL and the version read belong to the hashed file object. A set
 // pythonHome also audits that Python runtime tree in the same start, after the path assertions.
 func (nativeMachine) candidates(ctx context.Context, sid string, checks []prerequisiteCheck, pythonHome string) ([]Candidate, error) {
+	defer timeStep(ctx, "prerequisite")()
 	if len(checks) == 0 && pythonHome == "" {
 		return []Candidate{}, nil
 	}
@@ -273,30 +276,45 @@ print(json.dumps(dict(version=platform.python_version(),home=home,template=templ
 	return result, nil
 }
 func (nativeMachine) securePath(ctx context.Context, path, sid string, missing bool) error {
+	defer timeStep(ctx, "secure-path")()
 	_, err := powerShell(ctx, `Assert-Path $r.path $r.sid $r.missing; if(Test-Path -LiteralPath $r.path){Assert-Access $r.path $r.sid $true}`, map[string]any{"path": path, "sid": sid, "missing": missing})
 	return err
 }
-func (nativeMachine) sealPath(ctx context.Context, path, sid string) error {
-	_, err := powerShell(ctx, `Assert-Path $r.path $r.sid $false; Assert-Access $r.path $r.sid $true
-$sections=[Security.AccessControl.AccessControlSections]::Access -bor [Security.AccessControl.AccessControlSections]::Owner -bor [Security.AccessControl.AccessControlSections]::Group
-$item=Get-Item -Force -LiteralPath $r.path -ErrorAction Stop
-if($item -is [IO.DirectoryInfo]){
- $acl=[Security.AccessControl.DirectorySecurity]::new()
- $acl.SetSecurityDescriptorSddlForm((Sealed-Runtime-Security $r.sid),$sections)
- [IO.Directory]::SetAccessControl($r.path,$acl)
-}else{
- $acl=[Security.AccessControl.FileSecurity]::new()
- $acl.SetSecurityDescriptorSddlForm((Sealed-Runtime-Security $r.sid),$sections)
- [IO.File]::SetAccessControl($r.path,$acl)
-}
-Assert-SealedRuntime $r.path $r.sid`, map[string]string{"path": path, "sid": sid})
-	return err
+
+// sealPaths applies the sealed runtime ACL in order, bounded per PowerShell process.
+// Each object changes atomically, so a failed batch leaves every object original or sealed.
+func (nativeMachine) sealPaths(ctx context.Context, paths []string, sid string) error {
+	defer timeStep(ctx, "seal")()
+	for start := 0; start < len(paths); start += runtimeACLBatchSize {
+		end := min(start+runtimeACLBatchSize, len(paths))
+		_, err := powerShellWithTimeout(ctx, `$sections=[Security.AccessControl.AccessControlSections]::Access -bor [Security.AccessControl.AccessControlSections]::Owner -bor [Security.AccessControl.AccessControlSections]::Group
+foreach($path in $r.paths){
+ Assert-Path $path $r.sid $false; Assert-Access $path $r.sid $true
+ $item=Get-Item -Force -LiteralPath $path -ErrorAction Stop
+ if($item -is [IO.DirectoryInfo]){
+  $acl=[Security.AccessControl.DirectorySecurity]::new()
+  $acl.SetSecurityDescriptorSddlForm((Sealed-Runtime-Security $r.sid),$sections)
+  [IO.Directory]::SetAccessControl($path,$acl)
+ }else{
+  $acl=[Security.AccessControl.FileSecurity]::new()
+  $acl.SetSecurityDescriptorSddlForm((Sealed-Runtime-Security $r.sid),$sections)
+  [IO.File]::SetAccessControl($path,$acl)
+ }
+ Assert-SealedRuntime $path $r.sid
+}`, map[string]any{"paths": paths[start:end], "sid": sid}, 30*time.Second)
+		if err != nil {
+			return err
+		}
+	}
+	return nil
 }
 func (nativeMachine) securePaths(ctx context.Context, paths []string, sid string) error {
+	defer timeStep(ctx, "secure-path")()
 	_, err := powerShell(ctx, `foreach($path in $r.paths){Assert-Path $path $r.sid $false; Assert-Access $path $r.sid $true}`, map[string]any{"paths": paths, "sid": sid})
 	return err
 }
 func (nativeMachine) secureRuntimePaths(ctx context.Context, checks []runtimePathCheck, sid string) error {
+	defer timeStep(ctx, "runtime-acl")()
 	for start := 0; start < len(checks); start += runtimeACLBatchSize {
 		end := min(start+runtimeACLBatchSize, len(checks))
 		_, err := powerShellWithTimeout(ctx, `foreach($check in $r.checks){
@@ -310,6 +328,7 @@ func (nativeMachine) secureRuntimePaths(ctx context.Context, checks []runtimePat
 	return nil
 }
 func (nativeMachine) createDirectory(ctx context.Context, path, sid string) error {
+	defer timeStep(ctx, "create-directory")()
 	_, err := powerShell(ctx, `Assert-Path $r.path $r.sid $true
 if(Test-Path -LiteralPath $r.path){throw 'Directory collision'}
 if(-not (Test-Path -LiteralPath ([IO.Path]::GetDirectoryName($r.path)) -PathType Container)){throw 'Managed directory requires an existing trusted parent'}
@@ -320,6 +339,7 @@ Assert-Path $r.path $r.sid $false`, map[string]string{"path": path, "sid": sid})
 	return err
 }
 func (nativeMachine) task(ctx context.Context, operation string, spec taskSpec) (taskObservation, error) {
+	defer timeStep(ctx, "task")()
 	data, err := powerShell(ctx, taskScript, map[string]any{"operation": operation, "spec": spec})
 	if err != nil {
 		return taskObservation{}, err
@@ -331,6 +351,7 @@ func (nativeMachine) task(ctx context.Context, operation string, spec taskSpec) 
 	return result, nil
 }
 func (nativeMachine) probe(ctx context.Context, path, state string) error {
+	defer timeStep(ctx, "probe")()
 	if _, err := os.Lstat(state); !os.IsNotExist(err) {
 		return fmt.Errorf("unexpected setup probe Session state")
 	}

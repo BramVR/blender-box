@@ -46,23 +46,30 @@ func TestNativeSealedRuntimeACLAndExactRemoval(t *testing.T) {
 	if err := machine.secureRuntimePaths(ctx, checks, sid); err != nil {
 		t.Fatalf("unsealed ACL batch: %v", err)
 	}
-	for i := range files {
-		if err := machine.sealPath(ctx, paths[i], sid); err != nil {
-			t.Fatalf("seal %s: %v", paths[i], err)
+	// The file alone leaves a mixed tree; the directories then seal leaf first in one batch.
+	for _, batch := range [][]int{{0}, {1, 2}} {
+		selected := []string{}
+		for _, i := range batch {
+			selected = append(selected, paths[i])
 		}
-		planned := files[i]
-		planned.Identity = ""
-		sealed, err := observeFile(paths[i], planned)
-		if err != nil {
-			t.Fatal(err)
+		if err := machine.sealPaths(ctx, selected, sid); err != nil {
+			t.Fatalf("seal %v: %v", selected, err)
 		}
-		if sealed.Identity == files[i].Identity || !sameFileObject(files[i].Identity, sealed.Identity) {
-			t.Fatalf("seal failed to preserve object and change security: %s", paths[i])
+		for _, i := range batch {
+			planned := files[i]
+			planned.Identity = ""
+			sealed, err := observeFile(paths[i], planned)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if sealed.Identity == files[i].Identity || !sameFileObject(files[i].Identity, sealed.Identity) {
+				t.Fatalf("seal failed to preserve object and change security: %s", paths[i])
+			}
+			files[i] = sealed
+			checks[i].Sealed = true
 		}
-		files[i] = sealed
-		checks[i].Sealed = true
 		if err := machine.secureRuntimePaths(ctx, checks, sid); err != nil {
-			t.Fatalf("mixed ACL batch after sealing %s: %v", paths[i], err)
+			t.Fatalf("mixed ACL batch after sealing %v: %v", selected, err)
 		}
 	}
 	for i := range files {

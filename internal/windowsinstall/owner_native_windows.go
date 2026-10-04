@@ -179,6 +179,10 @@ func runSetupWorker(directory, hash string) (workerOutcome, error) {
 	defer watchdog.Stop()
 	ctx, cancel := context.WithTimeout(context.Background(), remaining)
 	defer cancel()
+	ctx, timer := withStepTimer(ctx)
+	// The deadline starts at admission, so this is the budget spent before the worker ran.
+	timer.add("before-worker", executionTimeout-remaining)
+	stopAdmission := timeStep(ctx, "admission")
 	ctx, stopWatching := watchExecutionCancellation(ctx, record)
 	defer stopWatching()
 	var ownership executionOwnership
@@ -222,6 +226,7 @@ func runSetupWorker(directory, hash string) (workerOutcome, error) {
 		return workerOutcome{}, err
 	}
 	installer := &installer{machine: nativeMachine{}, claim: &claim}
+	stopAdmission()
 	return installer.work(ctx, record), nil
 }
 
