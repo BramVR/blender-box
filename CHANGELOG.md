@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Settle a Windows setup execution as a resumable `partial` result with the worker's reason when the worker refuses before confirming the approved plan, such as a failed prerequisite inspection; it previously reported `worker result identity changed` and fenced the shared state root for manual review.
+- Retain the Windows setup worker's exit code and bounded stderr and stdout tails in the execution's terminal record, and report a missing result as `worker produced no result (exit N)` instead of an identity mismatch.
 - Stop reporting a successful Windows setup command as failed with cleanup unknown when Windows briefly omits an exited process from its Job member list; the list is read again and only a complete reading counts.
 - Let delayed pairing-proof observers recover and collect the original expired request, and accept IPv6 SSH endpoints when resolving the pairing address.
 - Prove pairing inside the `host-install` proof: preview SSH preparation, verify the offer digest, refuse a tampered offer, a forged offer and a wrong pinned host key, enroll twice with identical receipts, run the baseline Scenario through the paired target, revoke through the client, and require the revoked key to be refused while admin access and the pinned keys file survive; recovery from any pairing stage revokes host-locally and never replays enrollment.
