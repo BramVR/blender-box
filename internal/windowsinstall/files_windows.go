@@ -14,6 +14,18 @@ import (
 var moveFileEx = syscall.NewLazyDLL("kernel32.dll").NewProc("MoveFileExW")
 var getFileSecurity = syscall.NewLazyDLL("advapi32.dll").NewProc("GetFileSecurityW")
 var setFileInformation = syscall.NewLazyDLL("kernel32.dll").NewProc("SetFileInformationByHandle")
+var getDriveType = syscall.NewLazyDLL("kernel32.dll").NewProc("GetDriveTypeW")
+
+// fixedLocalDrive reports whether a validated drive-letter path is on a fixed local volume.
+// Callers check it before opening a path so a network drive is refused without being touched.
+func fixedLocalDrive(path string) bool {
+	root, err := syscall.UTF16PtrFromString(path[:3])
+	if err != nil {
+		return false
+	}
+	kind, _, _ := getDriveType.Call(uintptr(unsafe.Pointer(root)))
+	return kind == 3
+}
 
 func openIdentity(path string, access uint32) (syscall.Handle, error) {
 	pointer, err := syscall.UTF16PtrFromString(path)

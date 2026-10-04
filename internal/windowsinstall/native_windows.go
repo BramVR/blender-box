@@ -75,7 +75,8 @@ $console=([System.Security.Principal.NTAccount]::new($account)).Translate([Syste
 if ($sid -ne $console) { throw 'Authenticated and interactive SID must match' }
 if ($r.windows_user) { $selected=([System.Security.Principal.NTAccount]::new($r.windows_user)).Translate([System.Security.Principal.SecurityIdentifier]).Value; if ($selected -ne $sid) { throw 'Selected account differs' } }
 if ($sid -match '-500$' -or (Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System').EnableLUA -ne 1) { throw 'Limited interactive task requires enabled UAC and a non-RID-500 account' }
-[ordered]@{sid=$sid} | ConvertTo-Json -Compress`, map[string]string{"windows_user": r.WindowsUser})
+Assert-Path $r.root $sid $true; if(Test-Path -LiteralPath $r.root){Assert-Access $r.root $sid $true}
+[ordered]@{sid=$sid} | ConvertTo-Json -Compress`, map[string]string{"windows_user": r.WindowsUser, "root": r.StateRoot})
 	if err != nil {
 		return inspection, err
 	}
@@ -83,9 +84,6 @@ if ($sid -match '-500$' -or (Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows\
 		return inspection, err
 	}
 	inspection.OwnerSID = identity.SID
-	if err = m.securePath(ctx, r.StateRoot, identity.SID, true); err != nil {
-		return inspection, err
-	}
 	if _, err = os.Lstat(r.StateRoot); err == nil {
 		inspection.RootIdentity, err = fileIdentity(r.StateRoot)
 		if err != nil {
@@ -95,13 +93,8 @@ if ($sid -match '-500$' -or (Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows\
 	if r.Operation == "remove" || r.Operation == "status" {
 		return inspection, nil
 	}
-	if r.BlenderPath != "" {
-		candidate, err := m.candidate(ctx, r.BlenderPath, identity.SID, true)
-		if err != nil {
-			return inspection, err
-		}
-		inspection.BlenderCandidates = append(inspection.BlenderCandidates, candidate)
-	} else {
+	paths := []string{r.BlenderPath}
+	if r.BlenderPath == "" {
 		output, err = powerShell(ctx, `$paths=[System.Collections.Generic.List[string]]::new()
 foreach($key in @('HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*','HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*')) {
  $items=@(Get-ItemProperty $key -ErrorAction SilentlyContinue); if($items.Count -gt 4096){throw 'Uninstall registry exceeds discovery bound'}
@@ -113,21 +106,22 @@ $found=@($paths | Sort-Object -Unique | Where-Object {Test-Path -LiteralPath $_ 
 		if err != nil {
 			return inspection, err
 		}
-		var paths []string
 		if err = json.Unmarshal(output, &paths); err != nil {
 			return inspection, err
 		}
 		if len(paths) > 128 {
 			return inspection, fmt.Errorf("excessive Blender candidates")
 		}
-		for _, path := range paths {
-			candidate, err := m.candidate(ctx, path, identity.SID, true)
-			if err != nil {
-				return inspection, err
-			}
-			inspection.BlenderCandidates = append(inspection.BlenderCandidates, candidate)
-		}
 	}
+	checks := make([]prerequisiteCheck, 0, len(paths))
+	for _, path := range paths {
+		checks = append(checks, prerequisiteCheck{Path: path, Executable: true})
+	}
+	candidates, err := m.candidates(ctx, identity.SID, checks, "")
+	if err != nil {
+		return inspection, err
+	}
+	inspection.BlenderCandidates = append(inspection.BlenderCandidates, candidates...)
 	if r.PythonPath != "" {
 		python, err := m.python(ctx, r.PythonPath, identity.SID)
 		if err != nil {
@@ -137,54 +131,93 @@ $found=@($paths | Sort-Object -Unique | Where-Object {Test-Path -LiteralPath $_ 
 	}
 	return inspection, nil
 }
-func (m nativeMachine) candidate(ctx context.Context, path, sid string, executable bool) (Candidate, error) {
-	if !windowstarget.ValidateWindowsPath(path) {
-		return Candidate{}, fmt.Errorf("unsafe prerequisite path")
+
+type prerequisiteCheck struct {
+	Path       string `json:"path"`
+	Executable bool   `json:"executable"`
+}
+
+// candidates asserts trust and limited-account access for every prerequisite in one PowerShell
+// start, then hashes each file. Identity is taken before the assertion and must equal the hashed
+// identity, so the asserted ACL and the version read belong to the hashed file object. A set
+// pythonHome also audits that Python runtime tree in the same start, after the path assertions.
+func (nativeMachine) candidates(ctx context.Context, sid string, checks []prerequisiteCheck, pythonHome string) ([]Candidate, error) {
+	if len(checks) == 0 && pythonHome == "" {
+		return []Candidate{}, nil
 	}
-	if _, err := powerShell(ctx, `Assert-Path $r.path $r.sid $false; Assert-Access $r.path $r.sid $false`, map[string]string{"path": path, "sid": sid}); err != nil {
-		return Candidate{}, err
+	before := make([]string, len(checks))
+	beforeErr := make([]error, len(checks))
+	for i, check := range checks {
+		if !windowstarget.ValidateWindowsPath(check.Path) {
+			return nil, fmt.Errorf("unsafe prerequisite path")
+		}
+		if !fixedLocalDrive(check.Path) {
+			return nil, fmt.Errorf("%s: Path requires fixed local volume", check.Path)
+		}
+		// A missing or reparse path fails here too; the assertion below reports why.
+		before[i], beforeErr[i] = fileIdentity(check.Path)
 	}
-	hash, identity, err := hashPrerequisite(path, executable)
+	timeout := 30 * time.Second
+	if pythonHome != "" {
+		timeout = 45 * time.Second
+	}
+	output, err := powerShellWithTimeout(ctx, pythonTrustFunctions+`$versions=[System.Collections.Generic.List[string]]::new()
+foreach($check in $r.checks){
+ try{Assert-Path $check.path $r.sid $false; Assert-Access $check.path $r.sid $false}catch{throw ($check.path+': '+$_.Exception.Message)}
+ $version='';if($check.executable){$version=[string][Diagnostics.FileVersionInfo]::GetVersionInfo($check.path).FileVersion}
+ $versions.Add($version)
+}
+if($r.python_home){Assert-PythonTree $r.python_home $r.sid}
+ConvertTo-Json -InputObject $versions.ToArray() -Compress`, map[string]any{"checks": append([]prerequisiteCheck{}, checks...), "sid": sid, "python_home": pythonHome}, timeout)
 	if err != nil {
-		return Candidate{}, err
+		if pythonHome != "" {
+			return nil, fmt.Errorf("Python runtime trust audit: %w", err)
+		}
+		return nil, err
 	}
-	version := ""
-	if executable {
-		data, err := powerShell(ctx, `$v=[Diagnostics.FileVersionInfo]::GetVersionInfo($r.path);[ordered]@{version=[string]$v.FileVersion}|ConvertTo-Json -Compress`, map[string]string{"path": path})
+	var versions []string
+	if err := strictjson.Decode(output, &versions); err != nil {
+		return nil, err
+	}
+	if len(versions) != len(checks) {
+		return nil, fmt.Errorf("prerequisite inspection returned %d versions for %d paths", len(versions), len(checks))
+	}
+	found := make([]Candidate, 0, len(checks))
+	for i, check := range checks {
+		if beforeErr[i] != nil {
+			return nil, fmt.Errorf("prerequisite changed during inspection: %w", beforeErr[i])
+		}
+		hash, identity, err := hashPrerequisite(check.Path, check.Executable)
 		if err != nil {
-			return Candidate{}, err
+			return nil, err
 		}
-		var info struct {
-			Version string `json:"version"`
+		if identity != before[i] {
+			return nil, fmt.Errorf("prerequisite changed during inspection")
 		}
-		if err := strictjson.Decode(data, &info); err != nil {
-			return Candidate{}, err
+		version := ""
+		if check.Executable {
+			version = versions[i]
 		}
-		version = info.Version
+		found = append(found, Candidate{Path: check.Path, Version: version, SHA256: hash, Identity: identity})
 	}
-	afterIdentity, err := fileIdentity(path)
-	if err != nil || afterIdentity != identity {
-		return Candidate{}, fmt.Errorf("prerequisite changed during version inspection")
-	}
-	return Candidate{Path: path, Version: version, SHA256: hash, Identity: identity}, nil
+	return found, nil
 }
 func (m nativeMachine) python(ctx context.Context, path, sid string) (PythonPrerequisite, error) {
 	result := PythonPrerequisite{}
-	candidate, err := m.candidate(ctx, path, sid, true)
+	found, err := m.candidates(ctx, sid, []prerequisiteCheck{{Path: path, Executable: true}}, "")
 	if err != nil {
 		return result, err
 	}
+	candidate := found[0]
 	dllPath, err := pythonRuntimeDLL(candidate)
 	if err != nil {
 		return result, err
 	}
-	dll, err := m.candidate(ctx, dllPath, sid, false)
+	found, err = m.candidates(ctx, sid, []prerequisiteCheck{{Path: dllPath}}, filepath.Dir(path))
 	if err != nil {
 		return result, err
 	}
-	if err = auditPython(ctx, filepath.Dir(path), sid); err != nil {
-		return result, err
-	}
+	dll := found[0]
 	code := `import json,sys,sysconfig,platform,os,venv,ctypes
 assert sys.implementation.name == 'cpython' and sys.platform == 'win32' and sys.version_info[:2] >= (3,11) and sys.version_info[:2] <= (3,14)
 assert sys.prefix == sys.base_prefix and platform.machine().lower() in ('amd64','x86_64')
@@ -226,20 +259,15 @@ print(json.dumps(dict(version=platform.python_version(),home=home,template=templ
 	candidate.Version = facts.Version
 	result.Candidate = candidate
 	result.Home = facts.Home
-	result.Template, err = m.candidate(ctx, facts.Template, sid, true)
+	found, err = m.candidates(ctx, sid, []prerequisiteCheck{{Path: facts.Template, Executable: true}, {Path: facts.VenvSource}, {Path: dll.Path}, {Path: path, Executable: true}}, "")
 	if err != nil {
-		return result, fmt.Errorf("unsupported CPython redirector layout: %w", err)
+		return result, fmt.Errorf("unsupported CPython redirector layout or Python changed during inspection: %w", err)
 	}
-	result.DLL, err = m.candidate(ctx, dll.Path, sid, false)
-	if err != nil || result.DLL.SHA256 != dll.SHA256 || result.DLL.Identity != dll.Identity {
+	result.Template, result.VenvSource, result.DLL = found[0], found[1], found[2]
+	if result.DLL.SHA256 != dll.SHA256 || result.DLL.Identity != dll.Identity {
 		return result, fmt.Errorf("Python runtime DLL changed during inspection")
 	}
-	result.VenvSource, err = m.candidate(ctx, facts.VenvSource, sid, false)
-	if err != nil {
-		return result, err
-	}
-	again, err := m.candidate(ctx, path, sid, true)
-	if err != nil || again.SHA256 != candidate.SHA256 || again.Identity != candidate.Identity {
+	if found[3].SHA256 != candidate.SHA256 || found[3].Identity != candidate.Identity {
 		return result, fmt.Errorf("Python changed during inspection")
 	}
 	return result, nil
