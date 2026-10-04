@@ -221,21 +221,7 @@ func runSetupWorker(directory, hash string) (workerOutcome, error) {
 		return workerOutcome{}, err
 	}
 	installer := &installer{machine: nativeMachine{}, claim: &claim}
-	result, workErr := installer.Execute(ctx, record.Request)
-	outcome := workerOutcome{Result: result, TaskMutation: "settled"}
-	if errors.Is(workErr, errTaskMutationUnknown) || errors.Is(workErr, errNativeCleanupUnknown) {
-		outcome.TaskMutation = "unknown"
-	}
-	if workErr == nil {
-		outcome.Result, workErr = PublishTarget(ctx, record.Request, result)
-	}
-	if workErr == nil {
-		outcome.inspectPublication(record.Request)
-	}
-	if workErr != nil {
-		outcome.Error = workErr.Error()
-	}
-	return outcome, nil
+	return installer.work(ctx, record), nil
 }
 
 // RunInternal accepts only the finite keeper and exact-process worker roles.

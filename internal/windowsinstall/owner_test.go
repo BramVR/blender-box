@@ -41,21 +41,7 @@ func ownerFixture(t *testing.T) (*owner, *fakeMachine, Request) {
 		worker := *installer
 		claim := record.claim()
 		worker.claim = &claim
-		result, err := worker.Execute(ctx, record.Request)
-		outcome := workerOutcome{Result: result, TaskMutation: "settled"}
-		if errors.Is(err, errTaskMutationUnknown) || errors.Is(err, errNativeCleanupUnknown) {
-			outcome.TaskMutation = "unknown"
-		}
-		if err == nil {
-			outcome.Result, err = PublishTarget(ctx, record.Request, result)
-		}
-		if err == nil {
-			outcome.inspectPublication(record.Request)
-		}
-		if err != nil {
-			outcome.Error = err.Error()
-		}
-		return outcome, &treeExit{Kind: "tree-empty", Keeper: own.Keeper, ObservedAt: time.Now().UTC(), Worker: own.Worker, WorkerExitObserved: true}, nil
+		return worker.work(ctx, record), &treeExit{Kind: "tree-empty", Keeper: own.Keeper, ObservedAt: time.Now().UTC(), Worker: own.Worker, WorkerExitObserved: true}, nil
 	}
 	owner.schedule = func(ctx context.Context, record executionRequest) (Result, error) {
 		fingerprint := objectDigest(record.launcherTask())

@@ -697,6 +697,32 @@ func (o *owner) keepAdmitted(ctx context.Context, record executionRequest) (Resu
 	return o.result(settled)
 }
 
+// work runs the admitted operation inside the worker and reports it under the execution's identity.
+func (e *installer) work(ctx context.Context, record executionRequest) workerOutcome {
+	result, err := e.Execute(ctx, record.Request)
+	if err != nil && (result.InstallationID != record.Request.InstallationID || result.OperationID != record.Request.OperationID || result.Plan.PlanSHA256 != record.Preview.Plan.PlanSHA256) {
+		// Execute loses the admitted identity only when it refuses at or before its plan check, in the
+		// same read-only code the preview runs, so no file, receipt or task changed.
+		refused := record.Preview
+		refused.State, refused.Completion, refused.Problems = "partial", "known", result.Problems
+		return workerOutcome{Result: refused, TaskMutation: "settled", Error: err.Error()}
+	}
+	outcome := workerOutcome{Result: result, TaskMutation: "settled"}
+	if errors.Is(err, errTaskMutationUnknown) || errors.Is(err, errNativeCleanupUnknown) {
+		outcome.TaskMutation = "unknown"
+	}
+	if err == nil {
+		outcome.Result, err = PublishTarget(ctx, record.Request, result)
+	}
+	if err == nil {
+		outcome.inspectPublication(record.Request)
+	}
+	if err != nil {
+		outcome.Error = err.Error()
+	}
+	return outcome
+}
+
 // unfinishedWithoutTaskMutation settles a worker lost after exact tree exit. The worker saves a
 // pending create-task or delete-task receipt before every Task Scheduler call, so any other
 // receipt proves no call was submitted.
