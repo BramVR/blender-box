@@ -231,6 +231,8 @@ type nativeRunGate struct {
 	NotStarted func()
 	Admit      func(nativeSpawn) error
 	TreeExited func(nativeSpawn)
+	// Exited receives the root exit state, nil when unobserved, and captured stderr after streams drain.
+	Exited func(*os.ProcessState, []byte)
 }
 
 type nativeLaunchIntent uint8
@@ -490,6 +492,13 @@ func runNativeJobWithIntent(ctx context.Context, intent nativeLaunchIntent, exec
 	}
 	if time.Until(deadline) <= 0 {
 		cleanupErr = errors.Join(cleanupErr, errNativeCleanupUnknown, fmt.Errorf("native cleanup deadline exceeded"))
+	}
+	if gate != nil && gate.Exited != nil {
+		var state *os.ProcessState
+		if waited != nil {
+			state = waited.state
+		}
+		gate.Exited(state, stderr)
 	}
 	if cleanupErr == nil && gate != nil {
 		gate.TreeExited(spawn)
