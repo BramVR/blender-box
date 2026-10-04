@@ -2,20 +2,9 @@
 
 package windowsinstall
 
-import (
-	"context"
-	"fmt"
-	"time"
-)
-
-func auditPython(ctx context.Context, home, sid string) error {
-	_, err := powerShellWithTimeout(ctx, pythonTrustFunctions+`Assert-PythonTree $r.home $r.sid`, map[string]string{"home": home, "sid": sid}, 45*time.Second)
-	if err != nil {
-		return fmt.Errorf("Python runtime trust audit: %w", err)
-	}
-	return nil
-}
-
+// pythonTrustFunctions audits a Python runtime tree before any of its code executes.
+// nativeMachine.candidates runs Assert-PythonTree in the same PowerShell start as the
+// runtime DLL assertion.
 const pythonTrustFunctions = `function Assert-AbsentPythonMarker([string]$Path,[string]$Sid) {
  if(Test-Path -LiteralPath $Path -ErrorAction Stop){throw 'Python startup redirector or build marker refused'}
  $parent=[IO.Path]::GetDirectoryName($Path)

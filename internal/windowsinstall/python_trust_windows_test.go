@@ -40,6 +40,11 @@ ConvertTo-Json -InputObject $sid -Compress`, map[string]string{"root": root})
 	return root, home, sid
 }
 
+func auditPython(ctx context.Context, home, sid string) error {
+	_, err := nativeMachine{}.candidates(ctx, sid, nil, home)
+	return err
+}
+
 func grantPythonFixtureWriter(t *testing.T, path string) {
 	t.Helper()
 	_, err := powerShell(context.Background(), `$acl=Get-Acl -LiteralPath $r.path
@@ -210,5 +215,67 @@ func TestPythonTrustAuditRejectsReparseDirectory(t *testing.T) {
 	}
 	if err := auditPython(context.Background(), home, sid); err == nil || !strings.Contains(err.Error(), "Reparse") {
 		t.Fatalf("reparse audit=%v", err)
+	}
+}
+
+func TestPythonInspectionReprovesPrerequisitesAfterExecution(t *testing.T) {
+	for _, change := range []string{"none", "replace-python", "replace-dll", "untrusted-template"} {
+		t.Run(change, func(t *testing.T) {
+			_, home, sid := pythonTrustFixture(t)
+			path := filepath.Join(home, "python.exe")
+			template := filepath.Join(home, "Lib", "venv", "scripts", "nt", "python.exe")
+			for _, executable := range []string{path, template} {
+				if err := os.MkdirAll(filepath.Dir(executable), 0700); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(executable, pythonPEFixture(t), 0600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			dll := filepath.Join(home, "python311.dll")
+			venv := filepath.Join(home, "Lib", "venv", "__init__.py")
+			machine := nativeMachine{pythonCommand: func(context.Context, string, []string, []byte, []string) ([]byte, error) {
+				// Same bytes under a new file object: only identity can reveal the replacement.
+				replace := map[string]string{"replace-python": path, "replace-dll": dll}[change]
+				if replace != "" {
+					data, err := os.ReadFile(replace)
+					if err != nil {
+						return nil, err
+					}
+					if err := os.WriteFile(replace+".new", data, 0600); err != nil {
+						return nil, err
+					}
+					if err := os.Rename(replace+".new", replace); err != nil {
+						return nil, err
+					}
+				}
+				if change == "untrusted-template" {
+					grantPythonFixtureWriter(t, template)
+				}
+				return json.Marshal(map[string]string{"version": "3.11.9", "home": home, "template": template, "dll": dll, "venv_source": venv})
+			}}
+			result, err := machine.python(context.Background(), path, sid)
+			switch change {
+			case "none":
+				if err != nil {
+					t.Fatal(err)
+				}
+				if result.Candidate.Version != "3.11.9" || result.Home != home || result.Template.Path != template || result.VenvSource.Path != venv || result.DLL.Path != dll || result.DLL.SHA256 != digest([]byte("fixture")) || result.Template.SHA256 != result.Candidate.SHA256 {
+					t.Fatalf("inspection=%+v", result)
+				}
+			case "replace-python":
+				if err == nil || !strings.Contains(err.Error(), "Python changed during inspection") {
+					t.Fatalf("replaced Python accepted: %v", err)
+				}
+			case "replace-dll":
+				if err == nil || !strings.Contains(err.Error(), "Python runtime DLL changed during inspection") {
+					t.Fatalf("replaced DLL accepted: %v", err)
+				}
+			case "untrusted-template":
+				if err == nil || !strings.Contains(err.Error(), "Untrusted path writer") {
+					t.Fatalf("untrusted template accepted: %v", err)
+				}
+			}
+		})
 	}
 }
