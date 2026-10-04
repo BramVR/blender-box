@@ -3,6 +3,7 @@ package windowsinstall
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -13,6 +14,7 @@ import (
 
 	"github.com/BramVR/blender-box/internal/host"
 	"github.com/BramVR/blender-box/internal/orchestrator"
+	"github.com/BramVR/blender-box/internal/strictjson"
 )
 
 func ownerFixture(t *testing.T) (*owner, *fakeMachine, Request) {
@@ -711,5 +713,27 @@ func TestExecutionTerminalFenceRecoveredByExactStopBeforeRunAdmission(t *testing
 	}
 	if err := service.Acquire(context.Background(), request.StateRoot, host.AcquireRequest{SchemaVersion: 1, Claim: claim}); err != nil {
 		t.Fatal("settled stop did not reopen Run admission", err)
+	}
+}
+
+func TestUnobservedWorkerExitStaysStrictlyReadable(t *testing.T) {
+	data, err := json.Marshal(workerOutcome{TaskMutation: "unknown", WorkerExit: &workerExit{StderrTail: "lost\n"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var decoded struct {
+		WorkerExit workerExit `json:"worker_exit"`
+	}
+	raw := struct {
+		WorkerExit json.RawMessage `json:"worker_exit"`
+	}{}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		t.Fatal(err)
+	}
+	if err := strictjson.Decode([]byte(`{"worker_exit":`+string(raw.WorkerExit)+`}`), &decoded); err != nil {
+		t.Fatalf("strict read of worker_exit %s: %v", raw.WorkerExit, err)
+	}
+	if decoded.WorkerExit.ExitCode != nil || decoded.WorkerExit.StderrTail != "lost\n" {
+		t.Fatalf("decoded worker exit %+v", decoded.WorkerExit)
 	}
 }

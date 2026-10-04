@@ -103,7 +103,7 @@ type workerOutcome struct {
 
 // workerExit is the keeper's observation of the worker process. It explains a result and never grants authority.
 type workerExit struct {
-	ExitCode   *int   `json:"exit_code"`
+	ExitCode   *int   `json:"exit_code,omitempty"`
 	StdoutTail string `json:"stdout_tail,omitempty"`
 	StderrTail string `json:"stderr_tail,omitempty"`
 }
