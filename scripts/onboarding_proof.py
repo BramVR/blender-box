@@ -1183,7 +1183,8 @@ def validate_installer_result(value, operator, operation, *, operation_id=None, 
 def validate_installer_execution(result, *, terminal=False):
     execution = result.get("execution")
     require(isinstance(execution, dict) and set(execution) <= {"token", "request_sha256", "deadline", "state", "tree_cleanup",
-                                                               "task_mutation", "launcher_cleanup", "cancel_requested", "keeper", "worker", "process_state", "fence_state"}
+                                                               "task_mutation", "launcher_cleanup", "cancel_requested", "keeper", "worker", "process_state", "fence_state",
+                                                               "timings"}
             and matches(r"bbxe_[a-f0-9]{32}", execution.get("token"))
             and matches(HASH, execution.get("request_sha256"))
             and execution.get("state") in {"running", "terminal", "unknown"}
@@ -1198,6 +1199,14 @@ def validate_installer_execution(result, *, terminal=False):
         require(deadline.tzinfo is not None, "installer-execution-invalid")
     except (ValueError, KeyError, AttributeError, TypeError) as error:
         raise ProofError("installer-execution-invalid") from error
+    if "timings" in execution:
+        timings = execution["timings"]
+        require(isinstance(timings, list) and 0 < len(timings) <= 32
+                and all(isinstance(t, dict) and set(t) == {"step", "calls", "milliseconds"}
+                        and matches(r"[a-z][a-z-]{0,63}", t["step"])
+                        and type(t["calls"]) is int and t["calls"] >= 1
+                        and type(t["milliseconds"]) is int and t["milliseconds"] >= 0 for t in timings)
+                and len({t["step"] for t in timings}) == len(timings), "installer-execution-invalid")
     for role in ("keeper", "worker"):
         if role not in execution:
             require(execution["state"] == "unknown" and execution["process_state"] == "unknown"

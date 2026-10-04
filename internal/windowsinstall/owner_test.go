@@ -43,6 +43,7 @@ func ownerFixture(t *testing.T) (*owner, *fakeMachine, Request) {
 		worker := *installer
 		claim := record.claim()
 		worker.claim = &claim
+		ctx, _ = withStepTimer(ctx)
 		return worker.work(ctx, record), &treeExit{Kind: "tree-empty", Keeper: own.Keeper, ObservedAt: time.Now().UTC(), Worker: own.Worker, WorkerExitObserved: true}, nil
 	}
 	owner.schedule = func(ctx context.Context, record executionRequest) (Result, error) {
@@ -112,6 +113,9 @@ func TestExecutionFreshStatusAndSuccessfulReplay(t *testing.T) {
 	observed, err := fresh.Execute(context.Background(), statusRequest(request))
 	if err != nil || observed.Execution.Token != installed.Execution.Token || observed.State != "installed" {
 		t.Fatalf("fresh status=%+v err=%v", observed, err)
+	}
+	if len(observed.Execution.Timings) == 0 || objectDigest(observed.Execution.Timings) != objectDigest(installed.Execution.Timings) {
+		t.Fatalf("status lost worker step timings: installed=%+v status=%+v", installed.Execution.Timings, observed.Execution.Timings)
 	}
 	replay, err := owner.Execute(context.Background(), request)
 	if err != nil || replay.Execution.Token != installed.Execution.Token || machine.probes != before {
@@ -617,7 +621,7 @@ func TestExecutionLostWorkerResultSettlesOnlyWithoutPendingTaskMutation(t *testi
 	for _, tc := range []struct {
 		operation, interrupt, taskMutation, fence string
 	}{
-		{"install", "after-seal:" + sitePackagesRoot + "/blendersessiond/__main__.py", "settled", "released"},
+		{"install", "after-seal", "settled", "released"},
 		{"install", "before-create:task", "unknown", "held"},
 		{"remove", "after-delete:runtime/", "settled", "released"},
 		{"remove", "before-delete:task", "unknown", "held"},

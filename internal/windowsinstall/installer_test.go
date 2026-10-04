@@ -26,6 +26,8 @@ type fakeMachine struct {
 	probes          int
 	probeHook       func()
 	sealCalls       []string
+	sealRequests    int
+	sealInterrupt   string
 	aclBatches      int
 	aclChecks       []runtimePathCheck
 	probeErr        error
@@ -45,9 +47,21 @@ func (m *fakeMachine) inspect(_ context.Context, r Request) (Inspection, error) 
 func (m *fakeMachine) securePath(_ context.Context, path, _ string, missing bool) error {
 	return checkPath(path, missing)
 }
-func (m *fakeMachine) sealPath(_ context.Context, path, _ string) error {
-	m.sealCalls = append(m.sealCalls, path)
-	return fakeSeal(path)
+
+// sealPaths seals in order; sealInterrupt fails the request right after sealing the object with that
+// receipt path, leaving a mixed tree like a lost PowerShell process.
+func (m *fakeMachine) sealPaths(_ context.Context, paths []string, _ string) error {
+	m.sealRequests++
+	for _, path := range paths {
+		m.sealCalls = append(m.sealCalls, path)
+		if err := fakeSeal(path); err != nil {
+			return err
+		}
+		if m.sealInterrupt != "" && strings.HasSuffix(path, filepath.FromSlash(m.sealInterrupt)) {
+			return fmt.Errorf("seal request interrupted")
+		}
+	}
+	return nil
 }
 func (m *fakeMachine) securePaths(ctx context.Context, paths []string, sid string) error {
 	for _, path := range paths {
@@ -280,7 +294,7 @@ func TestSitePackagesSealPrecedesProbeAndKeepsOtherRuntimeIdentities(t *testing.
 	receiptPath := filepath.Join(r.StateRoot, "installations", id, "receipt.json")
 	pre := map[string]string{}
 	e.checkpoint = func(point string) error {
-		if point != "before-seal:"+sitePackagesRoot+"/blendersessiond/__main__.py" {
+		if point != "before-seal" {
 			return nil
 		}
 		receipt, err := readReceipt(receiptPath)
@@ -320,8 +334,8 @@ func TestSitePackagesSealPrecedesProbeAndKeepsOtherRuntimeIdentities(t *testing.
 	if len(m.aclChecks) < len(receipt.Files) || m.aclBatches >= len(receipt.Files) {
 		t.Fatalf("runtime ACL coverage or native child budget changed: checks=%d batches=%d files=%d package=%d", len(m.aclChecks), m.aclBatches, len(receipt.Files), packageFiles)
 	}
-	if len(m.sealCalls) != packageFiles {
-		t.Fatalf("runtime seal calls=%d package files=%d", len(m.sealCalls), packageFiles)
+	if len(m.sealCalls) != packageFiles || m.sealRequests != 1 {
+		t.Fatalf("runtime seal objects=%d requests=%d package files=%d", len(m.sealCalls), m.sealRequests, packageFiles)
 	}
 	for _, path := range m.sealCalls {
 		relative, err := filepath.Rel(filepath.Dir(receiptPath), path)
@@ -339,12 +353,7 @@ func TestSitePackagesSealRecoveryRejectsUnknownAndChangedState(t *testing.T) {
 			r.Apply = true
 			id, _ := newID("bbxi_")
 			r.InstallationID = InstallationID(id)
-			e.checkpoint = func(point string) error {
-				if point == "after-seal:"+selected {
-					return fmt.Errorf("interrupted after one ACL change")
-				}
-				return nil
-			}
+			m.sealInterrupt = selected
 			partial, err := e.Execute(context.Background(), r)
 			if err == nil || partial.State != "partial" || m.probes != 0 || m.current.Exists {
 				t.Fatalf("interrupted seal=%+v error=%v", partial, err)
@@ -374,7 +383,7 @@ func TestSitePackagesSealRecoveryRejectsUnknownAndChangedState(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			e.checkpoint = nil
+			m.sealInterrupt = ""
 			result, err := e.Execute(context.Background(), r)
 			if change == "none" {
 				if err != nil || result.State != "installed" || m.probes != 1 || !m.current.Exists {
@@ -389,14 +398,53 @@ func TestSitePackagesSealRecoveryRejectsUnknownAndChangedState(t *testing.T) {
 	}
 }
 
+func TestSitePackagesSealResumesOnlyObjectsLeftOriginal(t *testing.T) {
+	const selected = sitePackagesRoot + "/blendersessiond-1.0.dist-info/METADATA"
+	e, m, r := installFixture(t)
+	r.Apply = true
+	id, _ := newID("bbxi_")
+	r.InstallationID = InstallationID(id)
+	m.sealInterrupt = selected
+	partial, err := e.Execute(context.Background(), r)
+	if err == nil || partial.State != "partial" || m.probes != 0 || len(m.sealCalls) == 0 || !strings.HasSuffix(m.sealCalls[len(m.sealCalls)-1], filepath.FromSlash(selected)) {
+		t.Fatalf("interrupted seal=%+v error=%v sealed=%v", partial, err, m.sealCalls)
+	}
+	interrupted := map[string]bool{}
+	for _, path := range m.sealCalls {
+		interrupted[path] = true
+	}
+	m.sealInterrupt, m.sealCalls = "", nil
+	installed, err := e.Execute(context.Background(), r)
+	if err != nil || installed.State != "installed" || m.probes != 1 || m.sealRequests != 2 {
+		t.Fatalf("mixed tree recovery=%+v error=%v requests=%d", installed, err, m.sealRequests)
+	}
+	receipt, err := readReceipt(filepath.Join(r.StateRoot, "installations", id, "receipt.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	packageFiles := 0
+	for _, file := range receipt.Files {
+		if packageComponent(file.Path) {
+			packageFiles++
+		}
+	}
+	for _, path := range m.sealCalls {
+		if interrupted[path] {
+			t.Fatalf("resumed seal repeated an already sealed object: %s", path)
+		}
+	}
+	if len(m.sealCalls) == 0 || len(interrupted)+len(m.sealCalls) != packageFiles {
+		t.Fatalf("sealed before=%d resumed=%d package files=%d", len(interrupted), len(m.sealCalls), packageFiles)
+	}
+}
+
 func TestSitePackagesSealIntentSurvivesBeforeMutation(t *testing.T) {
 	e, m, r := installFixture(t)
 	r.Apply = true
 	id, _ := newID("bbxi_")
 	r.InstallationID = InstallationID(id)
-	point := "before-seal:" + sitePackagesRoot + "/blendersessiond-1.0.dist-info/METADATA"
 	e.checkpoint = func(at string) error {
-		if at == point {
+		if at == "before-seal" {
 			return fmt.Errorf("interrupted before ACL change")
 		}
 		return nil
@@ -429,7 +477,7 @@ func TestLegacyRuntimeIntentRemainsRepeatableAndRemovable(t *testing.T) {
 	id, _ := newID("bbxi_")
 	r.InstallationID = InstallationID(id)
 	e.checkpoint = func(point string) error {
-		if point == "before-seal:"+sitePackagesRoot+"/blendersessiond-1.0.dist-info/METADATA" {
+		if point == "before-seal" {
 			return fmt.Errorf("stop before sealing")
 		}
 		return nil

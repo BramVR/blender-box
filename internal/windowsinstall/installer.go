@@ -28,7 +28,7 @@ type runtimePathCheck struct {
 type machine interface {
 	inspect(context.Context, Request) (Inspection, error)
 	securePath(context.Context, string, string, bool) error
-	sealPath(context.Context, string, string) error
+	sealPaths(context.Context, []string, string) error
 	securePaths(context.Context, []string, string) error
 	secureRuntimePaths(context.Context, []runtimePathCheck, string) error
 	createDirectory(context.Context, string, string) error
@@ -435,7 +435,7 @@ func (e *installer) Execute(ctx context.Context, request Request) (Result, error
 				return err
 			}
 			receipt = installationReceipt{SchemaVersion: 1, InstallationID: request.InstallationID, OperationID: request.OperationID, RootIdentity: currentRoot, Intent: intent, IntentSHA256: objectDigest(intent), State: "prepared", Files: []File{}, Deleted: []string{}}
-			if err := saveReceipt(receiptPath, &receipt, false); err != nil {
+			if err := e.saveReceipt(ctx, receiptPath, &receipt, false); err != nil {
 				return err
 			}
 			exists = true
@@ -484,6 +484,12 @@ func (e *installer) Execute(ctx context.Context, request Request) (Result, error
 		result.Target = &selected
 	}
 	return result, nil
+}
+
+// saveReceipt publishes the next receipt generation and times it for the worker record.
+func (e *installer) saveReceipt(ctx context.Context, path string, r *installationReceipt, replace bool) error {
+	defer timeStep(ctx, "receipt")()
+	return saveReceipt(path, r, replace)
 }
 func (e *installer) hit(name string) error {
 	if e.checkpoint != nil {
@@ -594,6 +600,7 @@ func (e *installer) ensureSkeleton(ctx context.Context, root, sid string) error 
 	return nil
 }
 func (e *installer) validateOwned(ctx context.Context, directory string, r installationReceipt) error {
+	defer timeStep(ctx, "validate-owned")()
 	allowed := map[string]bool{}
 	for _, file := range r.Files {
 		if !contains(r.Deleted, file.Path) {
@@ -708,7 +715,7 @@ func (e *installer) sealRuntime(ctx context.Context, directory, receiptPath stri
 		}
 		r.Pending = &mutation{Action: "seal", Path: sitePackagesRoot}
 		r.State = "partial"
-		if err := saveReceipt(receiptPath, r, true); err != nil {
+		if err := e.saveReceipt(ctx, receiptPath, r, true); err != nil {
 			return err
 		}
 	}
@@ -735,6 +742,9 @@ func (e *installer) sealRuntime(ctx context.Context, directory, receiptPath stri
 		}
 		return files[i].Path < files[j].Path
 	})
+	// validateOwned proved every object is original or exactly sealed. Only original objects are
+	// sealed; any other change is refused by the validation and commit checks below.
+	paths := []string{}
 	for _, file := range files {
 		destination := filepath.Join(directory, filepath.FromSlash(file.Path))
 		planned := file
@@ -744,22 +754,18 @@ func (e *installer) sealRuntime(ctx context.Context, directory, receiptPath stri
 			return err
 		}
 		if observed.Identity == file.Identity {
-			if err := e.hit("before-seal:" + file.Path); err != nil {
-				return err
-			}
-			if err := e.machine.sealPath(ctx, destination, r.Intent.OwnerSID); err != nil {
-				return err
-			}
-			if err := e.hit("after-seal:" + file.Path); err != nil {
-				return err
-			}
-			observed, err = observeFile(destination, planned)
-			if err != nil {
-				return err
-			}
+			paths = append(paths, destination)
 		}
-		if !sameFileObject(file.Identity, observed.Identity) || observed.Identity == file.Identity {
-			return fmt.Errorf("runtime seal changed object identity: %s", file.Path)
+	}
+	if len(paths) != 0 {
+		if err := e.hit("before-seal"); err != nil {
+			return err
+		}
+		if err := e.machine.sealPaths(ctx, paths, r.Intent.OwnerSID); err != nil {
+			return err
+		}
+		if err := e.hit("after-seal"); err != nil {
+			return err
 		}
 	}
 	if err := e.validateOwned(ctx, directory, *r); err != nil {
@@ -790,7 +796,7 @@ func (e *installer) sealRuntime(ctx context.Context, directory, receiptPath stri
 	r.Files = sealed
 	r.Pending = nil
 	r.RuntimeSealed = true
-	return saveReceipt(receiptPath, r, true)
+	return e.saveReceipt(ctx, receiptPath, r, true)
 }
 func (e *installer) install(ctx context.Context, directory, path string, r *installationReceipt, contents map[string][]byte) error {
 	for _, file := range r.Intent.Files {
@@ -807,7 +813,7 @@ func (e *installer) install(ctx context.Context, directory, path string, r *inst
 			}
 			r.Pending = &mutation{Action: "create", Path: file.Path}
 			r.State = "partial"
-			if err := saveReceipt(path, r, true); err != nil {
+			if err := e.saveReceipt(ctx, path, r, true); err != nil {
 				return err
 			}
 			if err := e.hit("before-create:" + file.Path); err != nil {
@@ -822,7 +828,9 @@ func (e *installer) install(ctx context.Context, directory, path string, r *inst
 				if !exists || digest(data) != file.SHA256 {
 					return fmt.Errorf("missing planned runtime bytes")
 				}
+				stop := timeStep(ctx, "publish-file")
 				err = publishBytes(destination, r.Intent.Root, data, false, e.checkpoint)
+				stop()
 			}
 			if err != nil {
 				return err
@@ -839,7 +847,7 @@ func (e *installer) install(ctx context.Context, directory, path string, r *inst
 		}
 		r.Files = append(r.Files, observed)
 		r.Pending = nil
-		if err = saveReceipt(path, r, true); err != nil {
+		if err = e.saveReceipt(ctx, path, r, true); err != nil {
 			return err
 		}
 	}
@@ -863,7 +871,7 @@ func (e *installer) install(ctx context.Context, directory, path string, r *inst
 				return fmt.Errorf("unowned task collision")
 			}
 			r.Pending = &mutation{Action: "create-task", Path: "task"}
-			if err := saveReceipt(path, r, true); err != nil {
+			if err := e.saveReceipt(ctx, path, r, true); err != nil {
 				return err
 			}
 			if err := e.hit("before-create:task"); err != nil {
@@ -888,7 +896,7 @@ func (e *installer) install(ctx context.Context, directory, path string, r *inst
 		return fmt.Errorf("owned task changed")
 	}
 	r.State = "installed"
-	return saveReceipt(path, r, true)
+	return e.saveReceipt(ctx, path, r, true)
 }
 func (e *installer) remove(ctx context.Context, directory, path string, r *installationReceipt) error {
 	if r.Pending != nil && r.Pending.Action == "seal" {
@@ -926,7 +934,7 @@ func (e *installer) remove(ctx context.Context, directory, path string, r *insta
 		}
 		r.Pending = nil
 		r.State = "removing"
-		if err := saveReceipt(path, r, true); err != nil {
+		if err := e.saveReceipt(ctx, path, r, true); err != nil {
 			return err
 		}
 	}
@@ -936,7 +944,7 @@ func (e *installer) remove(ctx context.Context, directory, path string, r *insta
 		}
 		r.State = "removing"
 		r.Pending = &mutation{Action: "delete-task", Path: "task"}
-		if err := saveReceipt(path, r, true); err != nil {
+		if err := e.saveReceipt(ctx, path, r, true); err != nil {
 			return err
 		}
 		if err := e.hit("before-delete:task"); err != nil {
@@ -956,7 +964,7 @@ func (e *installer) remove(ctx context.Context, directory, path string, r *insta
 		}
 		r.Deleted = append(r.Deleted, "task")
 		r.Pending = nil
-		if err := saveReceipt(path, r, true); err != nil {
+		if err := e.saveReceipt(ctx, path, r, true); err != nil {
 			return err
 		}
 	}
@@ -983,7 +991,7 @@ func (e *installer) remove(ctx context.Context, directory, path string, r *insta
 		}
 		r.State = "removing"
 		r.Pending = &mutation{Action: "delete", Path: file.Path}
-		if err := saveReceipt(path, r, true); err != nil {
+		if err := e.saveReceipt(ctx, path, r, true); err != nil {
 			return err
 		}
 		if err := e.hit("before-delete:" + file.Path); err != nil {
@@ -1002,7 +1010,7 @@ func (e *installer) remove(ctx context.Context, directory, path string, r *insta
 		}
 		r.Deleted = append(r.Deleted, file.Path)
 		r.Pending = nil
-		if err := saveReceipt(path, r, true); err != nil {
+		if err := e.saveReceipt(ctx, path, r, true); err != nil {
 			return err
 		}
 	}
@@ -1010,7 +1018,7 @@ func (e *installer) remove(ctx context.Context, directory, path string, r *insta
 		return fmt.Errorf("retained runtime without complete deletion authority")
 	}
 	r.State = "removed"
-	return saveReceipt(path, r, true)
+	return e.saveReceipt(ctx, path, r, true)
 }
 func contains(values []string, want string) bool {
 	for _, value := range values {

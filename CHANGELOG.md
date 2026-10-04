@@ -3,6 +3,7 @@
 ## Unreleased
 
 - Inspect Windows setup prerequisites in fewer PowerShell processes so owned `setup install --apply` spends less of its 5-minute worker deadline starting PowerShell; a full inspection with an explicit Blender path drops from 14 starts to 5 and a status inspection from 2 to 1. A batch refuses as a whole when any file fails its trust or access check, and the error names that file.
+- Seal installed Python packages in Windows setup through ordered batches of up to 32 objects per PowerShell process instead of one process per object, and report per-step worker call counts and inclusive milliseconds as `execution.timings` in setup results and `setup status`, including `before-worker` for deadline spent before the worker started.
 - Settle a Windows setup execution as a resumable `partial` result with the worker's reason when the worker refuses before confirming the approved plan, such as a failed prerequisite inspection; it previously reported `worker result identity changed` and fenced the shared state root for manual review.
 - Retain the Windows setup worker's exit code and bounded stderr and stdout tails in the execution's terminal record, and report a missing result as `worker produced no result (exit N)` instead of an identity mismatch.
 - Stop reporting a successful Windows setup command as failed with cleanup unknown when Windows briefly omits an exited process from its Job member list; the list is read again and only a complete reading counts.

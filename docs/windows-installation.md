@@ -86,7 +86,7 @@ If SSH or the waiting CLI loses its response, query the operation through a fres
 & $Bootstrap setup status --platform windows --state-root $StateRoot --installation $InstallationID --operation $InstallOperationID --json
 ```
 
-The result includes execution state, process state, deadline, process-tree cleanup, task-mutation state, `launcher_cleanup`, and `fence_state`. An admitted execution can briefly report `unknown` before its process identities appear; keep observing the same operation and token. A proven `not-started` attempt can be retried; missing worker identity alone is insufficient. To request cancellation, or release a fence still held by an already settled execution, use the exact execution token from that result:
+The result includes execution state, process state, deadline, process-tree cleanup, task-mutation state, `launcher_cleanup`, and `fence_state`. A worker that returned its result also reports `timings`: per-step call counts and inclusive milliseconds, including `before-worker` for the deadline spent before the worker started. Steps nest, so a seal includes its PowerShell starts and totals overlap. Timings are diagnostic only. An admitted execution can briefly report `unknown` before its process identities appear; keep observing the same operation and token. A proven `not-started` attempt can be retried; missing worker identity alone is insufficient. To request cancellation, or release a fence still held by an already settled execution, use the exact execution token from that result:
 
 ```powershell
 & $Bootstrap setup stop --platform windows --state-root $StateRoot --installation $InstallationID --operation $InstallOperationID --execution $ExecutionToken --apply --json
