@@ -497,6 +497,34 @@ func TestExecutionProvenNoStartReleasesFenceAndResumes(t *testing.T) {
 	}
 }
 
+func TestExecutionWorkerRefusalBeforeAdmittedPlanSettlesAndResumes(t *testing.T) {
+	owner, machine, request := ownerFixture(t)
+	run := owner.run
+	owner.run = func(ctx context.Context, record executionRequest, publish func(executionOwnership) error) (workerOutcome, *treeExit, error) {
+		machine.inspectionErr = errors.New("Python trust audit deadline exceeded")
+		defer func() { machine.inspectionErr = nil }()
+		return run(ctx, record, publish)
+	}
+	refused, err := owner.Execute(context.Background(), request)
+	if err == nil || err.Error() != "inspection-failed: Python trust audit deadline exceeded" {
+		t.Fatalf("refusal error=%v", err)
+	}
+	if refused.State != "partial" || refused.Completion != "known" || refused.Execution == nil || refused.Execution.TaskMutation != "settled" || refused.Execution.FenceState != "released" {
+		t.Fatalf("refused=%s/%s %+v", refused.State, refused.Completion, refused.Execution)
+	}
+	if len(refused.Problems) != 1 || refused.Problems[0].Code != "inspection-failed" {
+		t.Fatalf("refusal problems=%+v", refused.Problems)
+	}
+	if _, err := os.Stat(filepath.Join(request.StateRoot, "installations", string(request.InstallationID))); !os.IsNotExist(err) {
+		t.Fatal("refusal changed installation")
+	}
+	owner.run = run
+	resumed, err := owner.Execute(context.Background(), request)
+	if err != nil || resumed.State != "installed" || resumed.Execution.Token == refused.Execution.Token {
+		t.Fatalf("resumed=%+v %v", resumed.Execution, err)
+	}
+}
+
 func TestExecutionLostWorkerResultSettlesOnlyWithoutPendingTaskMutation(t *testing.T) {
 	for _, tc := range []struct {
 		operation, interrupt, taskMutation, fence string
