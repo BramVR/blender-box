@@ -41,7 +41,7 @@ func TestPrerequisiteBatchRefusesWholeBatchOnAnyRefusal(t *testing.T) {
 			}
 			found, err := nativeMachine{}.candidates(context.Background(), sid, checks, "")
 			if change != "none" {
-				if err == nil || !strings.Contains(err.Error(), refused+": "+reason) || found != nil {
+				if err == nil || !strings.Contains(unwrappedPowerShellErrors(err.Error()), refused+": "+reason) || found != nil {
 					t.Fatalf("refused batch member accepted: found=%+v err=%v", found, err)
 				}
 				return
@@ -63,4 +63,15 @@ func TestPrerequisiteBatchRefusesWholeBatchOnAnyRefusal(t *testing.T) {
 			}
 		})
 	}
+}
+
+// unwrappedPowerShellErrors joins PowerShell's CLIXML error stream, which breaks long messages at
+// the console width, so a test can match a full path and reason.
+func unwrappedPowerShellErrors(message string) string {
+	var joined strings.Builder
+	for _, part := range strings.Split(message, `<S S="Error">`)[1:] {
+		line, _, _ := strings.Cut(part, "</S>")
+		joined.WriteString(strings.ReplaceAll(line, "_x000D__x000A_", ""))
+	}
+	return joined.String()
 }
